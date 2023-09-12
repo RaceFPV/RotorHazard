@@ -16,17 +16,10 @@ void RssiNode::initRx5808Pins(int nIdx)
 {
     nodeIndex = nIdx;
     slotIndex = nIdx;
-#if STM32_MODE_FLAG
-    rx5808DataPin = RX5808_DATA_PIN;  //DATA (CH1) output line to (all) RX5808 modules
-    rx5808ClkPin = RX5808_CLK_PIN;    //CLK (CH3) output line to (all) RX5808 modules
-    rx5808SelPin = rx5808SelPinForNodeIndex(nIdx);  //SEL (CH2) output line to RX5808 module
-    rssiInputPin = rssiInputPinForNodeIndex(nIdx);  //RSSI input from RX5808
-#else
     rx5808DataPin = RX5808_DATA_PIN;  //DATA (CH1) output line to RX5808 module
     rx5808SelPin = RX5808_SEL_PIN;    //SEL (CH2) output line to RX5808 module
     rx5808ClkPin = RX5808_CLK_PIN;    //CLK (CH3) output line to RX5808 module
     rssiInputPin = RSSI_INPUT_PIN;    //RSSI input from RX5808
-#endif
     pinMode(rx5808DataPin, OUTPUT);   //setup RX5808 pins
     pinMode(rx5808SelPin, OUTPUT);
     pinMode(rx5808ClkPin, OUTPUT);
@@ -481,54 +474,3 @@ void RssiNode::rssiEndCrossing()
     state.passPeak.rssi = 0;
     state.passRssiNadir = MAX_RSSI;
 }
-
-
-#if STM32_MODE_FLAG
-
-int RssiNode::rx5808SelPinForNodeIndex(int nIdx)
-{
-    switch (nIdx)
-    {
-        case 1:
-            return RX5808_SEL1_PIN;
-        case 2:
-            return RX5808_SEL2_PIN;
-        case 3:
-            return RX5808_SEL3_PIN;
-        case 4:
-            return RX5808_SEL4_PIN;
-        case 5:
-            return RX5808_SEL5_PIN;
-        case 6:
-            return RX5808_SEL6_PIN;
-        case 7:
-            return RX5808_SEL7_PIN;
-        default:
-            return RX5808_SEL0_PIN;
-    }
-}
-
-int RssiNode::rssiInputPinForNodeIndex(int nIdx)
-{
-    switch (nIdx)
-    {
-        case 1:
-            return RSSI_INPUT1_PIN;
-        case 2:
-            return RSSI_INPUT2_PIN;
-        case 3:
-            return RSSI_INPUT3_PIN;
-        case 4:
-            return RSSI_INPUT4_PIN;
-        case 5:
-            return RSSI_INPUT5_PIN;
-        case 6:
-            return RSSI_INPUT6_PIN;
-        case 7:
-            return RSSI_INPUT7_PIN;
-        default:
-            return RSSI_INPUT0_PIN;
-    }
-}
-
-#endif

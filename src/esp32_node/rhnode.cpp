@@ -29,10 +29,8 @@
 #include "config.h"
 #include "RssiNode.h"
 #include "commands.h"
-#if !STM32_MODE_FLAG
 #include <Wire.h>
 #include "rheeprom.h"
-#endif
 
 // Note: Configure Arduino NODE_NUMBER value in 'config.h'
 
@@ -44,17 +42,8 @@ const char *firmwareBuildDateString = "FIRMWARE_BUILDDATE: " __DATE__;
 const char *firmwareBuildTimeString = "FIRMWARE_BUILDTIME: " __TIME__;
 
 // node processor type
-#if !STM32_MODE_FLAG
 const char *firmwareProcTypeString = "FIRMWARE_PROCTYPE: Arduino";
-#else
-#if !STM32_F4_PROCTYPE
-const char *firmwareProcTypeString = "FIRMWARE_PROCTYPE: STM32F1";
-#else
-const char *firmwareProcTypeString = "FIRMWARE_PROCTYPE: STM32F4";
-#endif
-#endif
 
-#if !STM32_MODE_FLAG
 // i2c address for node
 // Node 1 = 8, Node 2 = 10, Node 3 = 12, Node 4 = 14
 // Node 5 = 16, Node 6 = 18, Node 7 = 20, Node 8 = 22
@@ -68,21 +57,11 @@ uint8_t i2cAddress = 6 + (NODE_NUMBER * 2);
 #define EEPROM_CHECK_VALUE 0x3526  //EEPROM integrity-check value
 #define COMMS_MONITOR_TIME_MS 5000 //I2C communications monitor grace/trigger time
 
-#else
-#define MIN_RSSI_DETECT 5          //value for detecting node as installed
-#if STM32_SERIALUSB_FLAG
-#define SERIALCOM SerialUSB
-#else
-#define SERIALCOM Serial
-#endif
-#endif
-
 // dummy macro
 #define LOG_ERROR(...)
 
 Message serialMessage;
 
-#if !STM32_MODE_FLAG
 Message i2cMessage;
 
 // Defines for fast ADC reads
@@ -93,10 +72,6 @@ void i2cInitialize(bool delayFlag);
 void i2cReceive(int byteCount);
 bool i2cReadAndValidateIoBuffer(byte expectedSize);
 void i2cTransmit();
-
-#elif STM32_SERIALUSB_FLAG
-void serialEvent();
-#endif
 
 void setModuleLed(bool onFlag);
 
@@ -137,7 +112,7 @@ static volatile bool shutdownHasBeenStartedFlag = false;
 static volatile bool rpiSignalMissingFlag = false;
 #endif
 
-#if (!STM32_MODE_FLAG) && ((!defined(NODE_NUMBER)) || (!NODE_NUMBER))
+#if ((!defined(NODE_NUMBER)) || (!NODE_NUMBER))
 // Configure the I2C address based on input-pin level.
 void configI2cAddress()
 {
@@ -196,7 +171,7 @@ void configI2cAddress()
         i2cAddress = 8 + (i2cAddress * 2);
     }
 }
-#endif  // (!STM32_MODE_FLAG) && ((!defined(NODE_NUMBER)) || (!NODE_NUMBER))
+#endif  // ((!defined(NODE_NUMBER)) || (!NODE_NUMBER))
 
 // Initialize program
 void setup()
@@ -208,39 +183,7 @@ void setup()
     digitalWrite(AUXLED_OUTPUT_PIN, AUXLED_OUT_OFFSTATE);
 #endif
 
-#if STM32_MODE_FLAG
 
-    for (int nIdx=0; nIdx<MULTI_RHNODE_MAX; ++nIdx)
-        RssiNode::rssiNodeArray[nIdx].initRx5808Pins(nIdx);
-
-    RssiNode::multiRssiNodeCount = MULTI_RHNODE_MAX;
-
-    SERIALCOM.begin(SERIAL_BAUD_RATE);  // initialize serial interface
-
-    uint8_t nIdx;
-    for (nIdx=0; nIdx<RssiNode::multiRssiNodeCount; ++nIdx)
-    {
-        RssiNode::rssiNodeArray[nIdx].initRxModule();      //init and set RX5808 to default frequency
-        RssiNode::rssiNodeArray[nIdx].rssiInit();          //initialize RSSI processing
-    }
-
-    // detect number of RX5808 modules connected
-    nIdx = RssiNode::multiRssiNodeCount;
-    while (nIdx > 0)
-    {
-        --nIdx;
-        if(RssiNode::rssiNodeArray[nIdx].rssiRead() <= MIN_RSSI_DETECT)
-        {  //RX5808 not installed in slot
-            if (nIdx < RssiNode::multiRssiNodeCount - 1)
-            {  //not last slot; shift down nodes later in array
-                for (int i=nIdx; i<RssiNode::multiRssiNodeCount; ++i)
-                    RssiNode::rssiNodeArray[i].copyNodeData(&RssiNode::rssiNodeArray[i+1]);
-            }
-            --RssiNode::multiRssiNodeCount;
-        }
-    }
-
-#else
     RssiNode::multiRssiNodeCount = 1;
     RssiNode *rssiNodePtr = &(RssiNode::rssiNodeArray[0]);
     rssiNodePtr->initRx5808Pins(0);
@@ -266,9 +209,10 @@ void setup()
     i2cInitialize(false);  // setup I2C address and callbacks
 
     // set ADC prescaler to 16 to speedup ADC readings
-    sbi(ADCSRA, ADPS2);
-    cbi(ADCSRA, ADPS1);
-    cbi(ADCSRA, ADPS0);
+    //// BANDAID
+    // sbi(ADCSRA, ADPS2);
+    // cbi(ADCSRA, ADPS1);
+    // cbi(ADCSRA, ADPS0);
 
     // if EEPROM-check value matches then read stored values
     if (eepromReadWord(EEPROM_ADRW_CHECKWORD) == EEPROM_CHECK_VALUE)
@@ -287,14 +231,10 @@ void setup()
 
     rssiNodePtr->initRxModule();  //init and set RX5808 to default frequency
     rssiNodePtr->rssiInit();      //initialize RSSI processing
-
-#endif
 }
 
-#if !STM32_MODE_FLAG
 static bool commsMonitorEnabledFlag = false;
 static mtime_t commsMonitorLastResetTime = 0;
-#endif
 
 // Main loop
 void loop()
@@ -302,10 +242,6 @@ void loop()
     static mtime_t loopMillis = 0;
 #ifdef BUZZER_OUTPUT_PIN
     static bool waitingForFirstCommsFlag = true;
-#endif
-
-#if STM32_MODE_FLAG && STM32_SERIALUSB_FLAG
-    serialEvent();  // need to check serial-USB for data (called automatically if Serial)
 #endif
 
     mtime_t curTimeMs = millis();
@@ -337,7 +273,6 @@ void loop()
             settingChangedFlags &= COMM_ACTIVITY;  // clear all except COMM_ACTIVITY
         }
 
-#if !STM32_MODE_FLAG
         bool oldActFlag = rssiNodePtr->getActivatedFlag();
 
                       // set freq here if Arduino running single RX5808 module
@@ -358,14 +293,12 @@ void loop()
                 rssiNodePtr->rssiStateReset();  // restart rssi peak tracking for node
             }
         }
-#endif
 
         // also allow READ_LAP_STATS command to activate operations
         //  so they will resume after node or I2C bus reset
         if (!rssiNodePtr->getActivatedFlag() && (changeFlags & LAPSTATS_READ))
             rssiNodePtr->setActivatedFlag(true);
 
-#if !STM32_MODE_FLAG
         if (commsMonitorEnabledFlag)
         {
             if (changeFlags & COMM_ACTIVITY)
@@ -390,7 +323,6 @@ void loop()
             eepromWriteWord(EEPROM_ADRW_ENTERAT, rssiNodePtr->getEnterAtLevel());
         if (changeFlags & EXITAT_CHANGED)
             eepromWriteWord(EEPROM_ADRW_EXITAT, rssiNodePtr->getExitAtLevel());
-#endif
 
         // Status LED
         if (curTimeMs <= 1000)
@@ -449,14 +381,11 @@ void loop()
     }
 }
 
-#if !STM32_MODE_FLAG
 
 void i2cInitialize(bool delayFlag)
 {
     setModuleLed(true);
-#if !STM32_MODE_FLAG
     Wire.end();  // release I2C pins (SDA & SCL), in case they are "stuck"
-#endif
     if (delayFlag)   // do delay if called via comms monitor
         delay(250);  //  to help bus reset and show longer LED flash
     setModuleLed(false);
@@ -465,9 +394,8 @@ void i2cInitialize(bool delayFlag)
     Wire.onReceive(i2cReceive);   // Trigger 'i2cReceive' function on incoming data
     Wire.onRequest(i2cTransmit);  // Trigger 'i2cTransmit' function for outgoing data, on master request
 
-#if !STM32_MODE_FLAG
-    TWAR = (i2cAddress << 1) | 1;  // enable broadcasts to be received
-#endif
+    // BANDAID
+    //TWAR = (i2cAddress << 1) | 1;  // enable broadcasts to be received
 }
 
 // Function called by twi interrupt service when master sends information to the node
@@ -822,74 +750,3 @@ void handleStatusMessage(byte msgTypeVal, byte msgDataVal)
     }
 #endif
 }
-
-#if STM32_MODE_FLAG
-
-// address for STM32 bootloader
-#if defined(STM32F1)
-#define BOOTLOADER_ADDRESS 0x1FFFF000
-#else
-#define BOOTLOADER_ADDRESS 0x1FFF0000
-#endif
-
-// Jump to STM32 built-in bootloader; based on code from
-//  https://stm32f4-discovery.net/2017/04/tutorial-jump-system-memory-software-stm32
-void doJumpToBootloader()
-{
-    volatile uint32_t addr = BOOTLOADER_ADDRESS;  // STM32 built-in bootloader address
-    void (*SysMemBootJump)(void);
-
-    SERIALCOM.flush();  // flush and close down serial port
-    SERIALCOM.end();
-
-    // disable RCC, set it to default (after reset) settings; internal clock, no PLL, etc.
-#if defined(USE_HAL_DRIVER)
-    HAL_RCC_DeInit();
-#endif /* defined(USE_HAL_DRIVER) */
-#if defined(USE_STDPERIPH_DRIVER)
-    RCC_DeInit();
-#endif /* defined(USE_STDPERIPH_DRIVER) */
-
-    // disable systick timer and reset it to default values
-    SysTick->CTRL = 0;
-    SysTick->LOAD = 0;
-    SysTick->VAL = 0;
-
-    __disable_irq();  // disable all interrupts
-
-    // Remap system memory to address 0x0000 0000 in address space
-    // For each family registers may be different.
-    // Check reference manual for each family.
-    // For STM32F4xx, MEMRMP register in SYSCFG is used (bits[1:0])
-    // For STM32F0xx, CFGR1 register in SYSCFG is used (bits[1:0])
-    // For others, check family reference manual
-#if defined(STM32F4)
-    SYSCFG->MEMRMP = 0x01;
-#endif
-#if defined(STM32F0)
-    SYSCFG->CFGR1 = 0x01;
-#endif
-
-     //Set jump memory location for system memory
-     // Use address with 4 bytes offset which specifies jump location where program starts
-    SysMemBootJump = (void (*)(void)) (*((uint32_t *)(addr + 4)));
-
-    // Set main stack pointer
-    // (This step must be done last otherwise local variables in this function
-    // don't have proper value since stack pointer is located on different position
-    // Set direct address location which specifies stack pointer in SRAM location)
-    __set_MSP(*(uint32_t *)addr);  // @suppress("Invalid arguments")
-
-    SysMemBootJump();  // do jump to bootloader in system memory
-}
-
-#endif  // STM32_MODE_FLAG
-
-#else   // __TEST__
-
-const char *firmwareVersionString = "FIRMWARE_VERSION: test";
-const char *firmwareBuildDateString = "FIRMWARE_BUILDDATE: " __DATE__;
-const char *firmwareBuildTimeString = "FIRMWARE_BUILDTIME: " __TIME__;
-const char *firmwareProcTypeString = "FIRMWARE_PROCTYPE: test";
-
-#endif  // __TEST__
