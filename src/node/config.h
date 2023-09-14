@@ -1,6 +1,11 @@
 #ifndef config_h
 #define config_h
 
+#define STM32_CORE_VERSION
+#define STM32_MODE_FLAG 1
+
+//#define ARDUVIDRX_WIRING_FLAG
+
 #include <Arduino.h>
 #include "util/rhtypes.h"
 
@@ -44,42 +49,18 @@
 #endif  // STM32_MODE_FLAG
 
 
-#if STM32_MODE_FLAG || defined(__TEST__)
 #define ATOMIC_BLOCK(x)
 #define ATOMIC_RESTORESTATE
-#else
-#include <util/atomic.h>
-#endif
 
 #if !STM32_MODE_FLAG
 
-// Set to 0 for standard RotorHazard node wiring; set to 1 for ArduVidRx USB node wiring
-//   See here for an ArduVidRx example: http://www.etheli.com/ArduVidRx/hw/index.html#promini
-#define ARDUVIDRX_WIRING_FLAG 0
-
-#define CHORUS_WIRING_FLAG 0
-
-#if ARDUVIDRX_WIRING_FLAG
-#define RX5808_DATA_PIN 10             //DATA output line to RX5808 module
-#define RX5808_SEL_PIN 11              //SEL output line to RX5808 module
-#define RX5808_CLK_PIN 12              //CLK output line to RX5808 module
-#define RSSI_INPUT_PIN A7              //RSSI input from RX5808
-#define NODE_RESET_PIN A1              //Pin to reset paired Arduino via command for ISP
-#elif CHORUS_WIRING_FLAG
-#define RX5808_DATA_PIN 10             //DATA output line to RX5808 module
-#define RX5808_SEL_PIN 11              //SEL output line to RX5808 module
-#define RX5808_CLK_PIN 12              //CLK output line to RX5808 module
-#define RSSI_INPUT_PIN A3              //RSSI input from RX5808
-#define NODE_RESET_PIN A1              //Pin to reset paired Arduino via command for ISP
-#else
-#define RX5808_DATA_PIN 11             //DATA output line to RX5808 module
-#define RX5808_SEL_PIN 10              //SEL output line to RX5808 module
-#define RX5808_CLK_PIN 13              //CLK output line to RX5808 module
+#define RX5808_DATA_PIN 33             //DATA output line to RX5808 module
+#define RX5808_SEL_PIN 15              //SEL output line to RX5808 module
+#define RX5808_CLK_PIN 32              //CLK output line to RX5808 module
 #define RSSI_INPUT_PIN A0              //RSSI input from RX5808
-#define NODE_RESET_PIN 12              //Pin to reset paired Arduino via command for ISP
-#endif
+#define NODE_RESET_PIN 21              //Pin to reset paired Arduino via command for ISP
 
-#define DISABLE_SERIAL_PIN 9  //pull pin low (to GND) to disable serial port
+#define DISABLE_SERIAL_PIN 17  //pull pin low (to GND) to disable serial port
 #define HARDWARE_SELECT_PIN_1 2
 #define HARDWARE_SELECT_PIN_2 3
 #define HARDWARE_SELECT_PIN_3 4
@@ -94,23 +75,23 @@
 
 #else  // STM32_MODE_FLAG
 
-#define RX5808_DATA_PIN PB3            //DATA output line to RX5808 modules
-#define RX5808_CLK_PIN PB4             //CLK output line to RX5808 modules
+#define RX5808_DATA_PIN 33            //DATA output line to RX5808 modules
+#define RX5808_CLK_PIN 32             //CLK output line to RX5808 modules
 
-#define RX5808_SEL0_PIN PB6            //SEL output lines to RX5808 modules
-#define RX5808_SEL1_PIN PB7
-#define RX5808_SEL2_PIN PB8
-#define RX5808_SEL3_PIN PB9
-#define RX5808_SEL4_PIN PB12
-#define RX5808_SEL5_PIN PB13
-#define RX5808_SEL6_PIN PB14
-#define RX5808_SEL7_PIN PB15
+#define RX5808_SEL0_PIN 15            //SEL output lines to RX5808 modules
+#define RX5808_SEL1_PIN 16
+#define RX5808_SEL2_PIN 17
+#define RX5808_SEL3_PIN 18
+#define RX5808_SEL4_PIN 19
+#define RX5808_SEL5_PIN 20
+#define RX5808_SEL6_PIN 21
+#define RX5808_SEL7_PIN 22
 
-#define BUZZER_OUTPUT_PIN PA8
+#define BUZZER_OUTPUT_PIN 23
 #define BUZZER_OUT_ONSTATE LOW
 #define BUZZER_OUT_OFFSTATE HIGH
 
-#define AUXLED_OUTPUT_PIN PA15
+#define AUXLED_OUTPUT_PIN 24
 
 #ifndef STM32_F4_PROCTYPE  // pinouts for STM32F103C8T6 "Blue Pill" module
 
@@ -129,7 +110,7 @@
 //  configured for "heartbeat" on the RPi in "/boot/config.txt" like this:
 //    dtoverlay=act-led,gpio=24
 //    dtparam=act_led_trigger=heartbeat
-#define RPI_SIGNAL_PIN PB0
+#define RPI_SIGNAL_PIN 25
 #define RPI_SIGNAL_ONSTATE HIGH
 
 #else                   // pinouts for STM32F411CEU6 "Black Pill" module

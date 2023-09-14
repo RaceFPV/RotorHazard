@@ -851,11 +851,13 @@ void doJumpToBootloader()
 #endif /* defined(USE_STDPERIPH_DRIVER) */
 
     // disable systick timer and reset it to default values
-    SysTick->CTRL = 0;
-    SysTick->LOAD = 0;
-    SysTick->VAL = 0;
+    //BANDAID
+    // SysTick->CTRL = 0;
+    // SysTick->LOAD = 0;
+    // SysTick->VAL = 0;
 
-    __disable_irq();  // disable all interrupts
+    //BANDAID
+    //__disable_irq();  // disable all interrupts
 
     // Remap system memory to address 0x0000 0000 in address space
     // For each family registers may be different.
@@ -878,7 +880,8 @@ void doJumpToBootloader()
     // (This step must be done last otherwise local variables in this function
     // don't have proper value since stack pointer is located on different position
     // Set direct address location which specifies stack pointer in SRAM location)
-    __set_MSP(*(uint32_t *)addr);  // @suppress("Invalid arguments")
+    //BANDAID
+    //__set_MSP(*(uint32_t *)addr);  // @suppress("Invalid arguments")
 
     SysMemBootJump();  // do jump to bootloader in system memory
 }

@@ -2,8 +2,15 @@
 #include "RssiNode.h"
 #include "commands.h"
 
-extern uint8_t i2cAddress;
-
+#ifdef __TEST__
+  static uint8_t i2cAddress = 0x08;
+#else
+#if !STM32_MODE_FLAG
+  extern uint8_t i2cAddress;
+#else
+  void doJumpToBootloader();
+#endif
+#endif
 
 // informational strings (defined in 'rhnode.cpp')
 extern const char *firmwareVersionString;    // version string
@@ -70,6 +77,7 @@ byte Message::getPayloadSize()
 // Node reset for ISP; resets other node wired to this node's reset pin
 void resetPairedNode(int pinState)
 {
+#if !STM32_MODE_FLAG
     if (pinState)
     {
         pinMode(NODE_RESET_PIN, INPUT_PULLUP);
@@ -79,6 +87,7 @@ void resetPairedNode(int pinState)
         pinMode(NODE_RESET_PIN, OUTPUT);
         digitalWrite(NODE_RESET_PIN, LOW);
     }
+#endif
 }
 
 // Generic IO write command handler
@@ -102,10 +111,15 @@ void Message::handleWriteCommand(bool serialFlag)
                 {
                     cmdRssiNodePtr->setVtxFreq(u16val);
                     settingChangedFlags |= FREQ_CHANGED;
-
+#if STM32_MODE_FLAG
+                    cmdRssiNodePtr->rssiStateReset();  // restart rssi peak tracking for node
+#endif
                 }
                 settingChangedFlags |= FREQ_SET;
-
+#if STM32_MODE_FLAG  // need to wait here for completion to avoid data overruns
+                cmdRssiNodePtr->setRxModuleToFreq(u16val);
+                cmdRssiNodePtr->setActivatedFlag(true);
+#endif
             }
             break;
 
@@ -148,6 +162,9 @@ void Message::handleWriteCommand(bool serialFlag)
             break;
 
         case JUMP_TO_BOOTLOADER:  // jump to bootloader for flash update
+#if STM32_MODE_FLAG
+            doJumpToBootloader();
+#endif
             break;
 
         default:
@@ -182,7 +199,12 @@ void Message::handleReadCommand(bool serialFlag)
     switch (command)
     {
         case READ_ADDRESS:
+#if !STM32_MODE_FLAG
             buffer.write8(i2cAddress);
+#else
+            buffer.write8((uint8_t)0);
+#endif
+            break;
 
         case READ_FREQUENCY:
             buffer.write16(cmdRssiNodePtr->getVtxFreq());

@@ -35,7 +35,7 @@ VRX_CONTROL['ENABLED'] = False
 VRX_CONTROL['OSD_LAP_HEADER'] = 'L'
 
 # hardware default configurations
-HARDWARE['I2C_BUS'] = 1
+HARDWARE['I2C_BUS'] = 0
 
 # other default configurations
 GENERAL['HTTP_PORT'] = 5000

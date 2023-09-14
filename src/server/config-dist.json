@@ -11,7 +11,7 @@
 	},
 	"SENSORS": {
 	},
-	"SERIAL_PORTS": [],
+	"SERIAL_PORTS": ["COM4"],
 	"LED": {
 		"LED_COUNT": 0,
 		"LED_ROWS": 1,

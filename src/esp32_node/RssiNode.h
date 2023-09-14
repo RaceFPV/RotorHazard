@@ -126,6 +126,10 @@ class RssiNode
     void initExtremum(Extremum *e);
 
     static uint16_t freqMhzToRegVal(uint16_t freqInMhz);
+#if STM32_MODE_FLAG
+    static int rx5808SelPinForNodeIndex(int nIdx);
+    static int rssiInputPinForNodeIndex(int nIdx);
+#endif
 
 public:
     static RssiNode rssiNodeArray[MULTI_RHNODE_MAX];
