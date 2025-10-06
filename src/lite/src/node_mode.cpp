@@ -14,35 +14,38 @@ extern const char *firmwareProcTypeString;
 // Settings flags (from commands.cpp)
 uint8_t settingChangedFlags = 0;
 
-// Command constants (from commands.h)
+// Command constants (from RHInterface.py - MUST match server exactly)
 #define READ_ADDRESS 0x00
 #define READ_FREQUENCY 0x03
 #define READ_LAP_STATS 0x05
-#define READ_LAP_PASS_STATS 0x19
-#define READ_LAP_EXTREMUMS 0x1A
-#define READ_ENTER_AT_LEVEL 0x16
-#define READ_EXIT_AT_LEVEL 0x17
+#define READ_LAP_PASS_STATS 0x0D
+#define READ_LAP_EXTREMUMS 0x0E
+#define READ_RHFEAT_FLAGS 0x11
 #define READ_REVISION_CODE 0x22
 #define READ_NODE_RSSI_PEAK 0x23
 #define READ_NODE_RSSI_NADIR 0x24
-#define READ_TIME_MILLIS 0x06
-#define READ_RHFEAT_FLAGS 0x35
+#define READ_ENTER_AT_LEVEL 0x31
+#define READ_EXIT_AT_LEVEL 0x32
+#define READ_TIME_MILLIS 0x33
 #define READ_MULTINODE_COUNT 0x39
-#define READ_CURNODE_INDEX 0x38
-#define READ_NODE_SLOTIDX 0x3A
-#define READ_FW_VERSION 0x32
-#define READ_FW_BUILDDATE 0x33
-#define READ_FW_BUILDTIME 0x34
-#define READ_FW_PROCTYPE 0x36
+#define READ_CURNODE_INDEX 0x3A
+#define READ_NODE_SLOTIDX 0x3C
+#define READ_FW_VERSION 0x3D
+#define READ_FW_BUILDDATE 0x3E
+#define READ_FW_BUILDTIME 0x3F
+#define READ_FW_PROCTYPE 0x40
 
 #define WRITE_FREQUENCY 0x51
-#define WRITE_ENTER_AT_LEVEL 0x55
-#define WRITE_EXIT_AT_LEVEL 0x56
+#define WRITE_ENTER_AT_LEVEL 0x71
+#define WRITE_EXIT_AT_LEVEL 0x72
 #define SEND_STATUS_MESSAGE 0x75
 #define FORCE_END_CROSSING 0x78
-#define WRITE_CURNODE_INDEX 0x7B
+#define WRITE_CURNODE_INDEX 0x7A
+#define JUMP_TO_BOOTLOADER 0x7E
 
-#define NODE_API_LEVEL 42
+#define NODE_API_LEVEL 35
+
+// #define NODE_API_LEVEL 42  // Removed duplicate definition
 #define RHFEAT_FLAGS_VALUE 0x0000  // No special features for ESP32 Lite
 
 // Status flags
@@ -93,9 +96,9 @@ struct Buffer {
     uint8_t calculateChecksum(uint8_t len) {
         uint8_t checksum = 0;
         for (uint8_t i = 0; i < len; i++) {
-            checksum ^= data[i];
+            checksum += data[i];  // SUM, not XOR (RotorHazard protocol uses sum)
         }
-        return checksum;
+        return checksum & 0xFF;
     }
     
     void writeChecksum() {
@@ -107,6 +110,7 @@ struct Buffer {
 struct Message {
     uint8_t command = 0;
     Buffer buffer;
+    NodeMode* nodeMode = nullptr;  // Pointer to NodeMode instance for accessing timing data
     
     byte getPayloadSize() {
         switch (command) {
@@ -132,6 +136,7 @@ NodeMode::NodeMode() : _timingCore(nullptr) {
 
 void NodeMode::begin(TimingCore* timingCore) {
     _timingCore = timingCore;
+    serialMessage.nodeMode = this;  // Set pointer for Message to access NodeMode data
     
     // Initialize with default settings
     _settings.vtxFreq = 5800;
@@ -140,10 +145,11 @@ void NodeMode::begin(TimingCore* timingCore) {
     _nodeIndex = 0;
     _slotIndex = 0;
     
-    Serial.println("RotorHazard Node Mode initialized");
-    Serial.printf("Firmware: %s\n", firmwareVersionString);
-    Serial.printf("Build: %s %s\n", firmwareBuildDateString, firmwareBuildTimeString);
-    Serial.printf("Processor: %s\n", firmwareProcTypeString);
+    // Debug output disabled to avoid interfering with serial protocol
+    // Serial.println("RotorHazard Node Mode initialized");
+    // Serial.printf("Firmware: %s\n", firmwareVersionString);
+    // Serial.printf("Build: %s %s\n", firmwareBuildDateString, firmwareBuildTimeString);
+    // Serial.printf("Processor: %s\n", firmwareProcTypeString);
 }
 
 void NodeMode::process() {
@@ -158,9 +164,9 @@ void NodeMode::process() {
         _lastPass.rssiPeak = lap.rssi_peak;
         _lastPass.lap++;  // Increment lap counter
         
-        // For debugging
-        Serial.printf("Lap %d detected: %dms, RSSI: %d\n", 
-                     _lastPass.lap, lap.timestamp_ms, lap.rssi_peak);
+        // Debug output disabled to avoid interfering with serial protocol
+        // Serial.printf("Lap %d detected: %dms, RSSI: %d\n", 
+        //              _lastPass.lap, lap.timestamp_ms, lap.rssi_peak);
     }
 }
 
@@ -186,6 +192,7 @@ void NodeMode::handleSerialInput() {
                 if (serialMessage.buffer.size > 0) {
                     // Send response
                     Serial.write((byte *)serialMessage.buffer.data, serialMessage.buffer.size);
+                    Serial.flush();  // Ensure data is sent immediately
                     serialMessage.buffer.size = 0;
                 }
             }
@@ -198,7 +205,8 @@ void NodeMode::handleSerialInput() {
                 if (serialMessage.buffer.data[serialMessage.buffer.size - 1] == checksum) {
                     serialMessage.handleWriteCommand(true);
                 } else {
-                    Serial.println("Checksum error");
+                    // Debug output disabled to avoid interfering with serial protocol
+                // Serial.println("Checksum error");
                 }
                 serialMessage.buffer.size = 0;
             }
@@ -220,38 +228,44 @@ void Message::handleWriteCommand(bool serialFlag) {
         case WRITE_FREQUENCY: {
             uint16_t freq = buffer.read16();
             // TODO: Set frequency via timing core
-            Serial.printf("Set frequency: %d MHz\n", freq);
+            // Debug output disabled to avoid interfering with serial protocol
+            // Serial.printf("Set frequency: %d MHz\n", freq);
             settingChangedFlags |= FREQ_SET | FREQ_CHANGED;
             break;
         }
         
         case WRITE_ENTER_AT_LEVEL: {
             uint8_t level = buffer.read8();
-            Serial.printf("Set enter level: %d\n", level);
+            // Debug output disabled to avoid interfering with serial protocol
+            // Serial.printf("Set enter level: %d\n", level);
             settingChangedFlags |= ENTERAT_CHANGED;
             break;
         }
         
         case WRITE_EXIT_AT_LEVEL: {
             uint8_t level = buffer.read8();
-            Serial.printf("Set exit level: %d\n", level);
+            // Debug output disabled to avoid interfering with serial protocol
+            // Serial.printf("Set exit level: %d\n", level);
             settingChangedFlags |= EXITAT_CHANGED;
             break;
         }
         
         case FORCE_END_CROSSING: {
-            Serial.println("Force end crossing");
+            // Debug output disabled to avoid interfering with serial protocol
+            // Serial.println("Force end crossing");
             break;
         }
         
         case SEND_STATUS_MESSAGE: {
             uint16_t msg = buffer.read16();
-            Serial.printf("Status message: 0x%04X\n", msg);
+            // Debug output disabled to avoid interfering with serial protocol
+            // Serial.printf("Status message: 0x%04X\n", msg);
             break;
         }
         
         default:
-            Serial.printf("Unknown write command: 0x%02X\n", command);
+            // Debug output disabled to avoid interfering with serial protocol
+            // Serial.printf("Unknown write command: 0x%02X\n", command);
             actFlag = false;
     }
     
@@ -280,12 +294,26 @@ void Message::handleReadCommand(bool serialFlag) {
             
         case READ_LAP_PASS_STATS: {
             uint32_t timeNow = millis();
-            buffer.write8(1);  // lap number
-            buffer.write16(0);  // ms since lap
-            buffer.write8(50);  // current RSSI
-            buffer.write8(100); // node RSSI peak
-            buffer.write8(120); // lap RSSI peak
-            buffer.write16(1000); // loop time micros
+            uint8_t current_rssi = 0;
+            uint8_t peak_rssi = 0;
+            uint8_t lap_num = 0;
+            uint16_t ms_since_lap = 0;
+            uint8_t lap_peak = 0;
+            
+            if (nodeMode && nodeMode->_timingCore) {
+                current_rssi = nodeMode->_timingCore->getCurrentRSSI();
+                peak_rssi = nodeMode->_timingCore->getPeakRSSI();
+                lap_num = nodeMode->_lastPass.lap;
+                ms_since_lap = timeNow - nodeMode->_lastPass.timestamp;
+                lap_peak = nodeMode->_lastPass.rssiPeak;
+            }
+            
+            buffer.write8(lap_num);  // lap number
+            buffer.write16(ms_since_lap);  // ms since lap
+            buffer.write8(current_rssi);  // current RSSI
+            buffer.write8(peak_rssi); // node RSSI peak
+            buffer.write8(lap_peak); // lap RSSI peak
+            buffer.write16(1000); // loop time micros (placeholder)
             settingChangedFlags |= LAPSTATS_READ;
             break;
         }
@@ -314,11 +342,11 @@ void Message::handleReadCommand(bool serialFlag) {
             break;
             
         case READ_NODE_RSSI_PEAK:
-            buffer.write8(100);
+            buffer.write8((nodeMode && nodeMode->_timingCore) ? nodeMode->_timingCore->getPeakRSSI() : 0);
             break;
             
         case READ_NODE_RSSI_NADIR:
-            buffer.write8(30);
+            buffer.write8(30);  // TODO: Implement nadir tracking
             break;
             
         case READ_TIME_MILLIS:
@@ -387,7 +415,7 @@ void Message::handleReadCommand(bool serialFlag) {
             break;
             
         default:
-            Serial.printf("Unknown read command: 0x%02X\n", command);
+            // Debug output temporarily enabled to troubleshoot communication
             actFlag = false;
     }
     

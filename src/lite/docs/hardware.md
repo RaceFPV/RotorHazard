@@ -35,16 +35,20 @@ GPIO 0       | BATTERY_PIN         | Battery monitoring (not used)
 
 These pins are available for future expansion or can be left unconnected.
 
-### Mode Switch (Required)
+### Mode Switch (Optional)
 ```
 ESP32-C3 Pin | Switch       | Description
 -------------|--------------|-------------
 GPIO 0       | Common       | Mode selection
+Nothing      | Default      | RotorHazard node mode (floating)
 GND          | Position 1   | RotorHazard node mode
 3.3V         | Position 2   | WiFi standalone mode
 ```
 
-**Important**: The mode switch is required for ESP32-C3 operation. Connect GND for RotorHazard node mode, or 3.3V for WiFi standalone mode.
+**Important**: 
+- **Nothing connected** (floating) = RotorHazard node mode (default)
+- **GND connected** = RotorHazard node mode  
+- **3.3V connected** = WiFi standalone mode
 
 ## PCB Design Considerations
 

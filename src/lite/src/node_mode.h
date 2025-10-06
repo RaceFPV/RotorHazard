@@ -18,11 +18,17 @@ struct NodeLastPass {
     uint8_t lap = 0;
 };
 
+// Forward declaration for friend class
+struct Message;
+
 class NodeMode {
 public:
     NodeMode();
     void begin(TimingCore* timingCore);
     void process();
+    void handleSerialInput();
+    
+    friend struct Message;  // Allow Message to access private members
 
 private:
     TimingCore* _timingCore;
@@ -31,7 +37,6 @@ private:
     uint8_t _nodeIndex = 0;
     uint8_t _slotIndex = 0;
 
-    void handleSerialInput();
     void sendLapDataToHost(const LapData& lap);
 };
 

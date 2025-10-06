@@ -21,21 +21,23 @@ bool mode_initialized = false;
 // Function declarations
 void checkModeSwitch();
 void initializeMode();
+void serialEvent();
 
 void setup() {
   Serial.begin(UART_BAUD_RATE);
   
-  // Wait for serial connection (optional)
+  // Wait for serial connection (like Arduino)
+  while (!Serial) {
+    delay(10);
+  }
+  
+  // Additional delay for ESP32-C3 USB CDC
   #ifdef ARDUINO_USB_CDC_ON_BOOT
-  delay(2000); // Give time for USB serial to connect
+  delay(1000); // Give time for USB serial to stabilize
   #endif
   
-  DEBUG_PRINTLN("=== RotorHazard Lite ESP32-C3 Timer ===");
-  DEBUG_PRINTLN("Version: 1.0.0");
-  DEBUG_PRINTLN("Single-core RISC-V processor");
-  
-  // Initialize mode selection pin (GND=Node, 3.3V=WiFi)
-  pinMode(MODE_SWITCH_PIN, INPUT);
+  // Initialize mode selection pin (floating=Node, GND=WiFi, HIGH=Node)
+  pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED_PIN, OUTPUT);
   
   // Brief startup flash
@@ -45,14 +47,15 @@ void setup() {
   delay(200);
   
   // Initialize core timing system (always active)
-  DEBUG_PRINTLN("Initializing timing core...");
   timing.begin();
   
   // Determine initial mode
-  checkModeSwitch();
-  initializeMode();
+  bool initial_switch_state = digitalRead(MODE_SWITCH_PIN);
   
-  DEBUG_PRINTLN("Setup complete!");
+  // Force initial mode detection (bypass the 100ms delay)
+  current_mode = (initial_switch_state == LOW) ? MODE_STANDALONE : MODE_ROTORHAZARD;
+  
+  initializeMode();
 }
 
 void loop() {
@@ -69,13 +72,24 @@ void loop() {
     node.process();
   }
   
+  // Handle serial communication (like Arduino)
+  serialEvent();
+  
   // Brief yield to prevent watchdog issues (ESP32-C3 single core)
   vTaskDelay(pdMS_TO_TICKS(10));
 }
 
+// Serial event handler (like Arduino)
+void serialEvent() {
+  // Only handle serial in RotorHazard node mode
+  if (current_mode == MODE_ROTORHAZARD) {
+    node.handleSerialInput();
+  }
+}
+
 void checkModeSwitch() {
   static unsigned long last_check = 0;
-  static bool last_switch_state = HIGH;
+  static bool last_switch_state = -1; // Initialize to invalid state to force first check
   
   // Only check every 100ms to avoid bouncing
   if (millis() - last_check < 100) {
@@ -85,12 +99,14 @@ void checkModeSwitch() {
   bool current_switch_state = digitalRead(MODE_SWITCH_PIN);
   
   if (current_switch_state != last_switch_state) {
-    DEBUG_PRINT("Mode switch changed: ");
-    DEBUG_PRINTLN(current_switch_state == WIFI_MODE ? "WIFI" : "ROTORHAZARD");
-    
     // Determine new mode
-    OperationMode new_mode = (current_switch_state == WIFI_MODE) ? 
-                             MODE_STANDALONE : MODE_ROTORHAZARD;
+    // LOW (GND) = WiFi mode, HIGH (floating/pullup) = RotorHazard mode (default)
+    OperationMode new_mode;
+    if (current_switch_state == LOW) {
+      new_mode = MODE_STANDALONE;  // Switch to GND = WiFi mode
+    } else {
+      new_mode = MODE_ROTORHAZARD; // Switch to 3.3V or floating = RotorHazard mode (default)
+    }
     
     if (new_mode != current_mode || !mode_initialized) {
       current_mode = new_mode;
@@ -104,10 +120,8 @@ void checkModeSwitch() {
 }
 
 void initializeMode() {
-  DEBUG_PRINT("Initializing mode: ");
-  
   if (current_mode == MODE_STANDALONE) {
-    DEBUG_PRINTLN("STANDALONE/WIFI");
+    DEBUG_PRINTLN("Initializing mode: STANDALONE/WIFI");
     
     // Shutdown node mode if it was running
     if (mode_initialized) {
@@ -124,7 +138,7 @@ void initializeMode() {
     DEBUG_PRINTLN("ESP32-C3 Single-core operation");
     
   } else {
-    DEBUG_PRINTLN("ROTORHAZARD NODE");
+    // NODE MODE: NO debug output - it interferes with binary serial protocol
     
     // Shutdown standalone mode if it was running  
     if (mode_initialized) {
@@ -134,13 +148,8 @@ void initializeMode() {
     // Initialize node mode
     node.begin(&timing);
     
-    // Status indication
-    DEBUG_PRINTLN("=== ROTORHAZARD NODE MODE ACTIVE ===");
-    DEBUG_PRINTLN("Waiting for RotorHazard connection...");
-    DEBUG_PRINT("UART: ");
-    DEBUG_PRINT(UART_BAUD_RATE);
-    DEBUG_PRINTLN(" baud");
-    DEBUG_PRINTLN("ESP32-C3 Single-core operation");
+    // Node mode is now active and waiting for RotorHazard commands
+    // All communication is binary - no text output allowed
   }
   
   mode_initialized = true;

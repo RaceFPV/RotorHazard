@@ -9,14 +9,15 @@
 #define MODE_SWITCH_PIN     0     // Mode selection switch (GND=Node, 3.3V=WiFi)
 #define STATUS_LED_PIN      2     // Built-in LED for status (matches Hertz-hunter BUZZER_PIN)
 
-// UART pins for RotorHazard communication (built-in)
-#define UART_TX_PIN         21    // TX to Pi/PC (GPIO21 on C3)
-#define UART_RX_PIN         20    // RX from Pi/PC (GPIO20 on C3)
+// Serial communication (USB CDC on ESP32-C3 SuperMini)
+// ESP32-C3 SuperMini uses USB CDC for communication with PC/RotorHazard
+// Note: USB CDC ignores baud rate (USB is packet-based), but we set it for compatibility
 #define UART_BAUD_RATE      115200
 
-// Mode selection (inverted for ESP32-C3)
-#define WIFI_MODE           HIGH  // 3.3V on switch pin = WiFi/Standalone mode
-#define ROTORHAZARD_MODE    LOW   // GND on switch pin = RotorHazard node mode
+// Mode selection (ESP32-C3 with pullup)
+#define WIFI_MODE           LOW   // GND on switch pin = WiFi/Standalone mode
+#define ROTORHAZARD_MODE    HIGH  // HIGH (floating/pullup) = RotorHazard node mode (default)
+// Note: Floating (nothing connected) = ROTORHAZARD_MODE (default)
 
 // RX5808 frequency constants  
 #define MIN_FREQ            5645  // Minimum frequency (MHz)

@@ -8,6 +8,7 @@
 /RotorHazard.iml
 /.idea
 /src/libraries
+.pio
 
 # RH Database and backups
 *.db

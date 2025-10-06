@@ -27,7 +27,7 @@ TimingCore::TimingCore() {
 }
 
 void TimingCore::begin() {
-  DEBUG_PRINTLN("TimingCore: Initializing...");
+  // TimingCore: Initializing...
   
   // Setup pins
   pinMode(RSSI_INPUT_PIN, INPUT);
@@ -50,7 +50,7 @@ void TimingCore::begin() {
   // Mark as activated
   state.activated = true;
   
-  DEBUG_PRINTLN("TimingCore: Ready");
+  // TimingCore: Ready
 }
 
 void TimingCore::process() {
@@ -182,12 +182,13 @@ void TimingCore::recordLap(uint32_t timestamp, uint8_t peak_rssi) {
   // Reset peak tracking
   state.peak_rssi = 0;
   
-  DEBUG_PRINT("Lap recorded: ");
-  DEBUG_PRINT(state.lap_count);
-  DEBUG_PRINT(", Time: ");
-  DEBUG_PRINT(lap.lap_time_ms);
-  DEBUG_PRINT("ms, Peak: ");
-  DEBUG_PRINTLN(peak_rssi);
+        // Debug output disabled to avoid interfering with serial protocol
+        // DEBUG_PRINT("Lap recorded: ");
+        // DEBUG_PRINT(state.lap_count);
+        // DEBUG_PRINT(", Time: ");
+        // DEBUG_PRINT(lap.lap_time_ms);
+        // DEBUG_PRINT("ms, Peak: ");
+        // DEBUG_PRINTLN(peak_rssi);
   
   // Notify callback if registered
   if (lap_callback) {
@@ -196,7 +197,7 @@ void TimingCore::recordLap(uint32_t timestamp, uint8_t peak_rssi) {
 }
 
 void TimingCore::setupRX5808() {
-  DEBUG_PRINTLN("Setting up RX5808...");
+  // Setting up RX5808...
   
   // Initialize SPI pins
   pinMode(RX5808_DATA_PIN, OUTPUT);
@@ -222,9 +223,7 @@ void TimingCore::setRX5808Frequency(uint16_t freq_mhz) {
   uint16_t synth_a = 0x8008 | ((freq_reg & 0x0007) << 5) | ((freq_reg & 0x0078) >> 3);
   uint16_t synth_b = 0x8209 | ((freq_reg & 0x0380) << 2);
   
-  DEBUG_PRINT("Setting frequency: ");
-  DEBUG_PRINT(freq_mhz);
-  DEBUG_PRINTLN(" MHz");
+  // Setting frequency
   
   // Send register values
   sendRX5808Bits(synth_a, 16);
@@ -268,8 +267,7 @@ void TimingCore::setFrequency(uint16_t freq_mhz) {
 void TimingCore::setThreshold(uint8_t threshold) {
   if (xSemaphoreTake(timing_mutex, portMAX_DELAY)) {
     state.threshold = threshold;
-    DEBUG_PRINT("Threshold set to: ");
-    DEBUG_PRINTLN(threshold);
+    // Threshold set
     xSemaphoreGive(timing_mutex);
   }
 }
@@ -277,8 +275,7 @@ void TimingCore::setThreshold(uint8_t threshold) {
 void TimingCore::setActivated(bool active) {
   if (xSemaphoreTake(timing_mutex, portMAX_DELAY)) {
     state.activated = active;
-    DEBUG_PRINT("Timing ");
-    DEBUG_PRINTLN(active ? "activated" : "deactivated");
+    // Timing activated/deactivated
     xSemaphoreGive(timing_mutex);
   }
 }
@@ -295,7 +292,7 @@ void TimingCore::reset() {
     lap_write_index = 0;
     lap_read_index = 0;
     
-    DEBUG_PRINTLN("Timing reset");
+    // Timing reset
     xSemaphoreGive(timing_mutex);
   }
 }

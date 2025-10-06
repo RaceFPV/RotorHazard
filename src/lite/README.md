@@ -7,14 +7,14 @@ A dual-mode ESP32-C3-based race timer that works as both:
 ## Quick Start
 
 ### Standalone Mode (WiFi)
-1. Set mode switch to 3.3V position
+1. Connect GPIO 0 to 3.3V (or leave floating for default)
 2. Power on ESP32-C3
 3. Connect to WiFi network "RaceTimer-XXXX"
 4. Open browser to http://192.168.4.1
 5. Start timing!
 
 ### RotorHazard Node Mode (USB)
-1. Set mode switch to GND position  
+1. Leave GPIO 0 floating (default) or connect to GND
 2. Connect ESP32-C3 to PC/Pi via USB
 3. Add as timing node in RotorHazard server
 4. Full RotorHazard features available!
