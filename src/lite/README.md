@@ -1,46 +1,48 @@
-# RotorHazard Lite - ESP32 Timing System
+# RotorHazard Lite - ESP32-C3 Timing System
 
-A dual-mode ESP32-based race timer that works as both:
+A dual-mode ESP32-C3-based race timer that works as both:
 - **Standalone Mode**: WiFi-enabled web interface for basic timing
 - **RotorHazard Node Mode**: Full compatibility with RotorHazard server
 
 ## Quick Start
 
 ### Standalone Mode (WiFi)
-1. Set mode switch to UP position
-2. Power on ESP32
+1. Set mode switch to 3.3V position
+2. Power on ESP32-C3
 3. Connect to WiFi network "RaceTimer-XXXX"
 4. Open browser to http://192.168.4.1
 5. Start timing!
 
 ### RotorHazard Node Mode (USB)
-1. Set mode switch to DOWN position  
-2. Connect ESP32 to PC/Pi via USB
+1. Set mode switch to GND position  
+2. Connect ESP32-C3 to PC/Pi via USB
 3. Add as timing node in RotorHazard server
 4. Full RotorHazard features available!
 
 ## Hardware Requirements
 
-- ESP32 development board (NodeMCU-32S recommended)
+- ESP32-C3 SuperMini development board (~$1.50 wholesale)
 - RX5808 FPV receiver module
-- Mode selection switch (or use built-in boot button)
+- Mode selection switch (GND=Node, 3.3V=WiFi)
 
-## Pin Configuration
+## Pin Configuration (ESP32-C3 SuperMini - Hertz-hunter Compatible)
 
 ```cpp
-#define RSSI_INPUT_PIN      36    // ADC input from RX5808
-#define RX5808_DATA_PIN     23    // SPI MOSI to RX5808
-#define RX5808_CLK_PIN      18    // SPI SCK to RX5808  
-#define RX5808_SEL_PIN      5     // SPI CS to RX5808
+#define RSSI_INPUT_PIN      3     // ADC1_CH3 input from RX5808 (Hertz-hunter RSSI_PIN)
+#define RX5808_DATA_PIN     6     // SPI MOSI to RX5808 (Hertz-hunter SPI_DATA_PIN)
+#define RX5808_CLK_PIN      4     // SPI SCK to RX5808 (Hertz-hunter SPI_CLK_PIN)
+#define RX5808_SEL_PIN      7     // SPI CS to RX5808 (Hertz-hunter SPI_LE_PIN)
 #define MODE_SWITCH_PIN     0     // Mode selection switch
-#define STATUS_LED_PIN      2     // Status LED
+#define STATUS_LED_PIN      2     // Status LED (Hertz-hunter BUZZER_PIN)
 ```
+
+**Compatibility**: This pinout matches Hertz-hunter exactly! You can use the same PCB/wiring.
 
 ## Building
 
 ```bash
 cd RotorHazard/src/lite/
-pio run --target upload
+pio run -e esp32-c3-supermini --target upload
 ```
 
 ## Features
@@ -54,9 +56,10 @@ pio run --target upload
 
 ### RotorHazard Node Mode  
 - Full protocol compatibility
-- High-precision timing
+- High-precision timing using FreeRTOS tasks
 - All RotorHazard features supported
 - WiFi disabled for maximum timing accuracy
+- Single-core RISC-V processor
 
 ## Development
 

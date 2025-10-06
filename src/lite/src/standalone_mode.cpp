@@ -31,7 +31,7 @@ void StandaloneMode::begin(TimingCore* timingCore) {
     
     _server.begin();
     Serial.println("Web server started");
-    Serial.printf("Access point: %s\n", ssid);
+    Serial.printf("Access point: %s\n", WIFI_AP_SSID_PREFIX);
     Serial.printf("IP address: %s\n", WiFi.softAPIP().toString().c_str());
     Serial.println("Open browser to http://192.168.4.1");
 }
@@ -61,9 +61,9 @@ void StandaloneMode::setupWiFiAP() {
     // Create unique SSID with MAC address
     String macAddr = WiFi.macAddress();
     macAddr.replace(":", "");
-    String apSSID = String(ssid) + "-" + macAddr.substring(8);
+    String apSSID = String(WIFI_AP_SSID_PREFIX) + "-" + macAddr.substring(8);
     
-    WiFi.softAP(apSSID.c_str(), password);
+    WiFi.softAP(apSSID.c_str(), WIFI_AP_PASSWORD);
     
     // Configure IP
     IPAddress local_IP(192, 168, 4, 1);
@@ -84,35 +84,35 @@ void StandaloneMode::handleRoot() {
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <div class="container">
+    <div class=\"container\">
         <h1>🏁 Race Timer Lite</h1>
-        <div id="status" class="status">Status: Ready</div>
+        <div id=\"status\" class=\"status\">Status: Ready</div>
         
-        <div class="controls">
-            <button id="startBtn" onclick="startRace()" class="btn btn-primary">Start Race</button>
-            <button id="stopBtn" onclick="stopRace()" class="btn btn-secondary">Stop Race</button>
-            <button id="clearBtn" onclick="clearLaps()" class="btn btn-danger">Clear Laps</button>
+        <div class=\"controls\">
+            <button id=\"startBtn\" onclick=\"startRace()\" class=\"btn btn-primary\">Start Race</button>
+            <button id=\"stopBtn\" onclick=\"stopRace()\" class=\"btn btn-secondary\">Stop Race</button>
+            <button id=\"clearBtn\" onclick=\"clearLaps()\" class=\"btn btn-danger\">Clear Laps</button>
         </div>
         
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-number" id="lapCount">0</div>
-                <div class="stat-label">Total Laps</div>
+        <div class=\"stats\">
+            <div class=\"stat-card\">
+                <div class=\"stat-number\" id=\"lapCount\">0</div>
+                <div class=\"stat-label\">Total Laps</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-number" id="bestLap">--:--</div>
-                <div class="stat-label">Best Lap</div>
+            <div class=\"stat-card\">
+                <div class=\"stat-number\" id=\"bestLap\">--:--</div>
+                <div class=\"stat-label\">Best Lap</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-number" id="lastLap">--:--</div>
-                <div class="stat-label">Last Lap</div>
+            <div class=\"stat-card\">
+                <div class=\"stat-number\" id=\"lastLap\">--:--</div>
+                <div class=\"stat-label\">Last Lap</div>
             </div>
         </div>
         
-        <div class="laps-section">
+        <div class=\"laps-section\">
             <h2>Lap Times</h2>
-            <div id="laps" class="laps-container">
-                <p class="no-laps">No laps recorded yet</p>
+            <div id=\"laps\" class=\"laps-container\">
+                <p class=\"no-laps\">No laps recorded yet</p>
             </div>
         </div>
     </div>

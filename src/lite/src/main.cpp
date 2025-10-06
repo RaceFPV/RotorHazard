@@ -18,6 +18,10 @@ enum OperationMode {
 OperationMode current_mode;
 bool mode_initialized = false;
 
+// Function declarations
+void checkModeSwitch();
+void initializeMode();
+
 void setup() {
   Serial.begin(UART_BAUD_RATE);
   
@@ -26,11 +30,12 @@ void setup() {
   delay(2000); // Give time for USB serial to connect
   #endif
   
-  DEBUG_PRINTLN("=== RotorHazard Lite ESP32 Timer ===");
+  DEBUG_PRINTLN("=== RotorHazard Lite ESP32-C3 Timer ===");
   DEBUG_PRINTLN("Version: 1.0.0");
+  DEBUG_PRINTLN("Single-core RISC-V processor");
   
-  // Initialize mode selection pin
-  pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
+  // Initialize mode selection pin (GND=Node, 3.3V=WiFi)
+  pinMode(MODE_SWITCH_PIN, INPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
   
   // Brief startup flash
@@ -54,7 +59,7 @@ void loop() {
   // Check for mode changes
   checkModeSwitch();
   
-  // Always process core timing
+  // Always process core timing (now handled by FreeRTOS task)
   timing.process();
   
   // Process mode-specific functions
@@ -64,8 +69,8 @@ void loop() {
     node.process();
   }
   
-  // Brief yield to prevent watchdog issues
-  yield();
+  // Brief yield to prevent watchdog issues (ESP32-C3 single core)
+  vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 void checkModeSwitch() {
@@ -106,7 +111,7 @@ void initializeMode() {
     
     // Shutdown node mode if it was running
     if (mode_initialized) {
-      node.end();
+      // Node mode doesn't need explicit shutdown
     }
     
     // Initialize standalone mode
@@ -116,13 +121,14 @@ void initializeMode() {
     DEBUG_PRINTLN("=== WIFI/LITE MODE ACTIVE ===");
     DEBUG_PRINTLN("Connect to WiFi: RaceTimer-XXXX");
     DEBUG_PRINTLN("Web interface: http://192.168.4.1");
+    DEBUG_PRINTLN("ESP32-C3 Single-core operation");
     
   } else {
     DEBUG_PRINTLN("ROTORHAZARD NODE");
     
     // Shutdown standalone mode if it was running  
     if (mode_initialized) {
-      standalone.end();
+      // Standalone mode doesn't need explicit shutdown
     }
     
     // Initialize node mode
@@ -134,6 +140,7 @@ void initializeMode() {
     DEBUG_PRINT("UART: ");
     DEBUG_PRINT(UART_BAUD_RATE);
     DEBUG_PRINTLN(" baud");
+    DEBUG_PRINTLN("ESP32-C3 Single-core operation");
   }
   
   mode_initialized = true;

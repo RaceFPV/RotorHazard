@@ -20,6 +20,10 @@ TimingCore::TimingCore() {
   lap_read_index = 0;
   sample_index = 0;
   samples_filled = false;
+  
+  // Initialize FreeRTOS objects
+  timing_task_handle = nullptr;
+  timing_mutex = xSemaphoreCreateMutex();
 }
 
 void TimingCore::begin() {
@@ -40,6 +44,9 @@ void TimingCore::begin() {
     rssi_samples[i] = analogRead(RSSI_INPUT_PIN) >> 4; // Convert 12-bit to 8-bit
   }
   
+  // Create timing task for ESP32-C3 single core
+  xTaskCreate(timingTask, "TimingTask", 4096, this, 2, &timing_task_handle);
+  
   // Mark as activated
   state.activated = true;
   
@@ -47,55 +54,80 @@ void TimingCore::begin() {
 }
 
 void TimingCore::process() {
+  // For ESP32-C3, timing is handled by the dedicated task
+  // This method is kept for compatibility but does minimal work
   if (!state.activated) {
     return;
   }
   
-  static uint32_t last_process_time = 0;
-  uint32_t current_time = millis();
+  // Just yield to allow other tasks to run
+  vTaskDelay(pdMS_TO_TICKS(1));
+}
+
+// FreeRTOS task for timing processing (ESP32-C3 single core)
+void TimingCore::timingTask(void* parameter) {
+  TimingCore* core = static_cast<TimingCore*>(parameter);
   
-  // Limit processing to configured interval
-  if (current_time - last_process_time < TIMING_INTERVAL_MS) {
-    return;
-  }
-  
-  // Read and filter RSSI
-  uint8_t raw_rssi = readRawRSSI();
-  uint8_t filtered_rssi = filterRSSI(raw_rssi);
-  state.current_rssi = filtered_rssi;
-  
-  // Update peak tracking
-  if (filtered_rssi > state.peak_rssi) {
-    state.peak_rssi = filtered_rssi;
-  }
-  
-  // Detect crossing events
-  bool crossing_detected = detectCrossing(filtered_rssi);
-  
-  // Handle crossing state changes
-  if (crossing_detected != state.crossing_active) {
-    state.crossing_active = crossing_detected;
+  while (true) {
+    if (!core->state.activated) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
     
-    if (crossing_detected) {
-      // Starting a crossing
-      state.crossing_start = current_time;
-      TIMING_PRINTLN("Crossing started");
-    } else {
-      // Ending a crossing - record lap
-      uint32_t crossing_duration = current_time - state.crossing_start;
-      if (crossing_duration > 100) { // Minimum 100ms crossing to avoid noise
-        recordLap(current_time, state.peak_rssi);
+    static uint32_t last_process_time = 0;
+    uint32_t current_time = millis();
+    
+    // Limit processing to configured interval
+    if (current_time - last_process_time < TIMING_INTERVAL_MS) {
+      vTaskDelay(pdMS_TO_TICKS(1));
+      continue;
+    }
+    
+    // Take mutex for thread safety
+    if (xSemaphoreTake(core->timing_mutex, portMAX_DELAY)) {
+      // Read and filter RSSI
+      uint8_t raw_rssi = core->readRawRSSI();
+      uint8_t filtered_rssi = core->filterRSSI(raw_rssi);
+      core->state.current_rssi = filtered_rssi;
+      
+      // Update peak tracking
+      if (filtered_rssi > core->state.peak_rssi) {
+        core->state.peak_rssi = filtered_rssi;
       }
-      TIMING_PRINTLN("Crossing ended");
+      
+      // Detect crossing events
+      bool crossing_detected = core->detectCrossing(filtered_rssi);
+      
+      // Handle crossing state changes
+      if (crossing_detected != core->state.crossing_active) {
+        core->state.crossing_active = crossing_detected;
+        
+        if (crossing_detected) {
+          // Starting a crossing
+          core->state.crossing_start = current_time;
+          TIMING_PRINTLN("Crossing started");
+        } else {
+          // Ending a crossing - record lap
+          uint32_t crossing_duration = current_time - core->state.crossing_start;
+          if (crossing_duration > 100) { // Minimum 100ms crossing to avoid noise
+            core->recordLap(current_time, core->state.peak_rssi);
+          }
+          TIMING_PRINTLN("Crossing ended");
+        }
+        
+        // Notify callback if registered  
+        if (core->crossing_callback) {
+          core->crossing_callback(core->state.crossing_active, filtered_rssi);
+        }
+      }
+      
+      last_process_time = current_time;
+      xSemaphoreGive(core->timing_mutex);
     }
     
-    // Notify callback if registered  
-    if (crossing_callback) {
-      crossing_callback(state.crossing_active, filtered_rssi);
-    }
+    // Small delay to prevent task from consuming all CPU
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
-  
-  last_process_time = current_time;
 }
 
 uint8_t TimingCore::readRawRSSI() {
@@ -225,35 +257,47 @@ void TimingCore::sendRX5808Bits(uint16_t data, uint8_t bit_count) {
   delayMicroseconds(1);
 }
 
-// Public interface methods
+// Public interface methods (thread-safe for ESP32-C3)
 void TimingCore::setFrequency(uint16_t freq_mhz) {
-  setRX5808Frequency(freq_mhz);
+  if (xSemaphoreTake(timing_mutex, portMAX_DELAY)) {
+    setRX5808Frequency(freq_mhz);
+    xSemaphoreGive(timing_mutex);
+  }
 }
 
 void TimingCore::setThreshold(uint8_t threshold) {
-  state.threshold = threshold;
-  DEBUG_PRINT("Threshold set to: ");
-  DEBUG_PRINTLN(threshold);
+  if (xSemaphoreTake(timing_mutex, portMAX_DELAY)) {
+    state.threshold = threshold;
+    DEBUG_PRINT("Threshold set to: ");
+    DEBUG_PRINTLN(threshold);
+    xSemaphoreGive(timing_mutex);
+  }
 }
 
 void TimingCore::setActivated(bool active) {
-  state.activated = active;
-  DEBUG_PRINT("Timing ");
-  DEBUG_PRINTLN(active ? "activated" : "deactivated");
+  if (xSemaphoreTake(timing_mutex, portMAX_DELAY)) {
+    state.activated = active;
+    DEBUG_PRINT("Timing ");
+    DEBUG_PRINTLN(active ? "activated" : "deactivated");
+    xSemaphoreGive(timing_mutex);
+  }
 }
 
 void TimingCore::reset() {
-  state.lap_count = 0;
-  state.last_lap_time = 0;
-  state.peak_rssi = 0;
-  state.crossing_active = false;
-  
-  // Clear lap buffer
-  memset(lap_buffer, 0, sizeof(lap_buffer));
-  lap_write_index = 0;
-  lap_read_index = 0;
-  
-  DEBUG_PRINTLN("Timing reset");
+  if (xSemaphoreTake(timing_mutex, portMAX_DELAY)) {
+    state.lap_count = 0;
+    state.last_lap_time = 0;
+    state.peak_rssi = 0;
+    state.crossing_active = false;
+    
+    // Clear lap buffer
+    memset(lap_buffer, 0, sizeof(lap_buffer));
+    lap_write_index = 0;
+    lap_read_index = 0;
+    
+    DEBUG_PRINTLN("Timing reset");
+    xSemaphoreGive(timing_mutex);
+  }
 }
 
 bool TimingCore::hasNewLap() {

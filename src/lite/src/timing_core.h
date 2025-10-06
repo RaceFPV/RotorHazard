@@ -38,6 +38,10 @@ private:
   uint8_t sample_index;
   bool samples_filled;
   
+  // FreeRTOS task handle for ESP32-C3 single core
+  TaskHandle_t timing_task_handle;
+  SemaphoreHandle_t timing_mutex;
+  
   // RX5808 control
   void setupRX5808();
   void setRX5808Frequency(uint16_t freq_mhz);
@@ -50,6 +54,9 @@ private:
   
   // Lap processing
   void recordLap(uint32_t timestamp, uint8_t peak_rssi);
+  
+  // FreeRTOS task function
+  static void timingTask(void* parameter);
   
 public:
   TimingCore();

@@ -9,8 +9,7 @@ extern const char *firmwareBuildDateString;
 extern const char *firmwareBuildTimeString;
 extern const char *firmwareProcTypeString;
 
-// Message buffer for serial communication
-Message serialMessage;
+// Message buffer for serial communication (will be defined later)
 
 // Settings flags (from commands.cpp)
 uint8_t settingChangedFlags = 0;
@@ -124,6 +123,9 @@ struct Message {
     void handleWriteCommand(bool serialFlag);
     void handleReadCommand(bool serialFlag);
 };
+
+// Message buffer for serial communication
+Message serialMessage;
 
 NodeMode::NodeMode() : _timingCore(nullptr) {
 }
@@ -375,7 +377,7 @@ void Message::handleReadCommand(bool serialFlag) {
             
         case READ_FW_PROCTYPE:
             {
-                const char* proctype = "ESP32";
+                const char* proctype = "ESP32-C3";
                 uint8_t len = strlen(proctype);
                 buffer.write8(len);
                 for (int i = 0; i < len; i++) {
@@ -404,7 +406,7 @@ void Message::handleReadCommand(bool serialFlag) {
 }
 
 // Global firmware version strings (for compatibility with RotorHazard server)
-const char *firmwareVersionString = "FIRMWARE_VERSION: ESP32_Lite_1.0.0";
+const char *firmwareVersionString = "FIRMWARE_VERSION: ESP32-C3_Lite_1.0.0";
 const char *firmwareBuildDateString = "FIRMWARE_BUILDDATE: " __DATE__;
 const char *firmwareBuildTimeString = "FIRMWARE_BUILDTIME: " __TIME__;
-const char *firmwareProcTypeString = "FIRMWARE_PROCTYPE: ESP32";
+const char *firmwareProcTypeString = "FIRMWARE_PROCTYPE: ESP32-C3";

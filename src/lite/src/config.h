@@ -1,22 +1,22 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// Hardware pin definitions
-#define RSSI_INPUT_PIN      36    // ADC1_0 - RSSI input from RX5808
-#define RX5808_DATA_PIN     23    // SPI MOSI to RX5808 module
-#define RX5808_CLK_PIN      18    // SPI SCK to RX5808 module  
-#define RX5808_SEL_PIN      5     // SPI CS to RX5808 module
-#define MODE_SWITCH_PIN     0     // Mode selection switch (boot button)
-#define STATUS_LED_PIN      2     // Built-in LED for status
+// Hardware pin definitions for ESP32-C3 SuperMini (Hertz-hunter compatible)
+#define RSSI_INPUT_PIN      3     // ADC1_CH3 - RSSI input from RX5808 (matches Hertz-hunter RSSI_PIN)
+#define RX5808_DATA_PIN     6     // SPI MOSI to RX5808 module (matches Hertz-hunter SPI_DATA_PIN)
+#define RX5808_CLK_PIN      4     // SPI SCK to RX5808 module (matches Hertz-hunter SPI_CLK_PIN)
+#define RX5808_SEL_PIN      7     // SPI CS to RX5808 module (matches Hertz-hunter SPI_LE_PIN)
+#define MODE_SWITCH_PIN     0     // Mode selection switch (GND=Node, 3.3V=WiFi)
+#define STATUS_LED_PIN      2     // Built-in LED for status (matches Hertz-hunter BUZZER_PIN)
 
 // UART pins for RotorHazard communication (built-in)
-#define UART_TX_PIN         1     // TX to Pi/PC
-#define UART_RX_PIN         3     // RX from Pi/PC
+#define UART_TX_PIN         21    // TX to Pi/PC (GPIO21 on C3)
+#define UART_RX_PIN         20    // RX from Pi/PC (GPIO20 on C3)
 #define UART_BAUD_RATE      115200
 
-// Mode selection
-#define WIFI_MODE           HIGH  // Switch up = WiFi/Standalone mode
-#define ROTORHAZARD_MODE    LOW   // Switch down = RotorHazard node mode
+// Mode selection (inverted for ESP32-C3)
+#define WIFI_MODE           HIGH  // 3.3V on switch pin = WiFi/Standalone mode
+#define ROTORHAZARD_MODE    LOW   // GND on switch pin = RotorHazard node mode
 
 // RX5808 frequency constants  
 #define MIN_FREQ            5645  // Minimum frequency (MHz)
