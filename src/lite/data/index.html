@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Race Timer</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏁 Race Timer</h1>
+            <div class="status" id="status">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- Control Panel -->
+            <section class="control-panel">
+                <div class="race-controls">
+                    <button id="startBtn" class="btn btn-primary" onclick="startRace()">Start Race</button>
+                    <button id="stopBtn" class="btn btn-secondary" onclick="stopRace()" disabled>Stop Race</button>
+                    <button id="resetBtn" class="btn btn-danger" onclick="resetRace()">Reset</button>
+                </div>
+                
+                <div class="settings">
+                    <div class="setting">
+                        <label for="frequency">Frequency (MHz):</label>
+                        <input type="number" id="frequency" min="5645" max="5945" step="1" value="5800" onchange="updateFrequency()">
+                    </div>
+                    
+                    <div class="setting">
+                        <label for="threshold">Threshold:</label>
+                        <input type="range" id="threshold" min="10" max="200" value="50" onchange="updateThreshold()">
+                        <span id="thresholdValue">50</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Current Status -->
+            <section class="current-status">
+                <div class="status-grid">
+                    <div class="status-item">
+                        <label>Current RSSI</label>
+                        <div class="value" id="currentRssi">0</div>
+                    </div>
+                    
+                    <div class="status-item">
+                        <label>Peak RSSI</label>
+                        <div class="value" id="peakRssi">0</div>
+                    </div>
+                    
+                    <div class="status-item">
+                        <label>Lap Count</label>
+                        <div class="value" id="lapCount">0</div>
+                    </div>
+                    
+                    <div class="status-item">
+                        <label>Last Lap</label>
+                        <div class="value" id="lastLap">--:--</div>
+                    </div>
+                </div>
+                
+                <div class="rssi-bar">
+                    <label>RSSI Level</label>
+                    <div class="rssi-container">
+                        <div class="rssi-fill" id="rssiFill"></div>
+                        <div class="threshold-line" id="thresholdLine"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Lap Times -->
+            <section class="lap-times">
+                <h2>Lap Times</h2>
+                <div class="lap-list" id="lapList">
+                    <div class="no-laps">No laps recorded yet</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
