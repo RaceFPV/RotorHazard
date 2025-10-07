@@ -71,13 +71,13 @@ public:
   void setThreshold(uint8_t threshold);
   void setActivated(bool active);
   
-  // State access
-  TimingState getState() const { return state; }
-  uint8_t getCurrentRSSI() const { return state.current_rssi; }
-  uint8_t getPeakRSSI() const { return state.peak_rssi; }
-  uint16_t getLapCount() const { return state.lap_count; }
-  bool isActivated() const { return state.activated; }
-  bool isCrossing() const { return state.crossing_active; }
+  // State access (thread-safe)
+  TimingState getState() const;
+  uint8_t getCurrentRSSI() const;
+  uint8_t getPeakRSSI() const;
+  uint16_t getLapCount() const;
+  bool isActivated() const;
+  bool isCrossing() const;
   
   // Lap data access
   bool hasNewLap();

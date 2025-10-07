@@ -78,108 +78,84 @@ void StandaloneMode::setupWiFiAP() {
 }
 
 void StandaloneMode::handleRoot() {
-    String html = R"(
-<!DOCTYPE html>
-<html>
-<head>
-    <title>RotorHazard Lite Race Timer</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/style.css">
-</head>
-<body>
-    <div class=\"container\">
-        <h1>RotorHazard Lite Race Timer</h1>
-        <div id=\"status\" class=\"status\">Status: Ready</div>
-        
-        <div class=\"config-section\">
-            <h3>Configuration</h3>
-            <div class=\"config-row\">
-                <div class=\"config-item\">
-                    <label for=\"bandSelect\">FPV Band:</label>
-                    <select id=\"bandSelect\" onchange=\"updateChannels()\">
-                        <option value=\"Raceband\">Raceband</option>
-                        <option value=\"Fatshark\">Fatshark</option>
-                        <option value=\"Boscam_A\">Boscam A</option>
-                        <option value=\"Boscam_E\">Boscam E</option>
-                    </select>
-                </div>
-                <div class=\"config-item\">
-                    <label for=\"channelSelect\">Channel:</label>
-                    <select id=\"channelSelect\" onchange=\"setFrequency()\">
-                        <option value=\"5658\">R1 (5658 MHz)</option>
-                        <option value=\"5695\">R2 (5695 MHz)</option>
-                        <option value=\"5732\">R3 (5732 MHz)</option>
-                        <option value=\"5769\">R4 (5769 MHz)</option>
-                        <option value=\"5806\">R5 (5806 MHz)</option>
-                        <option value=\"5843\">R6 (5843 MHz)</option>
-                        <option value=\"5880\">R7 (5880 MHz)</option>
-                        <option value=\"5917\">R8 (5917 MHz)</option>
-                    </select>
-                </div>
-            </div>
-            <div class=\"config-row\">
-                <div class=\"config-item\">
-                    <label for=\"thresholdSlider\">RSSI Threshold:</label>
-                    <input type=\"range\" id=\"thresholdSlider\" min=\"20\" max=\"200\" value=\"50\" oninput=\"updateThreshold(this.value)\">
-                    <span id=\"thresholdValue\">50</span>
-                </div>
-                <div class=\"config-item rssi-display\">
-                    <label>Current RSSI:</label>
-                    <span id=\"currentRSSI\" class=\"rssi-value\">0</span>
-                    <div id=\"rssiBar\" class=\"rssi-bar\">
-                        <div id=\"rssiLevel\" class=\"rssi-level\"></div>
-                        <div id=\"thresholdLine\" class=\"threshold-line\"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class=\"controls\">
-            <button id=\"startBtn\" onclick=\"startRace()\" class=\"btn btn-primary\">Start Race</button>
-            <button id=\"stopBtn\" onclick=\"stopRace()\" class=\"btn btn-secondary\">Stop Race</button>
-            <button id=\"clearBtn\" onclick=\"clearLaps()\" class=\"btn btn-danger\">Clear Laps</button>
-        </div>
-        
-        <div class=\"stats\">
-            <div class=\"stat-card\">
-                <div class=\"stat-number\" id=\"lapCount\">0</div>
-                <div class=\"stat-label\">Total Laps</div>
-            </div>
-            <div class=\"stat-card\">
-                <div class=\"stat-number\" id=\"bestLap\">--:--</div>
-                <div class=\"stat-label\">Best Lap</div>
-            </div>
-            <div class=\"stat-card\">
-                <div class=\"stat-number\" id=\"lastLap\">--:--</div>
-                <div class=\"stat-label\">Last Lap</div>
-            </div>
-        </div>
-        
-        <div class=\"laps-section\">
-            <h2>Lap Times</h2>
-            <div id=\"laps\" class=\"laps-container\">
-                <p class=\"no-laps\">No laps recorded yet</p>
-            </div>
-        </div>
-    </div>
-    <script src="/app.js"></script>
-</body>
-</html>
-)";
+    Serial.println("[DEBUG] Serving root HTML page");
+    
+    // Add cache control headers to prevent caching issues
+    _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    _server.sendHeader("Pragma", "no-cache");
+    _server.sendHeader("Expires", "0");
+    
+    String html = "<!DOCTYPE html><html><head><title>RotorHazard Lite Race Timer</title>"
+                  "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                  "<link rel=\"stylesheet\" href=\"/style.css\"></head><body>"
+                  "<div class=\"container\"><h1>RotorHazard Lite Race Timer</h1>"
+                  "<div id=\"status\" class=\"status\">Status: Ready</div>"
+                  "<div class=\"config-section\"><h3>Configuration</h3>"
+                  "<div class=\"config-row\"><div class=\"config-item\">"
+                  "<label for=\"bandSelect\">FPV Band:</label>"
+                  "<select id=\"bandSelect\" onchange=\"updateChannels()\">"
+                  "<option value=\"Raceband\">Raceband</option>"
+                  "<option value=\"Fatshark\">Fatshark</option>"
+                  "<option value=\"Boscam_A\">Boscam A</option>"
+                  "<option value=\"Boscam_E\">Boscam E</option></select></div>"
+                  "<div class=\"config-item\"><label for=\"channelSelect\">Channel:</label>"
+                  "<select id=\"channelSelect\" onchange=\"setFrequency()\">"
+                  "<option value=\"5658\">R1 (5658 MHz)</option>"
+                  "<option value=\"5695\">R2 (5695 MHz)</option>"
+                  "<option value=\"5732\">R3 (5732 MHz)</option>"
+                  "<option value=\"5769\">R4 (5769 MHz)</option>"
+                  "<option value=\"5806\">R5 (5806 MHz)</option>"
+                  "<option value=\"5843\">R6 (5843 MHz)</option>"
+                  "<option value=\"5880\">R7 (5880 MHz)</option>"
+                  "<option value=\"5917\">R8 (5917 MHz)</option></select></div></div>"
+                  "<div class=\"config-row\"><div class=\"config-item\">"
+                  "<label for=\"thresholdSlider\">RSSI Threshold:</label>"
+                  "<input type=\"range\" id=\"thresholdSlider\" min=\"20\" max=\"200\" value=\"50\" oninput=\"updateThreshold(this.value)\">"
+                  "<span id=\"thresholdValue\">50</span></div>"
+                  "<div class=\"config-item rssi-display\"><label>Current RSSI:</label>"
+                  "<span id=\"currentRSSI\" class=\"rssi-value\">0</span>"
+                  "<div id=\"rssiBar\" class=\"rssi-bar\">"
+                  "<div id=\"rssiLevel\" class=\"rssi-level\"></div>"
+                  "<div id=\"thresholdLine\" class=\"threshold-line\"></div></div></div></div></div>"
+                  "<div class=\"controls\">"
+                  "<button id=\"startBtn\" onclick=\"startRace()\" class=\"btn btn-primary\">Start Race</button>"
+                  "<button id=\"stopBtn\" onclick=\"stopRace()\" class=\"btn btn-secondary\">Stop Race</button>"
+                  "<button id=\"clearBtn\" onclick=\"clearLaps()\" class=\"btn btn-danger\">Clear Laps</button></div>"
+                  "<div class=\"stats\"><div class=\"stat-card\">"
+                  "<div class=\"stat-number\" id=\"lapCount\">0</div>"
+                  "<div class=\"stat-label\">Total Laps</div></div>"
+                  "<div class=\"stat-card\"><div class=\"stat-number\" id=\"bestLap\">--:--</div>"
+                  "<div class=\"stat-label\">Best Lap</div></div>"
+                  "<div class=\"stat-card\"><div class=\"stat-number\" id=\"lastLap\">--:--</div>"
+                  "<div class=\"stat-label\">Last Lap</div></div></div>"
+                  "<div class=\"laps-section\"><h2>Lap Times</h2>"
+                  "<div id=\"laps\" class=\"laps-container\">"
+                  "<p class=\"no-laps\">No laps recorded yet</p></div></div></div>"
+                  "<script src=\"/app.js?v=4\"></script></body></html>";
     _server.send(200, "text/html", html);
 }
 
 void StandaloneMode::handleGetStatus() {
+    uint8_t current_rssi = _timingCore ? _timingCore->getCurrentRSSI() : 0;
+    uint16_t frequency = _timingCore ? _timingCore->getState().frequency_mhz : 5800;
+    uint8_t threshold = _timingCore ? _timingCore->getState().threshold : 50;
+    bool crossing = _timingCore ? _timingCore->isCrossing() : false;
+    
+    // Debug output to see what values we're getting
+    Serial.printf("[API] RSSI: %d, Freq: %d, Threshold: %d, Crossing: %s\n", 
+                  current_rssi, frequency, threshold, crossing ? "true" : "false");
+    
     String json = "{";
     json += "\"status\":\"" + String(_raceActive ? "racing" : "ready") + "\",";
     json += "\"lap_count\":" + String(_laps.size()) + ",";
     json += "\"uptime\":" + String(millis()) + ",";
-    json += "\"rssi\":" + String(_timingCore ? _timingCore->getCurrentRSSI() : 0) + ",";
-    json += "\"frequency\":" + String(_timingCore ? _timingCore->getState().frequency_mhz : 5800) + ",";
-    json += "\"threshold\":" + String(_timingCore ? _timingCore->getState().threshold : 50) + ",";
-    json += "\"crossing\":" + String(_timingCore ? (_timingCore->isCrossing() ? "true" : "false") : "false");
+    json += "\"rssi\":" + String(current_rssi) + ",";
+    json += "\"frequency\":" + String(frequency) + ",";
+    json += "\"threshold\":" + String(threshold) + ",";
+    json += "\"crossing\":" + String(crossing ? "true" : "false");
     json += "}";
     
+    Serial.printf("[API] JSON Response: %s\n", json.c_str());
     _server.send(200, "application/json", json);
 }
 
@@ -501,12 +477,34 @@ h1 {
 }
 
 void StandaloneMode::handleAppJS() {
+    Serial.println("[DEBUG] Serving app.js file");
+    
+    // Add cache control headers to prevent caching issues
+    _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    _server.sendHeader("Pragma", "no-cache");
+    _server.sendHeader("Expires", "0");
+    
     String js = R"(
+console.log('=== JavaScript file loading ===');
+console.log('Document ready state:', document.readyState);
+console.log('Document body:', document.body);
+console.log('All elements with ID:', document.querySelectorAll('[id]'));
+
 let raceActive = false;
 let updateInterval;
 let channelData = {};
 
+console.log('=== Setting up DOMContentLoaded listener ===');
+
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('=== DOM CONTENT LOADED EVENT FIRED ===');
+    console.log('DOM loaded, checking for elements...');
+    console.log('currentRSSI element:', document.getElementById('currentRSSI'));
+    console.log('status element:', document.getElementById('status'));
+    console.log('rssiLevel element:', document.getElementById('rssiLevel'));
+    console.log('thresholdSlider element:', document.getElementById('thresholdSlider'));
+    console.log('All elements in document:', document.querySelectorAll('*').length);
+    
     // Initialize with default Raceband channels (already in HTML)
     updateData();
     startPeriodicUpdates();
@@ -514,6 +512,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set initial frequency
     setFrequency();
 });
+
+console.log('=== JavaScript file loaded completely ===');
 
 async function loadChannelData() {
     try {
@@ -647,47 +647,69 @@ async function updateData() {
         const statusResponse = await fetch('/api/status');
         const status = await statusResponse.json();
         
+        console.log('API Response:', status); // Debug output
+        
         // Update RSSI display first
         const currentRSSI = status.rssi || 0;
         const rssiElement = document.getElementById('currentRSSI');
-        rssiElement.textContent = currentRSSI;
+        
+        if (rssiElement) {
+            rssiElement.textContent = currentRSSI;
+            console.log('Updated RSSI display to:', currentRSSI); // Debug output
+        } else {
+            console.error('Could not find currentRSSI element!');
+        }
         
         // Update status text with more detailed info
         const crossingStatus = status.crossing ? ' | CROSSING!' : '';
         const statusText = `Status: ${status.status} | Freq: ${status.frequency} MHz | Threshold: ${status.threshold} | RSSI: ${currentRSSI}${crossingStatus}`;
         const statusElement = document.getElementById('status');
-        statusElement.textContent = statusText;
+        
+        if (statusElement) {
+            statusElement.textContent = statusText;
+        } else {
+            console.error('Could not find status element!');
+        }
         
         // Add visual feedback for crossing state
-        if (status.crossing) {
-            statusElement.style.borderLeft = '4px solid #dc3545';
-            statusElement.style.backgroundColor = '#f8d7da';
-        } else {
-            statusElement.style.borderLeft = '4px solid #007bff';
-            statusElement.style.backgroundColor = '#f8f9fa';
+        if (statusElement) {
+            if (status.crossing) {
+                statusElement.style.borderLeft = '4px solid #dc3545';
+                statusElement.style.backgroundColor = '#f8d7da';
+            } else {
+                statusElement.style.borderLeft = '4px solid #007bff';
+                statusElement.style.backgroundColor = '#f8f9fa';
+            }
         }
         
         // Add visual feedback when RSSI is above threshold
-        if (currentRSSI > status.threshold) {
-            rssiElement.style.color = '#dc3545'; // Red when above threshold
-            rssiElement.style.fontWeight = 'bold';
-        } else {
-            rssiElement.style.color = '#007bff'; // Blue when below threshold
-            rssiElement.style.fontWeight = '700';
+        if (rssiElement) {
+            if (currentRSSI > status.threshold) {
+                rssiElement.style.color = '#dc3545'; // Red when above threshold
+                rssiElement.style.fontWeight = 'bold';
+            } else {
+                rssiElement.style.color = '#007bff'; // Blue when below threshold
+                rssiElement.style.fontWeight = '700';
+            }
         }
         
         // Update RSSI bar (0-255 -> 0-100%)
         const rssiLevel = document.getElementById('rssiLevel');
         const rssiPercentage = (currentRSSI / 255) * 100;
-        rssiLevel.style.width = rssiPercentage + '%';
         
-        // Change RSSI bar color based on level
-        if (rssiPercentage < 20) {
-            rssiLevel.style.background = '#28a745'; // Green for low
-        } else if (rssiPercentage < 60) {
-            rssiLevel.style.background = 'linear-gradient(to right, #28a745, #ffc107)'; // Green to yellow
+        if (rssiLevel) {
+            rssiLevel.style.width = rssiPercentage + '%';
+            
+            // Change RSSI bar color based on level
+            if (rssiPercentage < 20) {
+                rssiLevel.style.background = '#28a745'; // Green for low
+            } else if (rssiPercentage < 60) {
+                rssiLevel.style.background = 'linear-gradient(to right, #28a745, #ffc107)'; // Green to yellow
+            } else {
+                rssiLevel.style.background = 'linear-gradient(to right, #ffc107, #dc3545)'; // Yellow to red
+            }
         } else {
-            rssiLevel.style.background = 'linear-gradient(to right, #ffc107, #dc3545)'; // Yellow to red
+            console.error('Could not find rssiLevel element!');
         }
         
         // Update threshold slider if it doesn't match

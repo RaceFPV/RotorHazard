@@ -76,11 +76,11 @@ pio run -e esp32-c3-supermini --target upload --upload-port /dev/cu.usbmodemXXXX
 
 ## Step 6: Monitor Serial Output
 
-To see the firmware running and debug output, use the built-in `screen` command:
+To see the firmware running and debug output, use the pio monitor command:
 
 ```bash
 # Connect to your ESP32-C3 (replace XXXX with your device number)
-pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200
+pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200 --environment esp32-c3-supermini
 ```
 
 **To exit**: Press `Ctrl+C`

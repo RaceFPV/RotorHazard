@@ -346,3 +346,61 @@ LapData TimingCore::getLastLap() {
 uint8_t TimingCore::getAvailableLaps() {
   return (lap_write_index - lap_read_index + MAX_LAPS_STORED) % MAX_LAPS_STORED;
 }
+
+// Thread-safe state access methods
+TimingState TimingCore::getState() const {
+  TimingState current_state;
+  if (xSemaphoreTake(timing_mutex, pdMS_TO_TICKS(10))) {
+    current_state = state;
+    xSemaphoreGive(timing_mutex);
+  } else {
+    // If we can't get the mutex quickly, return a zeroed state
+    memset(&current_state, 0, sizeof(current_state));
+  }
+  return current_state;
+}
+
+uint8_t TimingCore::getCurrentRSSI() const {
+  uint8_t rssi = 0;
+  if (xSemaphoreTake(timing_mutex, pdMS_TO_TICKS(10))) {
+    rssi = state.current_rssi;
+    xSemaphoreGive(timing_mutex);
+  }
+  return rssi;
+}
+
+uint8_t TimingCore::getPeakRSSI() const {
+  uint8_t peak = 0;
+  if (xSemaphoreTake(timing_mutex, pdMS_TO_TICKS(10))) {
+    peak = state.peak_rssi;
+    xSemaphoreGive(timing_mutex);
+  }
+  return peak;
+}
+
+uint16_t TimingCore::getLapCount() const {
+  uint16_t count = 0;
+  if (xSemaphoreTake(timing_mutex, pdMS_TO_TICKS(10))) {
+    count = state.lap_count;
+    xSemaphoreGive(timing_mutex);
+  }
+  return count;
+}
+
+bool TimingCore::isActivated() const {
+  bool activated = false;
+  if (xSemaphoreTake(timing_mutex, pdMS_TO_TICKS(10))) {
+    activated = state.activated;
+    xSemaphoreGive(timing_mutex);
+  }
+  return activated;
+}
+
+bool TimingCore::isCrossing() const {
+  bool crossing = false;
+  if (xSemaphoreTake(timing_mutex, pdMS_TO_TICKS(10))) {
+    crossing = state.crossing_active;
+    xSemaphoreGive(timing_mutex);
+  }
+  return crossing;
+}
