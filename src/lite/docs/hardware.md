@@ -21,15 +21,12 @@ GPIO 7       | SEL          | SPI chip select (LE pin)      | SPI_LE_PIN
 GND          | GND          | Ground                        | -
 ```
 
-**Note**: This pinout is 100% compatible with Hertz-hunter boards! You can use the same PCB/wiring.
-
 ### Additional Hertz-hunter Pins (Not Used by RotorHazard Lite)
 ```
 ESP32-C3 Pin | Hertz-hunter | Description
 -------------|--------------|-------------
 GPIO 21      | PREVIOUS_BUTTON_PIN | Previous button (not used)
 GPIO 20      | SELECT_BUTTON_PIN   | Select button (not used)  
-GPIO 10      | NEXT_BUTTON_PIN     | Next button (not used)
 GPIO 0       | BATTERY_PIN         | Battery monitoring (not used)
 ```
 
@@ -39,7 +36,7 @@ These pins are available for future expansion or can be left unconnected.
 ```
 ESP32-C3 Pin | Switch       | Description
 -------------|--------------|-------------
-GPIO 0       | Common       | Mode selection
+GPIO 10      | Common       | Mode selection
 Nothing      | Default      | RotorHazard node mode (floating)
 GND          | Position 1   | RotorHazard node mode
 3.3V         | Position 2   | WiFi standalone mode
@@ -49,6 +46,8 @@ GND          | Position 1   | RotorHazard node mode
 - **Nothing connected** (floating) = RotorHazard node mode (default)
 - **GND connected** = RotorHazard node mode  
 - **3.3V connected** = WiFi standalone mode
+
+**Note**: GPIO 0 is reserved for battery monitoring in Hertz-hunter compatibility, so we use GPIO 10 for the mode switch.
 
 ## PCB Design Considerations
 

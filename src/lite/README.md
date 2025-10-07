@@ -7,21 +7,21 @@ A dual-mode ESP32-C3-based race timer that works as both:
 ## Quick Start
 
 ### Standalone Mode (WiFi)
-1. Connect GPIO 0 to 3.3V (or leave floating for default)
+1. Connect GPIO 10 to 3.3V (or leave floating for default)
 2. Power on ESP32-C3
-3. Connect to WiFi network "RaceTimer-XXXX"
+3. Connect to WiFi network "rh-lite-XXXX"
 4. Open browser to http://192.168.4.1
 5. Start timing!
 
 ### RotorHazard Node Mode (USB)
-1. Leave GPIO 0 floating (default) or connect to GND
+1. Leave GPIO 10 floating (default) or connect to GND
 2. Connect ESP32-C3 to PC/Pi via USB
 3. Add as timing node in RotorHazard server
 4. Full RotorHazard features available!
 
 ## Hardware Requirements
 
-- ESP32-C3 SuperMini development board (~$1.50 wholesale)
+- ESP32-C3 SuperMini development board 
 - RX5808 FPV receiver module
 - Mode selection switch (GND=Node, 3.3V=WiFi)
 
@@ -32,11 +32,9 @@ A dual-mode ESP32-C3-based race timer that works as both:
 #define RX5808_DATA_PIN     6     // SPI MOSI to RX5808 (Hertz-hunter SPI_DATA_PIN)
 #define RX5808_CLK_PIN      4     // SPI SCK to RX5808 (Hertz-hunter SPI_CLK_PIN)
 #define RX5808_SEL_PIN      7     // SPI CS to RX5808 (Hertz-hunter SPI_LE_PIN)
-#define MODE_SWITCH_PIN     0     // Mode selection switch
+#define MODE_SWITCH_PIN     10    // Mode selection switch
 #define STATUS_LED_PIN      2     // Status LED (Hertz-hunter BUZZER_PIN)
 ```
-
-**Compatibility**: This pinout matches Hertz-hunter exactly! You can use the same PCB/wiring.
 
 ## Building
 
