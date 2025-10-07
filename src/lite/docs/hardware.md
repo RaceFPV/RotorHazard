@@ -50,7 +50,7 @@ These pins are available for future expansion or can be left unconnected.
 ```
 ESP32-C3 Pin | Switch       | Description
 -------------|--------------|-------------
-GPIO 10      | Common       | Mode selection
+GPIO 1       | Common       | Mode selection
 Nothing      | Default      | RotorHazard node mode (floating)
 GND          | Position 1   | RotorHazard node mode
 3.3V         | Position 2   | WiFi standalone mode

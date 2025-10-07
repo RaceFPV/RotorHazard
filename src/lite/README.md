@@ -33,7 +33,7 @@ A dual-mode ESP32-C3-based race timer that works as both:
 #define RX5808_DATA_PIN     6     // SPI MOSI to RX5808 (Hertz-hunter SPI_DATA_PIN)
 #define RX5808_CLK_PIN      4     // SPI SCK to RX5808 (Hertz-hunter SPI_CLK_PIN)
 #define RX5808_SEL_PIN      7     // SPI CS to RX5808 (Hertz-hunter SPI_LE_PIN)
-#define MODE_SWITCH_PIN     10    // Mode selection switch
+#define MODE_SWITCH_PIN     1     // Mode selection switch
 #define STATUS_LED_PIN      2     // Status LED (Hertz-hunter BUZZER_PIN)
 #define DISPLAY_SDA_PIN     8     // I2C SDA for optional display
 #define DISPLAY_SCL_PIN     9     // I2C SCL for optional display

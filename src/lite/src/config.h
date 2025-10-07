@@ -6,7 +6,7 @@
 #define RX5808_DATA_PIN     6     // SPI MOSI to RX5808 module (matches Hertz-hunter SPI_DATA_PIN)
 #define RX5808_CLK_PIN      4     // SPI SCK to RX5808 module (matches Hertz-hunter SPI_CLK_PIN)
 #define RX5808_SEL_PIN      7     // SPI CS to RX5808 module (matches Hertz-hunter SPI_LE_PIN)
-#define MODE_SWITCH_PIN     10    // Mode selection switch (GND=Node, 3.3V=WiFi)
+#define MODE_SWITCH_PIN     1     // Mode selection switch (GND=Node, 3.3V=WiFi)
 #define STATUS_LED_PIN      2     // Built-in LED for status (matches Hertz-hunter BUZZER_PIN)
 
 // Display pins (Hertz-hunter compatible)
