@@ -9,6 +9,10 @@
 #define MODE_SWITCH_PIN     10    // Mode selection switch (GND=Node, 3.3V=WiFi)
 #define STATUS_LED_PIN      2     // Built-in LED for status (matches Hertz-hunter BUZZER_PIN)
 
+// Display pins (Hertz-hunter compatible)
+#define DISPLAY_SDA_PIN     8     // I2C SDA for optional display
+#define DISPLAY_SCL_PIN     9     // I2C SCL for optional display
+
 // Serial communication (USB CDC on ESP32-C3 SuperMini)
 // ESP32-C3 SuperMini uses USB CDC for communication with PC/RotorHazard
 // Note: USB CDC ignores baud rate (USB is packet-based), but we set it for compatibility

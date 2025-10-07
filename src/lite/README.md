@@ -35,6 +35,8 @@ A dual-mode ESP32-C3-based race timer that works as both:
 #define RX5808_SEL_PIN      7     // SPI CS to RX5808 (Hertz-hunter SPI_LE_PIN)
 #define MODE_SWITCH_PIN     10    // Mode selection switch
 #define STATUS_LED_PIN      2     // Status LED (Hertz-hunter BUZZER_PIN)
+#define DISPLAY_SDA_PIN     8     // I2C SDA for optional display
+#define DISPLAY_SCL_PIN     9     // I2C SCL for optional display
 ```
 
 ## Building
@@ -50,6 +52,7 @@ pio run -e esp32-c3-supermini --target upload
 - Web-based timing interface
 - Real-time lap display
 - Audio lap time announcements via browser speech synthesis
+- Optional Hertz-hunter display support
 - Data logging to flash memory
 - Mobile-friendly responsive design
 - 1-2 pilot support

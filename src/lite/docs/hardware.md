@@ -8,6 +8,10 @@
 - Mode selection switch (GND=Node mode, 3.3V=WiFi mode)
 - Basic wiring supplies
 
+### Optional Components
+- SSD1306 128x64 OLED display (Hertz-hunter compatible)
+- I2C pull-up resistors (4.7kΩ) for display
+
 ### Pin Connections (ESP32-C3 SuperMini - Hertz-hunter Compatible)
 
 ```
@@ -19,6 +23,16 @@ GPIO 4       | CLK          | SPI clock line                | SPI_CLK_PIN
 GPIO 7       | SEL          | SPI chip select (LE pin)      | SPI_LE_PIN
 3.3V         | VCC          | Power supply                  | -
 GND          | GND          | Ground                        | -
+```
+
+### Optional Display Pins (Hertz-hunter Compatible)
+```
+ESP32-C3 Pin | Display Pin  | Description
+-------------|--------------|-------------
+GPIO 8       | SDA          | I2C data line
+GPIO 9       | SCL          | I2C clock line
+3.3V         | VCC          | Power supply
+GND          | GND          | Ground
 ```
 
 ### Additional Hertz-hunter Pins (Not Used by RotorHazard Lite)
