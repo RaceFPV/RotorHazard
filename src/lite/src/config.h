@@ -32,8 +32,9 @@
 #define TIMING_INTERVAL_MS  1     // Core timing loop interval
 #define RSSI_SAMPLES        10    // Number of RSSI samples to average
 #define CROSSING_THRESHOLD  50    // Default RSSI threshold for crossing detection
-#define TIMING_PRIORITY     2     // FreeRTOS task priority (higher = more important)
-#define WEB_PRIORITY        1     // Web server priority (lower than timing)
+#define TIMING_PRIORITY     3     // FreeRTOS task priority (highest - most important)
+#define WEB_PRIORITY        2     // Web server priority (medium)
+#define DISPLAY_PRIORITY    1     // Display priority (lowest)
 
 // WiFi configuration
 #define WIFI_AP_SSID_PREFIX "rotorhazard"

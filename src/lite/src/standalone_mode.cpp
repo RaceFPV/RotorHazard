@@ -50,10 +50,14 @@ void StandaloneMode::begin(TimingCore* timingCore) {
     Serial.printf("IP address: %s\n", WiFi.softAPIP().toString().c_str());
     Serial.printf("mDNS hostname: %s.local\n", MDNS_HOSTNAME);
     Serial.println("Open browser to http://192.168.4.1 or http://rotorhazard.local");
+    
+    // Create dedicated web server task with priority between timing and display
+    xTaskCreate(webServerTask, "WebServer", 8192, this, WEB_PRIORITY, &_webTaskHandle);
+    Serial.println("Web server task created");
 }
 
 void StandaloneMode::process() {
-    _server.handleClient();
+    // Web server now runs in dedicated task - no need to handle here
     // mDNS handles requests automatically in background
     
     // Check for new lap data - only record during active race
@@ -1094,5 +1098,18 @@ void StandaloneMode::handleGetChannels() {
     json += "}}";
     
     _server.send(200, "application/json", json);
+}
+
+// Web server task - runs at WEB_PRIORITY (1) - between timing (2) and display (0)
+void StandaloneMode::webServerTask(void* parameter) {
+    StandaloneMode* mode = static_cast<StandaloneMode*>(parameter);
+    
+    while (true) {
+        // Handle web server requests
+        mode->_server.handleClient();
+        
+        // Small delay to prevent task from consuming all CPU
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 }
 

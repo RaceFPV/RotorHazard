@@ -25,6 +25,10 @@ private:
     
     // Display support
     DisplayManager _displayManager;
+    
+    // Web server task
+    TaskHandle_t _webTaskHandle;
+    static void webServerTask(void* parameter);
 
     void handleRoot();
     void handleGetStatus();

@@ -19,12 +19,10 @@ DisplayManager::DisplayManager()
 
 bool DisplayManager::begin() {
     // Display disabled to preserve timing core performance
-    _connected = false;
-    Serial.println("Display disabled to preserve timing performance");
-    return false;
+    //_connected = false;
+    //Serial.println("Display disabled to preserve timing performance");
+    //return false;
     
-    // Original code commented out due to performance impact on timing core
-    /*
     if (_display.begin()) {
         _connected = true;
         
@@ -42,7 +40,6 @@ bool DisplayManager::begin() {
         Serial.println("Display not connected or failed to initialize");
         return false;
     }
-    */
 }
 
 void DisplayManager::update() {
