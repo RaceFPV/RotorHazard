@@ -118,6 +118,24 @@ h1 {
     transform: translateY(-1px);
 }
 
+.btn-info {
+    background: #805ad5;
+    color: white;
+}
+
+.btn-info:hover:not(:disabled) {
+    background: #6b46c1;
+    transform: translateY(-1px);
+}
+
+.btn-info.active {
+    background: #38a169;
+}
+
+.btn-info.active:hover:not(:disabled) {
+    background: #2f855a;
+}
+
 .settings {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

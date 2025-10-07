@@ -11,7 +11,8 @@ A dual-mode ESP32-C3-based race timer that works as both:
 2. Power on ESP32-C3
 3. Connect to WiFi network "rotorhazard-XXXX"
 4. Open browser to http://rotorhazard.local (or http://192.168.4.1)
-5. Start timing!
+5. Enable audio announcements for FPV pilots (optional)
+6. Start timing!
 
 ### RotorHazard Node Mode (USB)
 1. Leave GPIO 10 floating (default) or connect to GND
@@ -48,6 +49,7 @@ pio run -e esp32-c3-supermini --target upload
 ### Standalone Mode
 - Web-based timing interface
 - Real-time lap display
+- Audio lap time announcements via browser speech synthesis
 - Data logging to flash memory
 - Mobile-friendly responsive design
 - 1-2 pilot support
@@ -63,5 +65,4 @@ pio run -e esp32-c3-supermini --target upload
 
 See `docs/` folder for detailed documentation:
 - `hardware.md` - PCB design and wiring
-- `building.md` - Compilation and flashing
-- `api.md` - Web API reference
+- `setup.md` - Setup and configuration guide

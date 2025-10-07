@@ -6,6 +6,8 @@ class RaceTimer {
         this.raceActive = false;
         this.laps = [];
         this.currentStatus = {};
+        this.audioEnabled = true;
+        this.speechSynthesis = window.speechSynthesis;
         
         this.initializeUI();
         this.connectWebSocket();
@@ -26,39 +28,41 @@ class RaceTimer {
     }
     
     connectWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
-        
-        console.log('Connecting to WebSocket:', wsUrl);
-        
-        this.socket = new WebSocket(wsUrl);
-        
-        this.socket.onopen = () => {
-            console.log('WebSocket connected');
-            this.setConnectionStatus(true);
-            this.requestInitialData();
-        };
-        
-        this.socket.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                this.handleMessage(data);
-            } catch (e) {
-                console.error('Error parsing WebSocket message:', e);
-            }
-        };
-        
-        this.socket.onclose = () => {
-            console.log('WebSocket disconnected');
+        // Use HTTP polling instead of WebSocket for standalone mode
+        this.setConnectionStatus(true);
+        this.startPolling();
+    }
+    
+    startPolling() {
+        // Poll for updates every 250ms
+        this.pollInterval = setInterval(() => {
+            this.updateData();
+        }, 250);
+    }
+    
+    stopPolling() {
+        if (this.pollInterval) {
+            clearInterval(this.pollInterval);
+            this.pollInterval = null;
+        }
+    }
+    
+    async updateData() {
+        try {
+            // Get status
+            const statusResponse = await fetch('/api/status');
+            const status = await statusResponse.json();
+            this.updateStatus(status);
+            
+            // Get laps
+            const lapsResponse = await fetch('/api/laps');
+            const laps = await lapsResponse.json();
+            this.updateLaps(laps);
+            
+        } catch (error) {
+            console.error('Error updating data:', error);
             this.setConnectionStatus(false);
-            // Attempt to reconnect after 3 seconds
-            setTimeout(() => this.connectWebSocket(), 3000);
-        };
-        
-        this.socket.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            this.setConnectionStatus(false);
-        };
+        }
     }
     
     setConnectionStatus(connected) {
@@ -112,10 +116,33 @@ class RaceTimer {
         }
     }
     
+    updateLaps(laps) {
+        // Check for new laps by comparing with previous lap count
+        const previousLapCount = this.laps.length;
+        const currentLapCount = laps.length;
+        
+        if (currentLapCount > previousLapCount) {
+            // New lap detected - announce it
+            const newLap = laps[laps.length - 1];
+            if (this.audioEnabled && newLap.lap_time_ms > 0) {
+                this.announceLapTime(newLap);
+            }
+        }
+        
+        // Update laps array
+        this.laps = laps;
+        this.updateLapDisplay();
+    }
+    
     addLap(lapData) {
         this.laps.push(lapData);
         this.updateLapDisplay();
         this.updateLastLap(lapData);
+        
+        // Announce lap time if audio is enabled
+        if (this.audioEnabled && lapData.lap_time_ms > 0) {
+            this.announceLapTime(lapData);
+        }
         
         // Flash animation for new lap
         setTimeout(() => {
@@ -191,6 +218,49 @@ class RaceTimer {
         return `${minutes}:${seconds.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
     }
     
+    announceLapTime(lapData) {
+        if (!this.speechSynthesis) return;
+        
+        const lapNumber = this.laps.length;
+        const lapTime = this.formatTime(lapData.lap_time_ms);
+        
+        // Create speech text
+        let speechText = `Lap ${lapNumber}, ${lapTime}`;
+        
+        // Add context about lap performance
+        if (lapNumber > 1) {
+            const validLaps = this.laps.filter(lap => lap.lap_time_ms > 0);
+            if (validLaps.length > 1) {
+                const previousLaps = validLaps.slice(0, -1);
+                const bestTime = Math.min(...previousLaps.map(lap => lap.lap_time_ms));
+                const currentTime = lapData.lap_time_ms;
+                
+                if (currentTime < bestTime) {
+                    speechText += ', new best time!';
+                } else if (currentTime > bestTime * 1.1) {
+                    speechText += ', slower lap';
+                }
+            }
+        }
+        
+        // Speak the announcement
+        const utterance = new SpeechSynthesisUtterance(speechText);
+        utterance.rate = 1.2; // Slightly faster for quick announcements
+        utterance.pitch = 1.0;
+        utterance.volume = 0.8;
+        
+        this.speechSynthesis.speak(utterance);
+    }
+    
+    toggleAudio() {
+        this.audioEnabled = !this.audioEnabled;
+        const audioButton = document.getElementById('audioToggle');
+        if (audioButton) {
+            audioButton.textContent = this.audioEnabled ? 'Audio On' : 'Audio Off';
+            audioButton.classList.toggle('active', this.audioEnabled);
+        }
+    }
+    
     sendCommand(command, data = {}) {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({
@@ -224,6 +294,16 @@ function resetRace() {
         raceTimer.sendCommand('reset_race');
         raceTimer.laps = [];
         raceTimer.updateLapDisplay();
+    }
+}
+
+function testAudio() {
+    if (raceTimer && raceTimer.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance('Audio test, lap time 1 minute 23 seconds');
+        utterance.rate = 1.2;
+        utterance.pitch = 1.0;
+        utterance.volume = 0.8;
+        raceTimer.speechSynthesis.speak(utterance);
     }
 }
 

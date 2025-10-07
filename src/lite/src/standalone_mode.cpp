@@ -121,7 +121,7 @@ void StandaloneMode::handleRoot() {
                   "<option value=\"5917\">R8 (5917 MHz)</option></select></div></div>"
                   "<div class=\"config-row\"><div class=\"config-item\">"
                   "<label for=\"thresholdSlider\">RSSI Threshold:</label>"
-                  "<input type=\"range\" id=\"thresholdSlider\" min=\"20\" max=\"200\" value=\"50\" oninput=\"updateThreshold(this.value)\">"
+                  "<input type=\"range\" id=\"thresholdSlider\" min=\"20\" max=\"200\" value=\"50\" oninput=\"updateThresholdVisual(this.value)\" onchange=\"updateThresholdServer(this.value)\">"
                   "<span id=\"thresholdValue\">50</span></div>"
                   "<div class=\"config-item rssi-display\"><label>Current RSSI:</label>"
                   "<span id=\"currentRSSI\" class=\"rssi-value\">0</span>"
@@ -131,7 +131,9 @@ void StandaloneMode::handleRoot() {
                   "<div class=\"controls\">"
                   "<button id=\"startBtn\" onclick=\"startRace()\" class=\"btn btn-primary\">Start Race</button>"
                   "<button id=\"stopBtn\" onclick=\"stopRace()\" class=\"btn btn-secondary\">Stop Race</button>"
-                  "<button id=\"clearBtn\" onclick=\"clearLaps()\" class=\"btn btn-danger\">Clear Laps</button></div>"
+                  "<button id=\"clearBtn\" onclick=\"clearLaps()\" class=\"btn btn-danger\">Clear Laps</button>"
+                  "<button id=\"audioToggle\" onclick=\"toggleAudio()\" class=\"btn btn-info active\">Audio On</button>"
+                  "<button onclick=\"testAudio()\" class=\"btn btn-info\">Test Audio</button></div>"
                   "<div class=\"stats\"><div class=\"stat-card\">"
                   "<div class=\"stat-number\" id=\"lapCount\">0</div>"
                   "<div class=\"stat-label\">Total Laps</div></div>"
@@ -625,14 +627,18 @@ async function setFrequency() {
     }
 }
 
-async function updateThreshold(value) {
+// Visual update only - called on every drag (smooth, no server calls)
+function updateThresholdVisual(value) {
     document.getElementById('thresholdValue').textContent = value;
     
     // Update threshold line position (0-255 -> 0-100%)
     const thresholdLine = document.getElementById('thresholdLine');
     const percentage = (value / 255) * 100;
     thresholdLine.style.left = percentage + '%';
-    
+}
+
+// Server update only - called when user releases slider (debounced)
+async function updateThresholdServer(value) {
     try {
         const response = await fetch('/api/set_threshold', {
             method: 'POST',
@@ -658,7 +664,7 @@ async function updateData() {
         const statusResponse = await fetch('/api/status');
         const status = await statusResponse.json();
         
-        console.log('API Response:', status); // Debug output
+        // console.log('API Response:', status); // Debug output - disabled
         
         // Update RSSI display first
         const currentRSSI = status.rssi || 0;
@@ -666,7 +672,7 @@ async function updateData() {
         
         if (rssiElement) {
             rssiElement.textContent = currentRSSI;
-            console.log('Updated RSSI display to:', currentRSSI); // Debug output
+            // console.log('Updated RSSI display to:', currentRSSI); // Debug output - disabled
         } else {
             console.error('Could not find currentRSSI element!');
         }
@@ -749,6 +755,20 @@ async function updateData() {
 function updateLapsDisplay(laps) {
     const lapsContainer = document.getElementById('laps');
     
+    // Check for new laps
+    if (laps.length > previousLapCount) {
+        const newLap = laps[laps.length - 1];
+        if (audioEnabled && newLap.lap_time_ms > 0) {
+            announceLapTime(newLap);
+            
+            // Announce lap milestones
+            if (laps.length % 5 === 0) {
+                announceLapMilestone(laps.length);
+            }
+        }
+    }
+    previousLapCount = laps.length;
+    
     if (laps.length === 0) {
         lapsContainer.innerHTML = '<p class="no-laps">No laps recorded yet</p>';
         return;
@@ -792,6 +812,15 @@ async function startRace() {
         if (response.ok) {
             raceActive = true;
             updateData();
+            
+            // Announce race start
+            if (audioEnabled && window.speechSynthesis) {
+                const utterance = new SpeechSynthesisUtterance('Race started!');
+                utterance.rate = 1.0;
+                utterance.pitch = 1.1;
+                utterance.volume = 0.9;
+                window.speechSynthesis.speak(utterance);
+            }
         }
     } catch (error) {
         console.error('Error starting race:', error);
@@ -804,6 +833,15 @@ async function stopRace() {
         if (response.ok) {
             raceActive = false;
             updateData();
+            
+            // Announce race stop
+            if (audioEnabled && window.speechSynthesis) {
+                const utterance = new SpeechSynthesisUtterance('Race stopped!');
+                utterance.rate = 1.0;
+                utterance.pitch = 0.9;
+                utterance.volume = 0.9;
+                window.speechSynthesis.speak(utterance);
+            }
         }
     } catch (error) {
         console.error('Error stopping race:', error);
@@ -821,6 +859,77 @@ async function clearLaps() {
             console.error('Error clearing laps:', error);
         }
     }
+}
+
+// Audio control functions
+let audioEnabled = true;
+let previousLapCount = 0;
+
+function toggleAudio() {
+    audioEnabled = !audioEnabled;
+    const audioButton = document.getElementById('audioToggle');
+    if (audioButton) {
+        audioButton.textContent = audioEnabled ? 'Audio On' : 'Audio Off';
+        audioButton.classList.toggle('active', audioEnabled);
+    }
+}
+
+function testAudio() {
+    if (window.speechSynthesis) {
+        const utterance = new SpeechSynthesisUtterance('Audio test, lap time 1 minute 23 seconds');
+        utterance.rate = 1.2;
+        utterance.pitch = 1.0;
+        utterance.volume = 0.8;
+        window.speechSynthesis.speak(utterance);
+    } else {
+        alert('Speech synthesis not supported in this browser');
+    }
+}
+
+function announceLapTime(lapData) {
+    if (!audioEnabled || !window.speechSynthesis) return;
+    
+    const lapNumber = lapData.lap_number || 1;
+    const lapTime = formatLapTime(lapData.lap_time_ms);
+    
+    // Create speech text - clean and simple
+    const speechText = `Lap ${lapNumber}, ${lapTime}`;
+    
+    // Speak the announcement
+    const utterance = new SpeechSynthesisUtterance(speechText);
+    utterance.rate = 1.2;
+    utterance.pitch = 1.0;
+    utterance.volume = 0.8;
+    
+    window.speechSynthesis.speak(utterance);
+}
+
+function announceLapMilestone(lapCount) {
+    if (!audioEnabled || !window.speechSynthesis) return;
+    
+    let speechText;
+    if (lapCount === 5) {
+        speechText = '5 laps completed!';
+    } else if (lapCount === 10) {
+        speechText = '10 laps completed!';
+    } else if (lapCount === 15) {
+        speechText = '15 laps completed!';
+    } else if (lapCount === 20) {
+        speechText = '20 laps completed!';
+    } else {
+        speechText = `${lapCount} laps completed!`;
+    }
+    
+    // Speak the milestone announcement
+    const utterance = new SpeechSynthesisUtterance(speechText);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.2;
+    utterance.volume = 0.9;
+    
+    // Add a small delay to avoid overlapping with lap time announcement
+    setTimeout(() => {
+        window.speechSynthesis.speak(utterance);
+    }, 500);
 }
 
 function formatTime(ms) {
