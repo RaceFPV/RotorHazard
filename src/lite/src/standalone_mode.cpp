@@ -25,6 +25,9 @@ void StandaloneMode::begin(TimingCore* timingCore) {
     _server.on("/api/start_race", HTTP_POST, [this]() { handleStartRace(); });
     _server.on("/api/stop_race", HTTP_POST, [this]() { handleStopRace(); });
     _server.on("/api/clear_laps", HTTP_POST, [this]() { handleClearLaps(); });
+    _server.on("/api/set_frequency", HTTP_POST, [this]() { handleSetFrequency(); });
+    _server.on("/api/set_threshold", HTTP_POST, [this]() { handleSetThreshold(); });
+    _server.on("/api/get_channels", HTTP_GET, [this]() { handleGetChannels(); });
     _server.on("/style.css", HTTP_GET, [this]() { handleStyleCSS(); });
     _server.on("/app.js", HTTP_GET, [this]() { handleAppJS(); });
     _server.onNotFound([this]() { handleNotFound(); });
@@ -79,14 +82,57 @@ void StandaloneMode::handleRoot() {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ESP32 Race Timer</title>
+    <title>RotorHazard Lite Race Timer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
     <div class=\"container\">
-        <h1>🏁 Race Timer Lite</h1>
+        <h1>RotorHazard Lite Race Timer</h1>
         <div id=\"status\" class=\"status\">Status: Ready</div>
+        
+        <div class=\"config-section\">
+            <h3>Configuration</h3>
+            <div class=\"config-row\">
+                <div class=\"config-item\">
+                    <label for=\"bandSelect\">FPV Band:</label>
+                    <select id=\"bandSelect\" onchange=\"updateChannels()\">
+                        <option value=\"Raceband\">Raceband</option>
+                        <option value=\"Fatshark\">Fatshark</option>
+                        <option value=\"Boscam_A\">Boscam A</option>
+                        <option value=\"Boscam_E\">Boscam E</option>
+                    </select>
+                </div>
+                <div class=\"config-item\">
+                    <label for=\"channelSelect\">Channel:</label>
+                    <select id=\"channelSelect\" onchange=\"setFrequency()\">
+                        <option value=\"5658\">R1 (5658 MHz)</option>
+                        <option value=\"5695\">R2 (5695 MHz)</option>
+                        <option value=\"5732\">R3 (5732 MHz)</option>
+                        <option value=\"5769\">R4 (5769 MHz)</option>
+                        <option value=\"5806\">R5 (5806 MHz)</option>
+                        <option value=\"5843\">R6 (5843 MHz)</option>
+                        <option value=\"5880\">R7 (5880 MHz)</option>
+                        <option value=\"5917\">R8 (5917 MHz)</option>
+                    </select>
+                </div>
+            </div>
+            <div class=\"config-row\">
+                <div class=\"config-item\">
+                    <label for=\"thresholdSlider\">RSSI Threshold:</label>
+                    <input type=\"range\" id=\"thresholdSlider\" min=\"20\" max=\"200\" value=\"50\" oninput=\"updateThreshold(this.value)\">
+                    <span id=\"thresholdValue\">50</span>
+                </div>
+                <div class=\"config-item rssi-display\">
+                    <label>Current RSSI:</label>
+                    <span id=\"currentRSSI\" class=\"rssi-value\">0</span>
+                    <div id=\"rssiBar\" class=\"rssi-bar\">
+                        <div id=\"rssiLevel\" class=\"rssi-level\"></div>
+                        <div id=\"thresholdLine\" class=\"threshold-line\"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <div class=\"controls\">
             <button id=\"startBtn\" onclick=\"startRace()\" class=\"btn btn-primary\">Start Race</button>
@@ -128,7 +174,10 @@ void StandaloneMode::handleGetStatus() {
     json += "\"status\":\"" + String(_raceActive ? "racing" : "ready") + "\",";
     json += "\"lap_count\":" + String(_laps.size()) + ",";
     json += "\"uptime\":" + String(millis()) + ",";
-    json += "\"rssi\":" + String(_timingCore ? _timingCore->getCurrentRSSI() : 0);
+    json += "\"rssi\":" + String(_timingCore ? _timingCore->getCurrentRSSI() : 0) + ",";
+    json += "\"frequency\":" + String(_timingCore ? _timingCore->getState().frequency_mhz : 5800) + ",";
+    json += "\"threshold\":" + String(_timingCore ? _timingCore->getState().threshold : 50) + ",";
+    json += "\"crossing\":" + String(_timingCore ? (_timingCore->isCrossing() ? "true" : "false") : "false");
     json += "}";
     
     _server.send(200, "application/json", json);
@@ -343,6 +392,94 @@ h1 {
     padding: 40px;
 }
 
+.config-section {
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 25px;
+    border: 1px solid #e9ecef;
+}
+
+.config-section h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #2c3e50;
+}
+
+.config-row {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.config-item {
+    flex: 1;
+    min-width: 200px;
+}
+
+.config-item label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    color: #495057;
+}
+
+.config-item select, .config-item input[type="range"] {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.rssi-display {
+    text-align: center;
+}
+
+.rssi-value {
+    font-size: 32px;
+    font-weight: 700;
+    color: #007bff;
+    display: block;
+    margin-bottom: 10px;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: all 0.3s ease;
+}
+
+.rssi-bar {
+    position: relative;
+    width: 100%;
+    height: 20px;
+    background: #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.rssi-level {
+    height: 100%;
+    background: linear-gradient(to right, #28a745, #ffc107, #dc3545);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+.threshold-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #dc3545;
+    left: 20%;
+    transition: left 0.3s ease;
+}
+
+#thresholdValue {
+    display: inline-block;
+    margin-left: 10px;
+    font-weight: 600;
+    color: #007bff;
+}
+
 @media (max-width: 600px) {
     .container {
         padding: 20px;
@@ -367,14 +504,141 @@ void StandaloneMode::handleAppJS() {
     String js = R"(
 let raceActive = false;
 let updateInterval;
+let channelData = {};
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Initialize with default Raceband channels (already in HTML)
     updateData();
     startPeriodicUpdates();
+    
+    // Set initial frequency
+    setFrequency();
 });
 
+async function loadChannelData() {
+    try {
+        const response = await fetch('/api/get_channels');
+        channelData = await response.json();
+        updateChannels(); // Initialize with Raceband
+        setFrequency(); // Set initial frequency
+    } catch (error) {
+        console.error('Error loading channel data:', error);
+        // updateChannels() will handle the fallback automatically
+        updateChannels();
+    }
+}
+
+function updateChannels() {
+    const bandSelect = document.getElementById('bandSelect');
+    const channelSelect = document.getElementById('channelSelect');
+    const selectedBand = bandSelect.value;
+    
+    // Clear current options
+    channelSelect.innerHTML = '';
+    
+    // Define all channel data locally for reliability
+    const allChannels = {
+        'Raceband': [
+            {channel: 'R1', frequency: 5658},
+            {channel: 'R2', frequency: 5695},
+            {channel: 'R3', frequency: 5732},
+            {channel: 'R4', frequency: 5769},
+            {channel: 'R5', frequency: 5806},
+            {channel: 'R6', frequency: 5843},
+            {channel: 'R7', frequency: 5880},
+            {channel: 'R8', frequency: 5917}
+        ],
+        'Fatshark': [
+            {channel: 'F1', frequency: 5740},
+            {channel: 'F2', frequency: 5760},
+            {channel: 'F3', frequency: 5780},
+            {channel: 'F4', frequency: 5800},
+            {channel: 'F5', frequency: 5820},
+            {channel: 'F6', frequency: 5840},
+            {channel: 'F7', frequency: 5860},
+            {channel: 'F8', frequency: 5880}
+        ],
+        'Boscam_A': [
+            {channel: 'A1', frequency: 5865},
+            {channel: 'A2', frequency: 5845},
+            {channel: 'A3', frequency: 5825},
+            {channel: 'A4', frequency: 5805},
+            {channel: 'A5', frequency: 5785},
+            {channel: 'A6', frequency: 5765},
+            {channel: 'A7', frequency: 5745},
+            {channel: 'A8', frequency: 5725}
+        ],
+        'Boscam_E': [
+            {channel: 'E1', frequency: 5705},
+            {channel: 'E2', frequency: 5685},
+            {channel: 'E3', frequency: 5665},
+            {channel: 'E4', frequency: 5645},
+            {channel: 'E5', frequency: 5885},
+            {channel: 'E6', frequency: 5905},
+            {channel: 'E7', frequency: 5925},
+            {channel: 'E8', frequency: 5945}
+        ]
+    };
+    
+    // Get channels for selected band
+    const channels = allChannels[selectedBand] || allChannels['Raceband'];
+    
+    // Populate the dropdown
+    channels.forEach(channel => {
+        const option = document.createElement('option');
+        option.value = channel.frequency;
+        option.textContent = `${channel.channel} (${channel.frequency} MHz)`;
+        channelSelect.appendChild(option);
+    });
+    
+    // Automatically set the frequency when channels change
+    setFrequency();
+}
+
+async function setFrequency() {
+    const channelSelect = document.getElementById('channelSelect');
+    const frequency = channelSelect.value;
+    
+    try {
+        const response = await fetch('/api/set_frequency', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `frequency=${frequency}`
+        });
+        
+        if (response.ok) {
+            console.log(`Frequency set to ${frequency} MHz`);
+        }
+    } catch (error) {
+        console.error('Error setting frequency:', error);
+    }
+}
+
+async function updateThreshold(value) {
+    document.getElementById('thresholdValue').textContent = value;
+    
+    // Update threshold line position (0-255 -> 0-100%)
+    const thresholdLine = document.getElementById('thresholdLine');
+    const percentage = (value / 255) * 100;
+    thresholdLine.style.left = percentage + '%';
+    
+    try {
+        const response = await fetch('/api/set_threshold', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `threshold=${value}`
+        });
+        
+        if (response.ok) {
+            console.log(`Threshold set to ${value}`);
+        }
+    } catch (error) {
+        console.error('Error setting threshold:', error);
+    }
+}
+
 function startPeriodicUpdates() {
-    updateInterval = setInterval(updateData, 1000);
+    updateInterval = setInterval(updateData, 250); // Update every 250ms for responsive RSSI
 }
 
 async function updateData() {
@@ -383,8 +647,58 @@ async function updateData() {
         const statusResponse = await fetch('/api/status');
         const status = await statusResponse.json();
         
-        document.getElementById('status').textContent = 
-            `Status: ${status.status} | RSSI: ${status.rssi} | Uptime: ${formatTime(status.uptime)}`;
+        // Update RSSI display first
+        const currentRSSI = status.rssi || 0;
+        const rssiElement = document.getElementById('currentRSSI');
+        rssiElement.textContent = currentRSSI;
+        
+        // Update status text with more detailed info
+        const crossingStatus = status.crossing ? ' | CROSSING!' : '';
+        const statusText = `Status: ${status.status} | Freq: ${status.frequency} MHz | Threshold: ${status.threshold} | RSSI: ${currentRSSI}${crossingStatus}`;
+        const statusElement = document.getElementById('status');
+        statusElement.textContent = statusText;
+        
+        // Add visual feedback for crossing state
+        if (status.crossing) {
+            statusElement.style.borderLeft = '4px solid #dc3545';
+            statusElement.style.backgroundColor = '#f8d7da';
+        } else {
+            statusElement.style.borderLeft = '4px solid #007bff';
+            statusElement.style.backgroundColor = '#f8f9fa';
+        }
+        
+        // Add visual feedback when RSSI is above threshold
+        if (currentRSSI > status.threshold) {
+            rssiElement.style.color = '#dc3545'; // Red when above threshold
+            rssiElement.style.fontWeight = 'bold';
+        } else {
+            rssiElement.style.color = '#007bff'; // Blue when below threshold
+            rssiElement.style.fontWeight = '700';
+        }
+        
+        // Update RSSI bar (0-255 -> 0-100%)
+        const rssiLevel = document.getElementById('rssiLevel');
+        const rssiPercentage = (currentRSSI / 255) * 100;
+        rssiLevel.style.width = rssiPercentage + '%';
+        
+        // Change RSSI bar color based on level
+        if (rssiPercentage < 20) {
+            rssiLevel.style.background = '#28a745'; // Green for low
+        } else if (rssiPercentage < 60) {
+            rssiLevel.style.background = 'linear-gradient(to right, #28a745, #ffc107)'; // Green to yellow
+        } else {
+            rssiLevel.style.background = 'linear-gradient(to right, #ffc107, #dc3545)'; // Yellow to red
+        }
+        
+        // Update threshold slider if it doesn't match
+        const thresholdSlider = document.getElementById('thresholdSlider');
+        if (status.threshold && parseInt(thresholdSlider.value) !== status.threshold) {
+            thresholdSlider.value = status.threshold;
+            document.getElementById('thresholdValue').textContent = status.threshold;
+            const thresholdLine = document.getElementById('thresholdLine');
+            const percentage = (status.threshold / 255) * 100;
+            thresholdLine.style.left = percentage + '%';
+        }
         
         // Update laps
         const lapsResponse = await fetch('/api/laps');
@@ -507,4 +821,83 @@ function formatLapTime(ms) {
 
 void StandaloneMode::handleNotFound() {
     _server.send(404, "text/plain", "File not found");
+}
+
+void StandaloneMode::handleSetFrequency() {
+    if (_server.hasArg("frequency")) {
+        int freq = _server.arg("frequency").toInt();
+        if (freq >= 5645 && freq <= 5945) {
+            if (_timingCore) {
+                _timingCore->setFrequency(freq);
+            }
+            _server.send(200, "application/json", "{\"status\":\"frequency_set\",\"frequency\":" + String(freq) + "}");
+            Serial.printf("Frequency set to: %d MHz\n", freq);
+        } else {
+            _server.send(400, "application/json", "{\"error\":\"invalid_frequency\"}");
+        }
+    } else {
+        _server.send(400, "application/json", "{\"error\":\"missing_frequency\"}");
+    }
+}
+
+void StandaloneMode::handleSetThreshold() {
+    if (_server.hasArg("threshold")) {
+        int threshold = _server.arg("threshold").toInt();
+        if (threshold >= 0 && threshold <= 255) {
+            if (_timingCore) {
+                _timingCore->setThreshold(threshold);
+            }
+            _server.send(200, "application/json", "{\"status\":\"threshold_set\",\"threshold\":" + String(threshold) + "}");
+            Serial.printf("Threshold set to: %d\n", threshold);
+        } else {
+            _server.send(400, "application/json", "{\"error\":\"invalid_threshold\"}");
+        }
+    } else {
+        _server.send(400, "application/json", "{\"error\":\"missing_threshold\"}");
+    }
+}
+
+void StandaloneMode::handleGetChannels() {
+    String json = "{";
+    json += "\"bands\":{";
+    
+    // Raceband (R1-R8)
+    json += "\"Raceband\":[";
+    int raceband[] = {5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917};
+    for (int i = 0; i < 8; i++) {
+        if (i > 0) json += ",";
+        json += "{\"channel\":\"R" + String(i+1) + "\",\"frequency\":" + String(raceband[i]) + "}";
+    }
+    json += "],";
+    
+    // Fatshark (F1-F8)
+    json += "\"Fatshark\":[";
+    int fatshark[] = {5740, 5760, 5780, 5800, 5820, 5840, 5860, 5880};
+    for (int i = 0; i < 8; i++) {
+        if (i > 0) json += ",";
+        json += "{\"channel\":\"F" + String(i+1) + "\",\"frequency\":" + String(fatshark[i]) + "}";
+    }
+    json += "],";
+    
+    // Boscam A (A1-A8)
+    json += "\"Boscam_A\":[";
+    int boscam_a[] = {5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725};
+    for (int i = 0; i < 8; i++) {
+        if (i > 0) json += ",";
+        json += "{\"channel\":\"A" + String(i+1) + "\",\"frequency\":" + String(boscam_a[i]) + "}";
+    }
+    json += "],";
+    
+    // Boscam E (E1-E8)
+    json += "\"Boscam_E\":[";
+    int boscam_e[] = {5705, 5685, 5665, 5645, 5885, 5905, 5925, 5945};
+    for (int i = 0; i < 8; i++) {
+        if (i > 0) json += ",";
+        json += "{\"channel\":\"E" + String(i+1) + "\",\"frequency\":" + String(boscam_e[i]) + "}";
+    }
+    json += "]";
+    
+    json += "}}";
+    
+    _server.send(200, "application/json", json);
 }

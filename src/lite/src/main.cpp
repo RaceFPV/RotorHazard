@@ -46,15 +46,25 @@ void setup() {
   digitalWrite(STATUS_LED_PIN, LOW);
   delay(200);
   
+  // Determine initial mode BEFORE any serial output
+  bool initial_switch_state = digitalRead(MODE_SWITCH_PIN);
+  current_mode = (initial_switch_state == LOW) ? MODE_STANDALONE : MODE_ROTORHAZARD;
+  
+  // Only show startup messages in standalone mode (safe for debug output)
+  if (current_mode == MODE_STANDALONE) {
+    Serial.println();
+    Serial.println("=== RotorHazard Lite ESP32-C3 Timer ===");
+    Serial.println("Version: 1.0.0");
+    Serial.println("Single-core RISC-V processor");
+    Serial.println();
+    Serial.println("Mode: STANDALONE/WIFI (Pin 0 = LOW/GND)");
+    Serial.println("Initializing timing core...");
+  }
+  
   // Initialize core timing system (always active)
   timing.begin();
   
-  // Determine initial mode
-  bool initial_switch_state = digitalRead(MODE_SWITCH_PIN);
-  
-  // Force initial mode detection (bypass the 100ms delay)
-  current_mode = (initial_switch_state == LOW) ? MODE_STANDALONE : MODE_ROTORHAZARD;
-  
+  // Continue with mode-specific initialization
   initializeMode();
 }
 
@@ -121,31 +131,27 @@ void checkModeSwitch() {
 
 void initializeMode() {
   if (current_mode == MODE_STANDALONE) {
-    DEBUG_PRINTLN("Initializing mode: STANDALONE/WIFI");
-    
-    // Shutdown node mode if it was running
-    if (mode_initialized) {
-      // Node mode doesn't need explicit shutdown
-    }
+    Serial.println("TimingCore: Ready");
+    Serial.println();
+    Serial.println("=== WIFI/LITE MODE ACTIVE ===");
     
     // Initialize standalone mode
     standalone.begin(&timing);
     
-    // Status indication
-    DEBUG_PRINTLN("=== WIFI/LITE MODE ACTIVE ===");
-    DEBUG_PRINTLN("Connect to WiFi: RaceTimer-XXXX");
-    DEBUG_PRINTLN("Web interface: http://192.168.4.1");
-    DEBUG_PRINTLN("ESP32-C3 Single-core operation");
+    // The standalone.begin() should output WiFi connection details
+    Serial.println("Setup complete!");
+    Serial.println();
     
   } else {
     // NODE MODE: NO debug output - it interferes with binary serial protocol
+    // Silent initialization for RotorHazard compatibility
     
     // Shutdown standalone mode if it was running  
     if (mode_initialized) {
       // Standalone mode doesn't need explicit shutdown
     }
     
-    // Initialize node mode
+    // Initialize node mode (silently)
     node.begin(&timing);
     
     // Node mode is now active and waiting for RotorHazard commands

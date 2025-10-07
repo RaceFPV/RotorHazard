@@ -80,10 +80,10 @@ To see the firmware running and debug output, use the built-in `screen` command:
 
 ```bash
 # Connect to your ESP32-C3 (replace XXXX with your device number)
-screen /dev/cu.usbmodemXXXX 115200
+pio device monitor --port /dev/cu.usbmodemXXXX --baud 115200
 ```
 
-**To exit screen**: Press `Ctrl+A`, then type `:quit` and press Enter, or simply close the terminal window.
+**To exit**: Press `Ctrl+C`
 
 **Expected output**:
 ```

@@ -2,7 +2,9 @@
 #define STANDALONE_MODE_H
 
 #include <Arduino.h>
-#include <WebServer.h> // For ESP32 WebServer
+#include <WiFi.h>
+#include <WebServer.h> // Standard ESP32 WebServer (synchronous)
+#include <SPIFFS.h>
 #include <vector>
 #include "timing_core.h" // To interact with timing data
 
@@ -25,6 +27,9 @@ private:
     void handleStartRace();
     void handleStopRace();
     void handleClearLaps();
+    void handleSetFrequency();
+    void handleSetThreshold();
+    void handleGetChannels();
     void handleStyleCSS();
     void handleAppJS();
     void handleNotFound();
