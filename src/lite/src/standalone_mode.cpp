@@ -4,7 +4,7 @@
 #include <ESPmDNS.h>
 #include "config.h"
 
-StandaloneMode::StandaloneMode() : _server(80), _timingCore(nullptr), _display(U8G2_R0, DISPLAY_SCL_PIN, DISPLAY_SDA_PIN, U8X8_PIN_NONE) {
+StandaloneMode::StandaloneMode() : _server(80), _timingCore(nullptr) {
 }
 
 void StandaloneMode::begin(TimingCore* timingCore) {
@@ -14,7 +14,7 @@ void StandaloneMode::begin(TimingCore* timingCore) {
     setupWiFiAP();
     
     // Initialize display
-    initDisplay();
+    _displayManager.begin();
     
     // Initialize mDNS for .local hostname
     if (MDNS.begin(MDNS_HOSTNAME)) {
@@ -71,12 +71,40 @@ void StandaloneMode::process() {
         Serial.printf("Lap recorded: %dms, RSSI: %d\n", lap.timestamp_ms, lap.rssi_peak);
     }
     
-    // Update display periodically (non-blocking, timing safe)
-    uint32_t now = millis();
-    if (_displayConnected && (now - _lastDisplayUpdate) > 500) { // Update every 500ms
-        updateDisplay();
-        _lastDisplayUpdate = now;
+    // Update display with current data
+    if (_displayManager.isConnected()) {
+        uint8_t current_rssi = _timingCore ? _timingCore->getCurrentRSSI() : 0;
+        uint16_t frequency = _timingCore ? _timingCore->getState().frequency_mhz : 5800;
+        uint8_t threshold = _timingCore ? _timingCore->getState().threshold : 50;
+        bool crossing = _timingCore ? _timingCore->isCrossing() : false;
+        
+        if (_raceActive) {
+            // Calculate current lap time and best lap time
+            uint32_t currentLapTime = 0;
+            uint32_t bestLapTime = 0;
+            
+            if (_laps.size() > 0) {
+                currentLapTime = millis() - _raceStartTime;
+                if (_laps.size() > 1) {
+                    currentLapTime = millis() - _laps[_laps.size() - 1].timestamp_ms;
+                }
+                
+                // Find best lap time
+                bestLapTime = _laps[0].timestamp_ms - _raceStartTime;
+                for (size_t i = 1; i < _laps.size(); i++) {
+                    uint32_t lapTime = _laps[i].timestamp_ms - _laps[i-1].timestamp_ms;
+                    if (lapTime < bestLapTime) bestLapTime = lapTime;
+                }
+            }
+            
+            _displayManager.showRaceActive(_laps.size(), currentLapTime, bestLapTime);
+        } else {
+            _displayManager.showReady(frequency, current_rssi, threshold, crossing);
+        }
     }
+    
+    // Update display (handles timing internally)
+    _displayManager.update();
 }
 
 void StandaloneMode::setupWiFiAP() {
@@ -212,12 +240,26 @@ void StandaloneMode::handleStartRace() {
     _raceStartTime = millis();
     _laps.clear();
     
+    // Update display for race start
+    if (_displayManager.isConnected()) {
+        _displayManager.showRaceActive(0, 0, 0);
+    }
+    
     Serial.println("Race started!");
     _server.send(200, "application/json", "{\"status\":\"race_started\"}");
 }
 
 void StandaloneMode::handleStopRace() {
     _raceActive = false;
+    
+    // Update display for race stop
+    if (_displayManager.isConnected()) {
+        uint8_t current_rssi = _timingCore ? _timingCore->getCurrentRSSI() : 0;
+        uint16_t frequency = _timingCore ? _timingCore->getState().frequency_mhz : 5800;
+        uint8_t threshold = _timingCore ? _timingCore->getState().threshold : 50;
+        bool crossing = _timingCore ? _timingCore->isCrossing() : false;
+        _displayManager.showReady(frequency, current_rssi, threshold, crossing);
+    }
     
     Serial.println("Race stopped!");
     _server.send(200, "application/json", "{\"status\":\"race_stopped\"}");
@@ -1054,90 +1096,3 @@ void StandaloneMode::handleGetChannels() {
     _server.send(200, "application/json", json);
 }
 
-void StandaloneMode::initDisplay() {
-    // Try to initialize display - safe to fail if not connected
-    if (_display.begin()) {
-        _displayConnected = true;
-        _display.clearBuffer();
-        _display.setFont(u8g2_font_ncenB08_tr);
-        _display.drawStr(0, 10, "RotorHazard Lite");
-        _display.drawStr(0, 25, "Initializing...");
-        _display.sendBuffer();
-        Serial.println("Display initialized successfully");
-    } else {
-        _displayConnected = false;
-        Serial.println("Display not connected or failed to initialize");
-    }
-}
-
-void StandaloneMode::updateDisplay() {
-    if (!_displayConnected) return;
-    
-    _display.clearBuffer();
-    _display.setFont(u8g2_font_ncenB08_tr);
-    
-    // Get current data
-    uint8_t current_rssi = _timingCore ? _timingCore->getCurrentRSSI() : 0;
-    uint16_t frequency = _timingCore ? _timingCore->getState().frequency_mhz : 5800;
-    uint8_t threshold = _timingCore ? _timingCore->getState().threshold : 50;
-    bool crossing = _timingCore ? _timingCore->isCrossing() : false;
-    
-    if (_raceActive) {
-        // Race active display
-        _display.drawStr(0, 10, "RACE ACTIVE");
-        
-        // Lap count
-        char lapText[20];
-        snprintf(lapText, sizeof(lapText), "Laps: %d", (int)_laps.size());
-        _display.drawStr(0, 25, lapText);
-        
-        // Current lap time (if we have laps)
-        if (_laps.size() > 0) {
-            uint32_t currentLapTime = millis() - _raceStartTime;
-            if (_laps.size() > 1) {
-                currentLapTime = millis() - _laps[_laps.size() - 1].timestamp_ms;
-            }
-            
-            char timeText[20];
-            snprintf(timeText, sizeof(timeText), "Lap: %d.%03ds", 
-                    (int)(currentLapTime / 1000), (int)(currentLapTime % 1000));
-            _display.drawStr(0, 40, timeText);
-        }
-        
-        // Best lap time
-        if (_laps.size() > 0) {
-            uint32_t bestTime = _laps[0].timestamp_ms - _raceStartTime;
-            for (size_t i = 1; i < _laps.size(); i++) {
-                uint32_t lapTime = _laps[i].timestamp_ms - _laps[i-1].timestamp_ms;
-                if (lapTime < bestTime) bestTime = lapTime;
-            }
-            
-            char bestText[20];
-            snprintf(bestText, sizeof(bestText), "Best: %d.%03ds", 
-                    (int)(bestTime / 1000), (int)(bestTime % 1000));
-            _display.drawStr(0, 55, bestText);
-        }
-        
-    } else {
-        // Ready state display
-        _display.drawStr(0, 10, "RotorHazard Lite");
-        _display.drawStr(0, 25, "Ready");
-        
-        // Frequency
-        char freqText[20];
-        snprintf(freqText, sizeof(freqText), "Freq: %dMHz", frequency);
-        _display.drawStr(0, 40, freqText);
-        
-        // RSSI and threshold
-        char rssiText[20];
-        snprintf(rssiText, sizeof(rssiText), "RSSI: %d/%d", current_rssi, threshold);
-        _display.drawStr(0, 55, rssiText);
-        
-        // Crossing indicator
-        if (crossing) {
-            _display.drawStr(80, 25, "CROSS!");
-        }
-    }
-    
-    _display.sendBuffer();
-}

@@ -76,12 +76,20 @@ void TimingCore::timingTask(void* parameter) {
   TimingCore* core = static_cast<TimingCore*>(parameter);
   uint32_t debug_counter = 0;
   
+  // Performance monitoring variables
+  uint32_t loop_count = 0;
+  uint32_t last_perf_time = 0;
+  uint32_t min_loop_time = UINT32_MAX;
+  uint32_t max_loop_time = 0;
+  uint32_t total_loop_time = 0;
+  
   while (true) {
     if (!core->state.activated) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
     
+    uint32_t loop_start = micros();
     static uint32_t last_process_time = 0;
     uint32_t current_time = millis();
     
@@ -138,6 +146,32 @@ void TimingCore::timingTask(void* parameter) {
       
       last_process_time = current_time;
       xSemaphoreGive(core->timing_mutex);
+    }
+    
+    // Performance monitoring
+    uint32_t loop_end = micros();
+    uint32_t loop_time = loop_end - loop_start;
+    
+    loop_count++;
+    if (loop_time < min_loop_time) min_loop_time = loop_time;
+    if (loop_time > max_loop_time) max_loop_time = loop_time;
+    total_loop_time += loop_time;
+    
+    // Report performance every 5 seconds
+    uint32_t now = millis();
+    if (now - last_perf_time >= 5000) {
+      uint32_t avg_loop_time = total_loop_time / loop_count;
+      uint32_t loops_per_second = (loop_count * 1000) / (now - last_perf_time);
+      
+      Serial.printf("[TimingPerf] Loops/sec: %d, Avg: %dus, Min: %dus, Max: %dus\n", 
+                    loops_per_second, avg_loop_time, min_loop_time, max_loop_time);
+      
+      // Reset counters
+      loop_count = 0;
+      last_perf_time = now;
+      min_loop_time = UINT32_MAX;
+      max_loop_time = 0;
+      total_loop_time = 0;
     }
     
     // Small delay to prevent task from consuming all CPU
