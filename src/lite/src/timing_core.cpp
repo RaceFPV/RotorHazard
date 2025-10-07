@@ -51,8 +51,8 @@ void TimingCore::begin() {
     Serial.printf("Initial RSSI sample %d: ADC=%d, 8-bit=%d\n", i, raw_adc, rssi_samples[i]);
   }
   
-  // Create timing task for ESP32-C3 single core
-  xTaskCreate(timingTask, "TimingTask", 4096, this, 2, &timing_task_handle);
+  // Create timing task for ESP32-C3 single core (high priority)
+  xTaskCreate(timingTask, "TimingTask", 4096, this, TIMING_PRIORITY, &timing_task_handle);
   
   // Mark as activated
   state.activated = true;
