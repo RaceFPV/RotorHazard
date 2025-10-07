@@ -53,8 +53,8 @@ void StandaloneMode::process() {
     _server.handleClient();
     // mDNS handles requests automatically in background
     
-    // Check for new lap data
-    if (_timingCore && _timingCore->hasNewLap()) {
+    // Check for new lap data - only record during active race
+    if (_raceActive && _timingCore && _timingCore->hasNewLap()) {
         LapData lap = _timingCore->getNextLap();
         
         // Store lap in our internal list (simple vector)
@@ -755,8 +755,8 @@ async function updateData() {
 function updateLapsDisplay(laps) {
     const lapsContainer = document.getElementById('laps');
     
-    // Check for new laps
-    if (laps.length > previousLapCount) {
+    // Check for new laps - only announce during active race
+    if (raceActive && laps.length > previousLapCount) {
         const newLap = laps[laps.length - 1];
         if (audioEnabled && newLap.lap_time_ms > 0) {
             announceLapTime(newLap);
