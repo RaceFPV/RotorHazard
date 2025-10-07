@@ -131,12 +131,10 @@ void StandaloneMode::setupWiFiAP() {
 }
 
 void StandaloneMode::handleRoot() {
-    Serial.println("[DEBUG] Serving root HTML page");
+    // Serial.println("[DEBUG] Serving root HTML page"); // Reduced debug output
     
-    // Add cache control headers to prevent caching issues
-    _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    _server.sendHeader("Pragma", "no-cache");
-    _server.sendHeader("Expires", "0");
+    // Allow browser caching for better performance
+    _server.sendHeader("Cache-Control", "public, max-age=300"); // Cache for 5 minutes
     
     String html = "<!DOCTYPE html><html><head><title>RotorHazard Lite Race Timer</title>"
                   "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -277,6 +275,10 @@ void StandaloneMode::handleClearLaps() {
 }
 
 void StandaloneMode::handleStyleCSS() {
+    // Allow longer caching for CSS since it rarely changes
+    _server.sendHeader("Cache-Control", "public, max-age=3600"); // Cache for 1 hour
+    _server.sendHeader("Content-Type", "text/css");
+    
     String css = R"(
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -546,12 +548,11 @@ h1 {
 }
 
 void StandaloneMode::handleAppJS() {
-    Serial.println("[DEBUG] Serving app.js file");
+    // Serial.println("[DEBUG] Serving app.js file"); // Reduced debug output
     
-    // Add cache control headers to prevent caching issues
-    _server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    _server.sendHeader("Pragma", "no-cache");
-    _server.sendHeader("Expires", "0");
+    // Allow longer caching for JS since it rarely changes
+    _server.sendHeader("Cache-Control", "public, max-age=3600"); // Cache for 1 hour
+    _server.sendHeader("Content-Type", "application/javascript");
     
     String js = R"(
 console.log('=== JavaScript file loading ===');

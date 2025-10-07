@@ -25,7 +25,8 @@
 #define DISPLAY_FONT_MAIN             u8g2_font_5x7_tr
 #define DISPLAY_FONT_SMALL            u8g2_font_5x7_tr
 
-// Layout positions (Y coordinates)
+// Layout positions
+#define DISPLAY_X_OFFSET              2     // X offset to prevent text cut-off
 #define DISPLAY_Y_TITLE               10
 #define DISPLAY_Y_STATUS              25
 #define DISPLAY_Y_FREQUENCY           40

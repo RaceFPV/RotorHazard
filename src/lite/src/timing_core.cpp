@@ -20,6 +20,7 @@ TimingCore::TimingCore() {
   lap_read_index = 0;
   sample_index = 0;
   samples_filled = false;
+  debug_enabled = false; // Default to no debug output
   
   // Initialize FreeRTOS objects
   timing_task_handle = nullptr;
@@ -106,11 +107,12 @@ void TimingCore::timingTask(void* parameter) {
       uint8_t filtered_rssi = core->filterRSSI(raw_rssi);
       core->state.current_rssi = filtered_rssi;
       
-      // Debug output every 1000 iterations (about once per second)
+      // Debug output every 1000 iterations (about once per second) - only in debug mode
       debug_counter++;
-      if (debug_counter % 1000 == 0) {
-        Serial.printf("[TimingTask] Raw RSSI: %d, Filtered: %d, Threshold: %d\n", 
-                      raw_rssi, filtered_rssi, core->state.threshold);
+      if (debug_counter % 1000 == 0 && core->debug_enabled) {
+        Serial.printf("[TimingTask] Raw RSSI: %d, Filtered: %d, Threshold: %d, Crossing: %s\n", 
+                      raw_rssi, filtered_rssi, core->state.threshold, 
+                      (filtered_rssi >= core->state.threshold) ? "YES" : "NO");
       }
       
       // Update peak tracking
@@ -157,14 +159,16 @@ void TimingCore::timingTask(void* parameter) {
     if (loop_time > max_loop_time) max_loop_time = loop_time;
     total_loop_time += loop_time;
     
-    // Report performance every 5 seconds
+    // Report performance every 5 seconds - only in debug mode
     uint32_t now = millis();
     if (now - last_perf_time >= 5000) {
-      uint32_t avg_loop_time = total_loop_time / loop_count;
-      uint32_t loops_per_second = (loop_count * 1000) / (now - last_perf_time);
-      
-      Serial.printf("[TimingPerf] Loops/sec: %d, Avg: %dus, Min: %dus, Max: %dus\n", 
-                    loops_per_second, avg_loop_time, min_loop_time, max_loop_time);
+      if (core->debug_enabled) {
+        uint32_t avg_loop_time = total_loop_time / loop_count;
+        uint32_t loops_per_second = (loop_count * 1000) / (now - last_perf_time);
+        
+        Serial.printf("[TimingPerf] Loops/sec: %d, Avg: %dus, Min: %dus, Max: %dus\n", 
+                      loops_per_second, avg_loop_time, min_loop_time, max_loop_time);
+      }
       
       // Reset counters
       loop_count = 0;
@@ -437,4 +441,8 @@ bool TimingCore::isCrossing() const {
     xSemaphoreGive(timing_mutex);
   }
   return crossing;
+}
+
+void TimingCore::setDebugMode(bool debug_enabled) {
+  this->debug_enabled = debug_enabled;
 }

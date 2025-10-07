@@ -42,6 +42,9 @@ private:
   TaskHandle_t timing_task_handle;
   SemaphoreHandle_t timing_mutex;
   
+  // Debug mode flag
+  bool debug_enabled;
+  
   // RX5808 control
   void setupRX5808();
   void setRX5808Frequency(uint16_t freq_mhz);
@@ -70,6 +73,7 @@ public:
   void setFrequency(uint16_t freq_mhz);
   void setThreshold(uint8_t threshold);
   void setActivated(bool active);
+  void setDebugMode(bool debug_enabled);
   
   // State access (thread-safe)
   TimingState getState() const;

@@ -64,6 +64,13 @@ void setup() {
   // Initialize core timing system (always active)
   timing.begin();
   
+  // Set debug mode based on current mode
+  bool debug_mode = (current_mode == MODE_STANDALONE);
+  timing.setDebugMode(debug_mode);
+  if (debug_mode) {
+    Serial.printf("Debug mode enabled for mode: %s\n", current_mode == MODE_STANDALONE ? "STANDALONE" : "ROTORHAZARD");
+  }
+  
   // Continue with mode-specific initialization
   initializeMode();
 }
@@ -120,6 +127,8 @@ void checkModeSwitch() {
     
     if (new_mode != current_mode || !mode_initialized) {
       current_mode = new_mode;
+      // Update debug mode for timing core
+      timing.setDebugMode(current_mode == MODE_STANDALONE);
       initializeMode();
     }
     

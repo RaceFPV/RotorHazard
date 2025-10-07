@@ -82,21 +82,21 @@ void DisplayManager::showReady(uint16_t frequency, uint8_t rssi, uint8_t thresho
     _crossing = crossing;
     _raceActive = false;
     
-    // Simple, safe display for ready state
-    _display.drawStr(0, 10, "RotorHazard");
-    _display.drawStr(0, 25, "Ready");
+    // Simple, safe display for ready state - add 2px offset to prevent cut-off
+    _display.drawStr(2, 10, "RotorHazard");
+    _display.drawStr(2, 25, "Ready");
     
     // Only show basic info to avoid crashes
     char freqText[15];
     snprintf(freqText, sizeof(freqText), "F:%d", frequency);
-    _display.drawStr(0, 40, freqText);
+    _display.drawStr(2, 40, freqText);
     
     char rssiText[15];
     snprintf(rssiText, sizeof(rssiText), "R:%d", rssi);
-    _display.drawStr(0, 55, rssiText);
+    _display.drawStr(2, 55, rssiText);
     
     if (crossing) {
-        _display.drawStr(80, 25, "CROSS!");
+        _display.drawStr(82, 25, "CROSS!");
     }
 }
 
@@ -106,32 +106,32 @@ void DisplayManager::showRaceActive(uint8_t lapCount, uint32_t currentLapTime, u
     _bestLapTime = bestLapTime;
     _raceActive = true;
     
-    // Simple, safe display for race state
-    _display.drawStr(0, 10, "RACE ACTIVE");
+    // Simple, safe display for race state - add 2px offset to prevent cut-off
+    _display.drawStr(2, 10, "RACE ACTIVE");
     
     char lapText[15];
     snprintf(lapText, sizeof(lapText), "Laps: %d", lapCount);
-    _display.drawStr(0, 25, lapText);
+    _display.drawStr(2, 25, lapText);
     
     if (currentLapTime > 0) {
         char timeText[15];
         snprintf(timeText, sizeof(timeText), "L: %d.%03d", 
                 (int)(currentLapTime / 1000), (int)(currentLapTime % 1000));
-        _display.drawStr(0, 40, timeText);
+        _display.drawStr(2, 40, timeText);
     }
     
     if (bestLapTime > 0) {
         char bestText[15];
         snprintf(bestText, sizeof(bestText), "B: %d.%03d", 
                 (int)(bestLapTime / 1000), (int)(bestLapTime % 1000));
-        _display.drawStr(0, 55, bestText);
+        _display.drawStr(2, 55, bestText);
     }
 }
 
 void DisplayManager::showInitializing() {
-    // Simple initialization display - minimal font usage
-    _display.drawStr(0, 10, "RotorHazard");
-    _display.drawStr(0, 25, "Init...");
+    // Simple initialization display - minimal font usage - add 2px offset
+    _display.drawStr(2, 10, "RotorHazard");
+    _display.drawStr(2, 25, "Init...");
 }
 
 void DisplayManager::showError(const char* message) {
