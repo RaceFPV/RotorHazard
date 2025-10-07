@@ -3,7 +3,7 @@
 ## Hardware Setup
 
 ### Required Components
-- ESP32-C3 SuperMini development board (~$1.50 wholesale)
+- ESP32-C3 SuperMini development board
 - RX5808 FPV receiver module
 - Mode selection switch (GND=Node mode, 3.3V=WiFi mode)
 - Basic wiring supplies
@@ -47,7 +47,6 @@ GND          | Position 1   | RotorHazard node mode
 - **GND connected** = RotorHazard node mode  
 - **3.3V connected** = WiFi standalone mode
 
-**Note**: GPIO 0 is reserved for battery monitoring in Hertz-hunter compatibility, so we use GPIO 10 for the mode switch.
 
 ## PCB Design Considerations
 

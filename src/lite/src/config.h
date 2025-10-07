@@ -30,9 +30,10 @@
 #define CROSSING_THRESHOLD  50    // Default RSSI threshold for crossing detection
 
 // WiFi configuration
-#define WIFI_AP_SSID_PREFIX "rh-lite"
+#define WIFI_AP_SSID_PREFIX "rotorhazard"
 #define WIFI_AP_PASSWORD    ""    // Open network for simplicity
 #define WEB_SERVER_PORT     80
+#define MDNS_HOSTNAME       "rotorhazard"  // mDNS hostname (accessible as rotorhazard.local)
 
 // Data storage
 #define MAX_LAPS_STORED     100   // Maximum laps to store in memory

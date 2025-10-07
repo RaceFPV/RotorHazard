@@ -96,8 +96,8 @@ Setting up RX5808...
 TimingCore: Ready
 Initializing mode: STANDALONE/WIFI
 === WIFI/LITE MODE ACTIVE ===
-Connect to WiFi: rh-lite-XXXX
-Web interface: http://192.168.4.1
+Connect to WiFi: rotorhazard-XXXX
+Web interface: http://rotorhazard.local
 ESP32-C3 Single-core operation
 Setup complete!
 ```
@@ -159,7 +159,7 @@ If build fails:
 ## Next Steps
 
 After successful upload:
-1. **WiFi Mode**: Set mode switch to 3.3V, connect to "rh-lite-XXXX" WiFi, open http://192.168.4.1
+1. **WiFi Mode**: Set mode switch to 3.3V, connect to "rotorhazard-XXXX" WiFi, open http://rotorhazard.local
 2. **Node Mode**: Set mode switch to GND, connect to RotorHazard server via USB
 3. **Hardware Setup**: Connect RX5808 module using Hertz-hunter compatible pinout (see `hardware.md`)
 

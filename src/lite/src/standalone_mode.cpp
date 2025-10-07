@@ -1,6 +1,7 @@
 #include "standalone_mode.h"
 #include <WiFi.h>
 #include <SPIFFS.h>
+#include <ESPmDNS.h>
 #include "config.h"
 
 StandaloneMode::StandaloneMode() : _server(80), _timingCore(nullptr) {
@@ -11,6 +12,14 @@ void StandaloneMode::begin(TimingCore* timingCore) {
     
     // Initialize WiFi AP
     setupWiFiAP();
+    
+    // Initialize mDNS for .local hostname
+    if (MDNS.begin(MDNS_HOSTNAME)) {
+        Serial.printf("mDNS responder started: %s.local\n", MDNS_HOSTNAME);
+        MDNS.addService("http", "tcp", WEB_SERVER_PORT);
+    } else {
+        Serial.println("Error setting up mDNS responder");
+    }
     
     // Initialize SPIFFS for serving static files
     if (!SPIFFS.begin(true)) {
@@ -36,11 +45,13 @@ void StandaloneMode::begin(TimingCore* timingCore) {
     Serial.println("Web server started");
     Serial.printf("Access point: %s\n", WIFI_AP_SSID_PREFIX);
     Serial.printf("IP address: %s\n", WiFi.softAPIP().toString().c_str());
-    Serial.println("Open browser to http://192.168.4.1");
+    Serial.printf("mDNS hostname: %s.local\n", MDNS_HOSTNAME);
+    Serial.println("Open browser to http://192.168.4.1 or http://rotorhazard.local");
 }
 
 void StandaloneMode::process() {
     _server.handleClient();
+    // mDNS handles requests automatically in background
     
     // Check for new lap data
     if (_timingCore && _timingCore->hasNewLap()) {
