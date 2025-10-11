@@ -7,15 +7,15 @@ A dual-mode ESP32-C3-based race timer that works as both:
 ## Quick Start
 
 ### Standalone Mode (WiFi)
-1. Connect GPIO 10 to 3.3V (or leave floating for default)
+1. Connect GPIO 1 to GND (or leave floating for default)
 2. Power on ESP32-C3
 3. Connect to WiFi network "rotorhazard-XXXX"
-4. Open browser to http://rotorhazard.local (or http://192.168.4.1)
+4. Open browser to http://lite.local (or http://192.168.4.1)
 5. Enable audio announcements for FPV pilots (optional)
 6. Start timing!
 
 ### RotorHazard Node Mode (USB)
-1. Leave GPIO 10 floating (default) or connect to GND
+1. Leave GPIO 1 floating (default) or connect to 3.3V
 2. Connect ESP32-C3 to PC/Pi via USB
 3. Add as timing node in RotorHazard server
 4. Full RotorHazard features available!
@@ -24,7 +24,7 @@ A dual-mode ESP32-C3-based race timer that works as both:
 
 - ESP32-C3 SuperMini development board 
 - RX5808 FPV receiver module
-- Mode selection switch (GND=Node, 3.3V=WiFi)
+- Mode selection switch (GND=WiFi, 3.3V=Node)
 
 ## Pin Configuration (ESP32-C3 SuperMini - Hertz-hunter Compatible)
 

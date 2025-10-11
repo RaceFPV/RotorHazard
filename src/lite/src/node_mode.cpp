@@ -227,25 +227,31 @@ void Message::handleWriteCommand(bool serialFlag) {
     switch (command) {
         case WRITE_FREQUENCY: {
             uint16_t freq = buffer.read16();
-            // TODO: Set frequency via timing core
-            // Debug output disabled to avoid interfering with serial protocol
-            // Serial.printf("Set frequency: %d MHz\n", freq);
+            // Set frequency via timing core
+            if (nodeMode && nodeMode->_timingCore) {
+                nodeMode->_timingCore->setFrequency(freq);
+                nodeMode->_timingCore->setActivated(true);  // Activate node after frequency is set
+            }
             settingChangedFlags |= FREQ_SET | FREQ_CHANGED;
             break;
         }
         
         case WRITE_ENTER_AT_LEVEL: {
             uint8_t level = buffer.read8();
-            // Debug output disabled to avoid interfering with serial protocol
-            // Serial.printf("Set enter level: %d\n", level);
+            // Set enter threshold via timing core
+            if (nodeMode && nodeMode->_timingCore) {
+                nodeMode->_timingCore->setThreshold(level);
+            }
             settingChangedFlags |= ENTERAT_CHANGED;
             break;
         }
         
         case WRITE_EXIT_AT_LEVEL: {
             uint8_t level = buffer.read8();
-            // Debug output disabled to avoid interfering with serial protocol
-            // Serial.printf("Set exit level: %d\n", level);
+            // Set exit threshold via timing core (same as enter for now)
+            if (nodeMode && nodeMode->_timingCore) {
+                nodeMode->_timingCore->setThreshold(level);
+            }
             settingChangedFlags |= EXITAT_CHANGED;
             break;
         }
@@ -289,7 +295,13 @@ void Message::handleReadCommand(bool serialFlag) {
             break;
             
         case READ_FREQUENCY:
-            buffer.write16(5800);  // Default frequency
+            // Return actual frequency from timing core
+            if (nodeMode && nodeMode->_timingCore) {
+                TimingState state = nodeMode->_timingCore->getState();
+                buffer.write16(state.frequency_mhz);
+            } else {
+                buffer.write16(5800);  // Default frequency if timing core not available
+            }
             break;
             
         case READ_LAP_PASS_STATS: {
@@ -330,11 +342,23 @@ void Message::handleReadCommand(bool serialFlag) {
         }
         
         case READ_ENTER_AT_LEVEL:
-            buffer.write8(96);
+            // Return actual threshold from timing core
+            if (nodeMode && nodeMode->_timingCore) {
+                TimingState state = nodeMode->_timingCore->getState();
+                buffer.write8(state.threshold);
+            } else {
+                buffer.write8(96);  // Default threshold
+            }
             break;
             
         case READ_EXIT_AT_LEVEL:
-            buffer.write8(80);
+            // Return actual threshold from timing core (same as enter for now)
+            if (nodeMode && nodeMode->_timingCore) {
+                TimingState state = nodeMode->_timingCore->getState();
+                buffer.write8(state.threshold);
+            } else {
+                buffer.write8(80);  // Default threshold
+            }
             break;
             
         case READ_REVISION_CODE:

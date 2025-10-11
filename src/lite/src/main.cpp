@@ -140,6 +140,7 @@ void checkModeSwitch() {
 
 void initializeMode() {
   if (current_mode == MODE_STANDALONE) {
+    // Only show debug output in standalone mode
     Serial.println("TimingCore: Ready");
     Serial.println();
     Serial.println("=== WIFI/LITE MODE ACTIVE ===");

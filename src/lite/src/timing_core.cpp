@@ -28,7 +28,9 @@ TimingCore::TimingCore() {
 }
 
 void TimingCore::begin() {
-  Serial.println("TimingCore: Initializing...");
+  if (debug_enabled) {
+    Serial.println("TimingCore: Initializing...");
+  }
   
   // Setup pins
   pinMode(RSSI_INPUT_PIN, INPUT);
@@ -36,8 +38,10 @@ void TimingCore::begin() {
   
   // Test ADC reading immediately
   uint16_t test_adc = analogRead(RSSI_INPUT_PIN);
-  Serial.printf("ADC test reading on pin %d: %d (raw 12-bit)\n", RSSI_INPUT_PIN, test_adc);
-  Serial.printf("Converted to 8-bit: %d\n", (test_adc >> 4) & 0xFF);
+  if (debug_enabled) {
+    Serial.printf("ADC test reading on pin %d: %d (raw 12-bit)\n", RSSI_INPUT_PIN, test_adc);
+    Serial.printf("Converted to 8-bit: %d\n", (test_adc >> 4) & 0xFF);
+  }
   
   // Initialize RX5808 module
   setupRX5808();
@@ -49,7 +53,9 @@ void TimingCore::begin() {
   for (int i = 0; i < RSSI_SAMPLES; i++) {
     uint16_t raw_adc = analogRead(RSSI_INPUT_PIN);
     rssi_samples[i] = (raw_adc >> 4) & 0xFF; // Convert 12-bit to 8-bit
-    Serial.printf("Initial RSSI sample %d: ADC=%d, 8-bit=%d\n", i, raw_adc, rssi_samples[i]);
+    if (debug_enabled) {
+      Serial.printf("Initial RSSI sample %d: ADC=%d, 8-bit=%d\n", i, raw_adc, rssi_samples[i]);
+    }
   }
   
   // Create timing task for ESP32-C3 single core (high priority)
@@ -58,7 +64,9 @@ void TimingCore::begin() {
   // Mark as activated
   state.activated = true;
   
-  Serial.println("TimingCore: Ready");
+  if (debug_enabled) {
+    Serial.println("TimingCore: Ready");
+  }
 }
 
 void TimingCore::process() {
@@ -130,14 +138,18 @@ void TimingCore::timingTask(void* parameter) {
         if (crossing_detected) {
           // Starting a crossing
           core->state.crossing_start = current_time;
-          Serial.printf("Crossing started - RSSI: %d\n", filtered_rssi);
+          if (core->debug_enabled) {
+            Serial.printf("Crossing started - RSSI: %d\n", filtered_rssi);
+          }
         } else {
           // Ending a crossing - record lap
           uint32_t crossing_duration = current_time - core->state.crossing_start;
           if (crossing_duration > 100) { // Minimum 100ms crossing to avoid noise
             core->recordLap(current_time, core->state.peak_rssi);
           }
-          Serial.printf("Crossing ended - Duration: %dms\n", crossing_duration);
+          if (core->debug_enabled) {
+            Serial.printf("Crossing ended - Duration: %dms\n", crossing_duration);
+          }
         }
         
         // Notify callback if registered  
@@ -250,15 +262,19 @@ void TimingCore::recordLap(uint32_t timestamp, uint8_t peak_rssi) {
 }
 
 void TimingCore::setupRX5808() {
-  Serial.println("Setting up RX5808...");
+  if (debug_enabled) {
+    Serial.println("Setting up RX5808...");
+  }
   
   // Initialize SPI pins
   pinMode(RX5808_DATA_PIN, OUTPUT);
   pinMode(RX5808_CLK_PIN, OUTPUT);
   pinMode(RX5808_SEL_PIN, OUTPUT);
   
-  Serial.printf("RX5808 pins - DATA: %d, CLK: %d, SEL: %d\n", 
-                RX5808_DATA_PIN, RX5808_CLK_PIN, RX5808_SEL_PIN);
+  if (debug_enabled) {
+    Serial.printf("RX5808 pins - DATA: %d, CLK: %d, SEL: %d\n", 
+                  RX5808_DATA_PIN, RX5808_CLK_PIN, RX5808_SEL_PIN);
+  }
   
   // Set initial states
   digitalWrite(RX5808_SEL_PIN, HIGH);
@@ -266,12 +282,16 @@ void TimingCore::setupRX5808() {
   digitalWrite(RX5808_DATA_PIN, LOW);
   
   delay(100); // Allow module to stabilize
-  Serial.println("RX5808 setup complete");
+  if (debug_enabled) {
+    Serial.println("RX5808 setup complete");
+  }
 }
 
 void TimingCore::setRX5808Frequency(uint16_t freq_mhz) {
   if (freq_mhz < MIN_FREQ || freq_mhz > MAX_FREQ) {
-    Serial.printf("Invalid frequency: %d MHz (valid range: %d-%d)\n", freq_mhz, MIN_FREQ, MAX_FREQ);
+    if (debug_enabled) {
+      Serial.printf("Invalid frequency: %d MHz (valid range: %d-%d)\n", freq_mhz, MIN_FREQ, MAX_FREQ);
+    }
     return;
   }
   
@@ -280,8 +300,10 @@ void TimingCore::setRX5808Frequency(uint16_t freq_mhz) {
   uint16_t synth_a = 0x8008 | ((freq_reg & 0x0007) << 5) | ((freq_reg & 0x0078) >> 3);
   uint16_t synth_b = 0x8209 | ((freq_reg & 0x0380) << 2);
   
-  Serial.printf("Setting frequency to %d MHz (reg=%d, synth_a=0x%04X, synth_b=0x%04X)\n", 
-                freq_mhz, freq_reg, synth_a, synth_b);
+  if (debug_enabled) {
+    Serial.printf("Setting frequency to %d MHz (reg=%d, synth_a=0x%04X, synth_b=0x%04X)\n", 
+                  freq_mhz, freq_reg, synth_a, synth_b);
+  }
   
   // Send register values
   sendRX5808Bits(synth_a, 16);
@@ -291,7 +313,9 @@ void TimingCore::setRX5808Frequency(uint16_t freq_mhz) {
   
   // Allow time for frequency to stabilize
   delay(50);
-  Serial.printf("Frequency set to %d MHz\n", freq_mhz);
+  if (debug_enabled) {
+    Serial.printf("Frequency set to %d MHz\n", freq_mhz);
+  }
 }
 
 void TimingCore::sendRX5808Bits(uint16_t data, uint8_t bit_count) {

@@ -40,7 +40,7 @@
 #define WIFI_AP_SSID_PREFIX "rotorhazard"
 #define WIFI_AP_PASSWORD    ""    // Open network for simplicity
 #define WEB_SERVER_PORT     80
-#define MDNS_HOSTNAME       "rotorhazard"  // mDNS hostname (accessible as rotorhazard.local)
+#define MDNS_HOSTNAME       "lite"         // mDNS hostname (accessible as lite.local)
 
 // Data storage
 #define MAX_LAPS_STORED     100   // Maximum laps to store in memory
