@@ -40,7 +40,10 @@ void TimingCore::begin() {
   uint16_t test_adc = analogRead(RSSI_INPUT_PIN);
   if (debug_enabled) {
     Serial.printf("ADC test reading on pin %d: %d (raw 12-bit)\n", RSSI_INPUT_PIN, test_adc);
-    Serial.printf("Converted to 8-bit: %d\n", (test_adc >> 4) & 0xFF);
+    uint16_t raw = test_adc >> 2;  // Convert 12-bit to 10-bit
+    if (raw > 0x01FF) raw = 0x01FF;
+    uint8_t final_rssi = raw >> 1;
+    Serial.printf("10-bit: %d, Final RSSI: %d\n", raw, final_rssi);
   }
   
   // Initialize RX5808 module
@@ -51,10 +54,9 @@ void TimingCore::begin() {
   
   // Initialize RSSI filtering with some test readings
   for (int i = 0; i < RSSI_SAMPLES; i++) {
-    uint16_t raw_adc = analogRead(RSSI_INPUT_PIN);
-    rssi_samples[i] = (raw_adc >> 4) & 0xFF; // Convert 12-bit to 8-bit
+    rssi_samples[i] = readRawRSSI(); // Use the new scaling function
     if (debug_enabled) {
-      Serial.printf("Initial RSSI sample %d: ADC=%d, 8-bit=%d\n", i, raw_adc, rssi_samples[i]);
+      Serial.printf("Initial RSSI sample %d: %d\n", i, rssi_samples[i]);
     }
   }
   
@@ -118,8 +120,11 @@ void TimingCore::timingTask(void* parameter) {
       // Debug output every 1000 iterations (about once per second) - only in debug mode
       debug_counter++;
       if (debug_counter % 1000 == 0 && core->debug_enabled) {
-        Serial.printf("[TimingTask] Raw RSSI: %d, Filtered: %d, Threshold: %d, Crossing: %s\n", 
-                      raw_rssi, filtered_rssi, core->state.threshold, 
+        uint16_t raw_adc = analogRead(RSSI_INPUT_PIN);
+        uint16_t raw_10bit = raw_adc >> 2;
+        if (raw_10bit > 0x01FF) raw_10bit = 0x01FF;
+        Serial.printf("[TimingTask] ADC: %d, 10-bit: %d, RSSI: %d, Threshold: %d, Crossing: %s\n", 
+                      raw_adc, raw_10bit, filtered_rssi, core->state.threshold, 
                       (filtered_rssi >= core->state.threshold) ? "YES" : "NO");
       }
       
@@ -196,9 +201,17 @@ void TimingCore::timingTask(void* parameter) {
 }
 
 uint8_t TimingCore::readRawRSSI() {
-  // Read 12-bit ADC value and convert to 8-bit
+  // Read 12-bit ADC value and convert to 10-bit range to match Arduino
   uint16_t adc_value = analogRead(RSSI_INPUT_PIN);
-  return (adc_value >> 4) & 0xFF; // Convert 12-bit (0-4095) to 8-bit (0-255)
+  uint16_t raw = adc_value >> 2;  // Convert 12-bit (0-4095) to 10-bit (0-1023)
+  
+  // Clamp upper range to fit scaling (RX5808 RSSI output is limited)
+  if (raw > 0x01FF) {
+    raw = 0x01FF;
+  }
+  
+  // Rescale to fit into a byte and remove some jitter (exactly like original RotorHazard)
+  return raw >> 1;
 }
 
 uint8_t TimingCore::filterRSSI(uint8_t raw_rssi) {

@@ -10,8 +10,11 @@ StandaloneMode::StandaloneMode() : _server(80), _timingCore(nullptr) {
 void StandaloneMode::begin(TimingCore* timingCore) {
     _timingCore = timingCore;
     
-    // Initialize WiFi AP
+    // Initialize WiFi AP with stability improvements
     setupWiFiAP();
+    
+    // Give WiFi time to stabilize
+    delay(1000);
     
     // Initialize display
     _displayManager.begin();
@@ -107,27 +110,67 @@ void StandaloneMode::process() {
         }
     }
     
+    // Monitor WiFi status and recover if needed
+    static unsigned long last_wifi_check = 0;
+    if (millis() - last_wifi_check > 5000) { // Check every 5 seconds
+        if (WiFi.getMode() != WIFI_AP) {
+            Serial.println("WiFi mode lost, restarting...");
+            WiFi.mode(WIFI_AP);
+            delay(100);
+        }
+        last_wifi_check = millis();
+    }
+    
     // Update display (handles timing internally)
     _displayManager.update();
 }
 
 void StandaloneMode::setupWiFiAP() {
+    // Disable WiFi power saving for stability
+    WiFi.setSleep(false);
+    
+    // Set WiFi mode to AP only
     WiFi.mode(WIFI_AP);
+    
+    // Wait for mode to be set
+    delay(100);
     
     // Create unique SSID with MAC address
     String macAddr = WiFi.macAddress();
     macAddr.replace(":", "");
     String apSSID = String(WIFI_AP_SSID_PREFIX) + "-" + macAddr.substring(8);
     
-    WiFi.softAP(apSSID.c_str(), WIFI_AP_PASSWORD);
+    // Configure AP with more stable settings
+    WiFi.softAPConfig(
+        IPAddress(192, 168, 4, 1),    // local_IP
+        IPAddress(192, 168, 4, 1),    // gateway
+        IPAddress(255, 255, 255, 0)   // subnet
+    );
     
-    // Configure IP
-    IPAddress local_IP(192, 168, 4, 1);
-    IPAddress gateway(192, 168, 4, 1);
-    IPAddress subnet(255, 255, 255, 0);
-    WiFi.softAPConfig(local_IP, gateway, subnet);
+    // Start AP with retry logic
+    bool ap_started = false;
+    int retry_count = 0;
+    while (!ap_started && retry_count < 5) {
+        ap_started = WiFi.softAP(apSSID.c_str(), WIFI_AP_PASSWORD, 1, 0, 4); // channel 1, hidden=false, max_connections=4
+        if (!ap_started) {
+            Serial.printf("WiFi AP start attempt %d failed, retrying...\n", retry_count + 1);
+            delay(500);
+            retry_count++;
+        }
+    }
     
-    Serial.printf("WiFi AP started: %s\n", apSSID.c_str());
+    if (ap_started) {
+        Serial.printf("WiFi AP started: %s\n", apSSID.c_str());
+        Serial.printf("IP address: %s\n", WiFi.softAPIP().toString().c_str());
+        Serial.printf("Connected clients: %d\n", WiFi.softAPgetStationNum());
+    } else {
+        Serial.println("ERROR: Failed to start WiFi AP after 5 attempts");
+        // Try to recover by restarting WiFi
+        WiFi.disconnect(true);
+        delay(1000);
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP(apSSID.c_str(), WIFI_AP_PASSWORD);
+    }
 }
 
 void StandaloneMode::handleRoot() {
@@ -1104,10 +1147,21 @@ void StandaloneMode::handleGetChannels() {
 // Web server task - runs at WEB_PRIORITY (1) - between timing (2) and display (0)
 void StandaloneMode::webServerTask(void* parameter) {
     StandaloneMode* mode = static_cast<StandaloneMode*>(parameter);
+    unsigned long last_wifi_check = 0;
     
     while (true) {
         // Handle web server requests
         mode->_server.handleClient();
+        
+        // Check WiFi status every 10 seconds in web server task
+        if (millis() - last_wifi_check > 10000) {
+            if (WiFi.getMode() != WIFI_AP) {
+                Serial.println("[WebServer] WiFi mode lost, attempting recovery...");
+                WiFi.mode(WIFI_AP);
+                delay(100);
+            }
+            last_wifi_check = millis();
+        }
         
         // Small delay to prevent task from consuming all CPU
         vTaskDelay(pdMS_TO_TICKS(1));
