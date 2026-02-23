@@ -81,11 +81,9 @@ do_host_setup() {
     if ! grep -q "# NuclearHazard Config" "$BOOT_CONFIG" 2>/dev/null; then
         echo "" >> "$BOOT_CONFIG"
         echo "# NuclearHazard Config" >> "$BOOT_CONFIG"
-        echo "dtoverlay=miniuart-bt" >> "$BOOT_CONFIG"
         echo "dtparam=i2c_baudrate=75000" >> "$BOOT_CONFIG"
         echo "dtoverlay=act-led,gpio=24" >> "$BOOT_CONFIG"
         echo "dtoverlay=gpio-led,gpio=26,label=pwrled,trigger=default-on" >> "$BOOT_CONFIG"
-        echo "dtoverlay=spi0-0cs,no_miso" >> "$BOOT_CONFIG"
         echo "dtparam=act_led_trigger=heartbeat" >> "$BOOT_CONFIG"
         
         # Add Pi-specific overlays
@@ -95,13 +93,11 @@ do_host_setup() {
                 echo "[pi5]" >> "$BOOT_CONFIG"
                 echo "dtoverlay=uart0-pi5" >> "$BOOT_CONFIG"
                 echo "dtoverlay=i2c1-pi5" >> "$BOOT_CONFIG"
-                echo "dtoverlay=uart3-pi5" >> "$BOOT_CONFIG"
                 ;;
             pi4)
                 echo "" >> "$BOOT_CONFIG"
                 echo "[pi4]" >> "$BOOT_CONFIG"
                 echo "dtoverlay=gpio-shutdown,gpio_pin=19,debounce=5000" >> "$BOOT_CONFIG"
-                echo "dtoverlay=uart4" >> "$BOOT_CONFIG"
                 ;;
             pi3|pi02)
                 echo "" >> "$BOOT_CONFIG"
@@ -111,6 +107,7 @@ do_host_setup() {
                 ;;
         esac
         
+        echo "" >> "$BOOT_CONFIG"
         echo "[all]" >> "$BOOT_CONFIG"
         echo "# End NuclearHazard Config" >> "$BOOT_CONFIG"
         
@@ -153,12 +150,29 @@ do_host_setup() {
     
     # Create and start the container (it will auto-restart after reboot)
     echo "Creating Docker container..."
+    
+    # Build device mount args (only mount devices that exist)
+    DEVICE_MOUNTS=""
+    for dev in /dev/gpiochip* /dev/gpiomem /dev/mem /dev/i2c-* /dev/spidev* /dev/ttyAMA0 /dev/serial0; do
+        [ -e "$dev" ] && DEVICE_MOUNTS="$DEVICE_MOUNTS --device=$dev"
+    done
+    
+    # Get gpio group ID if it exists
+    GPIO_GID=$(getent group gpio 2>/dev/null | cut -d: -f3 || echo "")
+    GROUP_ADD=""
+    [ -n "$GPIO_GID" ] && GROUP_ADD="--group-add $GPIO_GID"
+    
     docker run -d \
         --name nuclearhazard-server \
         --restart unless-stopped \
         -p 80:5000 \
         -p 5000:5000 \
         -v "${DATA_DIR}:/app/data" \
+        -v /proc/device-tree:/proc/device-tree:ro \
+        -v /sys:/sys \
+        -v /run/udev:/run/udev:ro \
+        $DEVICE_MOUNTS \
+        $GROUP_ADD \
         -e RH_DATA_DIR=/app/data \
         -e NH_FIRST_RUN=1 \
         --privileged \
@@ -210,12 +224,28 @@ run_docker() {
         docker rm nuclearhazard-server 2>/dev/null || true
     fi
     
+    # Build device mount args (only mount devices that exist)
+    DEVICE_MOUNTS=""
+    for dev in /dev/gpiochip* /dev/gpiomem /dev/mem /dev/i2c-* /dev/spidev* /dev/ttyAMA0 /dev/serial0; do
+        [ -e "$dev" ] && DEVICE_MOUNTS="$DEVICE_MOUNTS --device=$dev"
+    done
+    
+    # Get gpio group ID if it exists
+    GPIO_GID=$(getent group gpio 2>/dev/null | cut -d: -f3 || echo "")
+    GROUP_ADD=""
+    [ -n "$GPIO_GID" ] && GROUP_ADD="--group-add $GPIO_GID"
+    
     docker run -d \
         --name nuclearhazard-server \
         --restart unless-stopped \
         -p 80:5000 \
         -p 5000:5000 \
         -v "${DATA_DIR}:/app/data" \
+        -v /proc/device-tree:/proc/device-tree:ro \
+        -v /sys:/sys \
+        -v /run/udev:/run/udev:ro \
+        $DEVICE_MOUNTS \
+        $GROUP_ADD \
         -e RH_DATA_DIR=/app/data \
         -e NH_FIRST_RUN="${FIRST_RUN}" \
         --privileged \

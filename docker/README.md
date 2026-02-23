@@ -61,6 +61,7 @@ docker run -d --name rotorhazard-server --restart unless-stopped -p 5000:5000 -v
 |---------------------------|-----------------|----------------|
 | `docker-compose.yml`      | Local dev       | Build from repo |
 | `docker-compose.prod.yml` | Production / Pi | Docker Hub     |
+| `docker-compose.nuclearpi.yml` | NuclearHazard dev | Build from repo |
 
 ## Dockerfiles
 
@@ -120,30 +121,29 @@ docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t rac
 
 NuclearHazard boards require additional Pi configuration and packages. Uses a separate image tag.
 
-**Build and push:**
+**Important:** NuclearHazard board requires external power supply (USB from Pi alone is not sufficient).
 
-```bash
-docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t racefpv/rotorhazard-nuclearpi:latest --push .
-```
+See [README-NuclearHazard.md](README-NuclearHazard.md) for detailed setup and troubleshooting.
 
-**Run on Pi (single command - run once!):**
+**Quick start (recommended):**
 
 ```bash
 chmod +x docker/run-prod-nuclear-pi.sh
 ./docker/run-prod-nuclear-pi.sh
 ```
 
-The script automatically:
-1. Detects Pi model (Pi3/Pi4/Pi5)
-2. Configures hardware (I2C, SPI, serial, GPIO)
-3. Adds boot overlays
-4. Pulls Docker image & creates container
-5. Reboots
+The script automatically configures the Pi, pulls the image, and reboots. After reboot, NuclearHazard is running at `http://localhost`.
 
-**After reboot, NuclearHazard is already running!** Just open your browser.
+**Using docker-compose (dev/build from source):**
 
-No need to run the script again - Docker auto-starts the container on every boot.
+```bash
+docker-compose -f docker/docker-compose.nuclearpi.yml up -d
+```
 
 **Default credentials:** `NuclearHazard` / `nuclearhazard`
 
-**Manual setup** (if you prefer to configure manually, see comments in `run-prod-nuclear-pi.sh`)
+**Build and push:**
+
+```bash
+docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t racefpv/rotorhazard-nuclearpi:latest --push .
+```

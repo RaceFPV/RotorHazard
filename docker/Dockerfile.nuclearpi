@@ -1,6 +1,6 @@
 # NuclearHazard Server Dockerfile - Raspberry Pi (arm64 only)
 # Based on RotorHazard with NuclearHazard-specific configuration
-# Python 3.10+ is required (MIN_PYTHON_MAJOR_VERSION = 3, MIN_PYTHON_MINOR_VERSION = 10)
+# Uses Debian bookworm with proper GPIO support for Pi 3/4/5
 #
 # Build context must be the repo root (parent of docker/).
 #
@@ -10,34 +10,43 @@
 # Build and push to Docker Hub (arm64 only):
 #   docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t racefpv/rotorhazard-nuclearpi:latest --push .
 #
-FROM --platform=linux/arm64 python:3.11-slim
+FROM --platform=linux/arm64 python:3.11-bookworm
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (Pi packages may need these)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     libffi-dev \
     libssl-dev \
     procps \
+    python3-dev \
+    i2c-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file (Pi version with RPi.GPIO, rpi-ws281x, etc.)
+# Copy requirements file
 COPY src/server/requirements.txt /app/requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install rpi-lgpio (RPi.GPIO replacement that works on Pi 5)
+# This provides RPi.GPIO compatible interface using lgpio
+RUN pip install --no-cache-dir rpi-lgpio gpiozero
+
 # Install NuclearHazard specific dependencies (Pi5 LED support, VRxC flashing)
-RUN pip install rpi5-ws2812 esptool pillow
+RUN pip install --no-cache-dir rpi5-ws2812 esptool pillow
 
 # Copy server application files
 COPY src/server/ /app/src/server/
 
 # Copy interface directory (required by server)
 COPY src/interface/ /app/src/interface/
+
+# Copy firmware files for S32_BPill flashing
+COPY firmware/ /app/firmware/
 
 # Copy NuclearHazard entrypoint script
 COPY docker/nh_entrypoint.sh /app/nh_entrypoint.sh

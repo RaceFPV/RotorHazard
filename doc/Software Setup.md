@@ -140,7 +140,7 @@ wget https://rotorhazard.com/install.sh
 sh install.sh
 ```
 
-To install another version, add the desired version code after `install.sh` - for example:
+To install another version, add the desired version code after `install.sh`; for example:
 ```bash
 sh install.sh v4.3.0-beta.1
 ```
@@ -364,11 +364,6 @@ When the hardware is a Raspberry Pi 5, the '[rpi5-ws2812](https://github.com/nik
 - Inverted Control Signal
 - Channel
 
-If the LED count is more than 50, the SPI buffer size should be increased by adding " spidev.bufsiz=65536" to the first line of '/boot/firmware/cmdline.txt' file on the Pi. The following command will add the text and display the contents of the file:
-```commandline
-if [ -f "/boot/firmware/cmdline.txt" ] && ! grep -qF 'spidev.bufsiz' /boot/firmware/cmdline.txt; then echo && sudo sh -c 'sed -i "1 s/$/ spidev.bufsiz=65536/" /boot/firmware/cmdline.txt'; fi && cat /boot/firmware/cmdline.txt && echo
-```
-
 #### LED Controller
 
 An alternative to the above methods is to use an LED Controller module, which may be connected to a USB port on any computer that is running the RotorHazard Server. See the [LED Controller repository](https://github.com/RotorHazard/LEDCtrlr) for details on how to wire and program an Arduino board as an LED controller.
@@ -410,7 +405,7 @@ wget https://rotorhazard.com/update.sh
 sh update.sh
 ```
 
-To upgrade to another version, add the desired version code after `update.sh` - for example:
+To upgrade to another version, add the desired version code after `install.sh`; for example:
 ```bash
 sh update.sh v4.3.0-beta.1
 ```

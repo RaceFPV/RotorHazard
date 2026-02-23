@@ -4,6 +4,12 @@ set -e
 CONFIG_FILE="/app/data/config.json"
 MARKER_FILE="/app/data/.nh_initialized"
 
+# Pi 5 GPIO fix: create gpiochip4 symlink if it doesn't exist
+# (Docker passes the real device but not the symlink)
+if [ -e /dev/gpiochip0 ] && [ ! -e /dev/gpiochip4 ]; then
+    ln -sf /dev/gpiochip0 /dev/gpiochip4 2>/dev/null || true
+fi
+
 apply_nh_defaults() {
     if [ -f "$CONFIG_FILE" ] && [ ! -f "$MARKER_FILE" ]; then
         echo "Applying NuclearHazard defaults to config..."
