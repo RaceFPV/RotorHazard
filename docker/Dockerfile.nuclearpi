@@ -1,70 +1,17 @@
-# NuclearHazard Server Dockerfile - Raspberry Pi (arm64 only)
-# Based on RotorHazard with NuclearHazard-specific configuration
-# Uses Debian bookworm with proper GPIO support for Pi 3/4/5
+# NuclearHazard Server - Raspberry Pi (arm64)
+# Adds NuclearHazard entrypoint and defaults on top of the Pi image.
 #
-# Build context must be the repo root (parent of docker/).
-#
-# Build for arm64/Pi:
+# Build Pi image first, then:
 #   docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t rotorhazard:nuclearpi .
+# Or use docker/scripts/build-and-push.sh (builds base then pi then nuclearpi).
 #
-# Build and push to Docker Hub (arm64 only):
-#   docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t racefpv/rotorhazard-nuclearpi:latest --push .
-#
-FROM --platform=linux/arm64 python:3.11-bookworm
+# Override Pi image for local builds: --build-arg PI_IMAGE=rotorhazard:pi
+ARG PI_IMAGE=racefpv/rotorhazard-pi:latest
+FROM ${PI_IMAGE}
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    libffi-dev \
-    libssl-dev \
-    procps \
-    python3-dev \
-    i2c-tools \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements file
-COPY src/server/requirements.txt /app/requirements.txt
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install rpi-lgpio (RPi.GPIO replacement that works on Pi 5)
-# This provides RPi.GPIO compatible interface using lgpio
-RUN pip install --no-cache-dir rpi-lgpio gpiozero
-
-# Install NuclearHazard specific dependencies (Pi5 LED support, VRxC flashing)
-RUN pip install --no-cache-dir rpi5-ws2812 esptool pillow
-
-# Copy server application files
-COPY src/server/ /app/src/server/
-
-# Copy interface directory (required by server)
-COPY src/interface/ /app/src/interface/
-
-# Copy firmware files for S32_BPill flashing
-COPY firmware/ /app/firmware/
-
-# Copy NuclearHazard entrypoint script
-COPY docker/nh_entrypoint.sh /app/nh_entrypoint.sh
+# NuclearHazard entrypoint (first-run config, Pi 5 gpiochip symlink, etc.)
+COPY docker/scripts/nh_entrypoint.sh /app/nh_entrypoint.sh
 RUN chmod +x /app/nh_entrypoint.sh
 
-# Set working directory to server directory
-WORKDIR /app/src/server
-
-# Create data directory for persistent storage
-RUN mkdir -p /app/data
-VOLUME /app/data
-
-# Expose the default HTTP port
-EXPOSE 5000
-
-# Set environment variables
-ENV RH_DATA_DIR=/app/data
 ENV NH_FIRST_RUN=0
-
-# Use NuclearHazard entrypoint for first-run config setup
 ENTRYPOINT ["/app/nh_entrypoint.sh"]
