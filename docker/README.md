@@ -68,16 +68,40 @@ docker run -d --name rotorhazard-server --restart unless-stopped -p 5000:5000 -v
 |----------------|------------|---------------------|
 | `Dockerfile`   | Non-Pi (x64/amd64) | `reqsNonPi.txt`  |
 | `Dockerfile.pi` | Raspberry Pi (arm64) | `requirements.txt` (RPi.GPIO, rpi-ws281x, etc.) |
+| `Dockerfile.nuclearpi` | NuclearHazard boards (arm64 only) | `requirements.txt` + rpi5-ws2812, esptool, pillow |
 
 Build from **repo root**:
 - Non-Pi: `docker build -f docker/Dockerfile -t rotorhazard .`
 - Pi: `docker build -f docker/Dockerfile.pi -t rotorhazard:pi .`
+- NuclearHazard: `docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t rotorhazard:nuclearpi .`
 
-## Multi-platform build (amd64 + arm64)
+## Build and push all images
 
-To push one tag that works on both x64 and Raspberry Pi, build each platform with its Dockerfile and push to the same tag:
+Use the build script to build and push all images at once:
 
-From the **repo root**:
+```bash
+# Build and push all images to Docker Hub
+./docker/build-and-push.sh
+
+# Build only (no push)
+./docker/build-and-push.sh --no-push
+
+# Build only one image
+./docker/build-and-push.sh --only=nuclearpi
+./docker/build-and-push.sh --only=pi
+./docker/build-and-push.sh --only=rotorhazard
+```
+
+This builds:
+| Image | Platform | Dockerfile |
+|-------|----------|------------|
+| `racefpv/rotorhazard:latest` | amd64 | `Dockerfile` |
+| `racefpv/rotorhazard-pi:latest` | arm64 | `Dockerfile.pi` |
+| `racefpv/rotorhazard-nuclearpi:latest` | arm64 | `Dockerfile.nuclearpi` |
+
+## Manual multi-platform build
+
+To build individual images manually:
 
 ```bash
 docker buildx create --use --name multi  # one-time
@@ -85,8 +109,41 @@ docker buildx create --use --name multi  # one-time
 # Non-Pi image for amd64
 docker buildx build --platform linux/amd64 -f docker/Dockerfile -t racefpv/rotorhazard:latest --push .
 
-# Pi image for arm64 (uses requirements.txt with RPi.GPIO, etc.)
-docker buildx build --platform linux/arm64 -f docker/Dockerfile.pi -t racefpv/rotorhazard:latest --push .
+# Pi image for arm64
+docker buildx build --platform linux/arm64 -f docker/Dockerfile.pi -t racefpv/rotorhazard-pi:latest --push .
+
+# NuclearHazard image for arm64
+docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t racefpv/rotorhazard-nuclearpi:latest --push .
 ```
 
-Result: `docker pull racefpv/rotorhazard:latest` gets the non-Pi image on amd64 and the Pi image on arm64.
+## NuclearHazard (arm64 only)
+
+NuclearHazard boards require additional Pi configuration and packages. Uses a separate image tag.
+
+**Build and push:**
+
+```bash
+docker buildx build --platform linux/arm64 -f docker/Dockerfile.nuclearpi -t racefpv/rotorhazard-nuclearpi:latest --push .
+```
+
+**Run on Pi (single command - run once!):**
+
+```bash
+chmod +x docker/run-prod-nuclear-pi.sh
+./docker/run-prod-nuclear-pi.sh
+```
+
+The script automatically:
+1. Detects Pi model (Pi3/Pi4/Pi5)
+2. Configures hardware (I2C, SPI, serial, GPIO)
+3. Adds boot overlays
+4. Pulls Docker image & creates container
+5. Reboots
+
+**After reboot, NuclearHazard is already running!** Just open your browser.
+
+No need to run the script again - Docker auto-starts the container on every boot.
+
+**Default credentials:** `NuclearHazard` / `nuclearhazard`
+
+**Manual setup** (if you prefer to configure manually, see comments in `run-prod-nuclear-pi.sh`)
