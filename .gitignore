@@ -43,3 +43,6 @@ venv
 
 # Rust release bundles
 dist/
+
+# Live server data (config with credentials, databases, logs)
+/data/
