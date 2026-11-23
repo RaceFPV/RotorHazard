@@ -2,7 +2,7 @@
 
 use crate::db;
 use crate::state::*;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 // ---------- language packs ----------
 
@@ -79,8 +79,6 @@ pub const PROGRAM_METHOD_ASSIGN: i64 = 0;
 pub const PROGRAM_METHOD_HEAT_RESULT: i64 = 1;
 pub const PROGRAM_METHOD_CLASS_RESULT: i64 = 2;
 
-pub const HEAT_STATUS_PLANNED: i64 = 0;
-pub const HEAT_STATUS_PROJECTED: i64 = 1;
 pub const HEAT_STATUS_CONFIRMED: i64 = 2;
 
 pub struct CalcResult {
@@ -355,7 +353,7 @@ pub fn build_heat_plan_result(
 
 /// Expands supported tokens and clears any remaining %...% tokens
 /// (characterized: unfilled tokens are removed).
-pub fn expand_callout(state: &SharedState, callout: &str) -> String {
+pub fn expand_callout(_state: &SharedState, callout: &str) -> String {
     // characterized doReplace subset: recognised callout tokens are cleared
     // when their data is unavailable; UNRECOGNISED tokens survive intact
     // (Python logs "Unrecognised callout token(s)")

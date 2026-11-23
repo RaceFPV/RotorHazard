@@ -6,7 +6,6 @@ use crate::payloads;
 use crate::state::*;
 use serde_json::json;
 use socketioxide::SocketIo;
-use std::sync::{Arc, Mutex};
 
 fn emit_to_all(io: &SocketIo, event: &'static str, payload: serde_json::Value) {
     if let Some(ns) = io.of("/") {
@@ -146,7 +145,7 @@ pub fn stop_race(state: &SharedState) {
 pub fn save_laps(state: &SharedState) -> bool {
     // snapshot race data first, then release the race lock before DB work
     let snapshot = {
-        let mut race = state.race.lock().unwrap();
+        let race = state.race.lock().unwrap();
         if race.race_status != RACE_STATUS_DONE || race.current_heat.is_none() {
             return false;
         }

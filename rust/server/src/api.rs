@@ -3,7 +3,6 @@
 
 use crate::db;
 use crate::payloads;
-use crate::race as race_ops;
 use crate::state::*;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

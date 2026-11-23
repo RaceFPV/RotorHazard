@@ -4,7 +4,6 @@
 //! (rust/tests/reference_payloads.json) generated from the Python server.
 
 use crate::db;
-use crate::state::*;
 use serde_json::{json, Map, Value};
 
 pub struct FormatInfo {
@@ -284,12 +283,6 @@ fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
 
-fn format_time_val(v: Option<f64>) -> Value {
-    match v {
-        Some(ms) => json!(db::format_time_to_str(ms)),
-        None => Value::Null,
-    }
-}
 
 fn raw_or_inf(v: &Value) -> f64 {
     match v.as_f64() {

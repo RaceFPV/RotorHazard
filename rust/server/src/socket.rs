@@ -12,7 +12,6 @@ use crate::state::*;
 use serde_json::{json, Map, Value};
 use socketioxide::extract::{AckSender, Data, SocketRef, State};
 use socketioxide::SocketIo;
-use std::sync::Arc;
 
 pub fn emit_to_all(io: &SocketIo, event: &'static str, payload: Value) {
     match io.of("/") {
@@ -35,22 +34,10 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("socket connected: {}", socket.id);
 
-        socket.on("probe3", |s: SocketRef, data: Data<Value>| {
-            tracing::info!("PROBE3 fired data={}", data.0);
-        });
-
-        socket.on("probe4", |s: SocketRef, data: Data<Option<Value>>| {
-            tracing::info!("PROBE4 fired data={:?}", data.0);
-        });
-
-        socket.on("probe", |s: SocketRef| {
-            tracing::info!("PROBE handler fired");
-        });
-
-        socket.on("probe2", |s: SocketRef, data: Data<Value>| {
-            tracing::info!("PROBE2 handler fired data={}", data.0);
-        });
-
+        
+        
+        
+        
         socket.on("load_data", move |socket: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
             handle_load_data(&socket, &s.0, data);
         });
@@ -75,99 +62,99 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
         match load_type.as_str() {
             Some("pilot_data") => {
                 let payload = db::with_db(state, payloads::build_pilot_data);
-                socket.emit("pilot_data", &payload);
+                let _ = socket.emit("pilot_data", &payload);
             }
             Some("heat_data") => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_heat_data(conn, &race)
                 });
-                socket.emit("heat_data", &payload);
+                let _ = socket.emit("heat_data", &payload);
             }
             Some("class_data") => {
                 let payload = db::with_db(state, payloads::build_class_data);
-                socket.emit("class_data", &payload);
+                let _ = socket.emit("class_data", &payload);
             }
             Some("format_data") => {
                 let payload = db::with_db(state, payloads::build_format_data);
-                socket.emit("format_data", &payload);
+                let _ = socket.emit("format_data", &payload);
             }
             Some("frequency_data") => {
                 let payload = db::with_db(state, payloads::build_frequency_data);
-                socket.emit("frequency_data", &payload);
+                let _ = socket.emit("frequency_data", &payload);
             }
             Some("node_data") => {
                 let payload = payloads::build_node_data(&state.race.lock().unwrap());
-                socket.emit("node_data", &payload);
+                let _ = socket.emit("node_data", &payload);
             }
             Some("race_status") => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_race_status(conn, &race)
                 });
-                socket.emit("race_status", &payload);
+                let _ = socket.emit("race_status", &payload);
             }
             Some("current_heat") => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_current_heat(conn, &race)
                 });
-                socket.emit("current_heat", &payload);
+                let _ = socket.emit("current_heat", &payload);
             }
             Some("seat_data") => {
                 let payload = db::with_db(state, payloads::build_seat_data);
-                socket.emit("seat_data", &payload);
+                let _ = socket.emit("seat_data", &payload);
             }
             Some("min_lap") => {
                 let payload = db::with_db(state, payloads::build_min_lap);
-                socket.emit("min_lap", &payload);
+                let _ = socket.emit("min_lap", &payload);
             }
             Some("enter_and_exit_at_levels") => {
                 let payload = db::with_db(state, payloads::build_enter_exit_levels);
-                socket.emit("enter_and_exit_at_levels", &payload);
+                let _ = socket.emit("enter_and_exit_at_levels", &payload);
             }
             Some("current_laps") => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_current_laps(conn, &race)
                 });
-                socket.emit("current_laps", &payload);
+                let _ = socket.emit("current_laps", &payload);
             }
             Some("pilot_list") => {
                 let payload = db::with_db(state, payloads::build_pilot_list);
-                socket.emit("pilot_list", &payload);
+                let _ = socket.emit("pilot_list", &payload);
             }
             Some("heat_list") => {
                 let payload = db::with_db(state, payloads::build_heat_list);
-                socket.emit("heat_list", &payload);
+                let _ = socket.emit("heat_list", &payload);
             }
             Some("class_list") => {
                 let payload = db::with_db(state, payloads::build_class_list);
-                socket.emit("class_list", &payload);
+                let _ = socket.emit("class_list", &payload);
             }
             Some("leaderboard") => {
                 let payload = build_current_leaderboard(&state);
-                socket.emit("leaderboard", &payload);
+                let _ = socket.emit("leaderboard", &payload);
             }
             Some("race_list") => {
                 let payload = build_race_list(&state);
-                socket.emit("race_list", &payload);
+                let _ = socket.emit("race_list", &payload);
             }
             Some("exporter_list") => {
-                socket.emit("exporter_list", &crate::export_import::exporter_list());
+                let _ = socket.emit("exporter_list", &crate::export_import::exporter_list());
             }
             Some("importer_list") => {
-                socket.emit("importer_list", &crate::export_import::importer_list());
+                let _ = socket.emit("importer_list", &crate::export_import::importer_list());
             }
             Some("all_languages") => {
-                socket.emit("all_languages", &json!({"languages": crate::phase3::languages()}));
+                let _ = socket.emit("all_languages", &json!({"languages": crate::phase3::languages()}));
             }
             _ => {
                 if let Some(obj) = load_type.as_object() {
                     match obj.get("type").and_then(|t| t.as_str()) {
                         Some("config") => {
                             let payload = build_config_sections(state, obj.get("value"));
-                            socket.emit("config_update", &payload);
+                            let _ = socket.emit("config_update", &payload);
                         }
                         _ => {}
                     }
@@ -219,7 +206,7 @@ fn read_config_item(state: &SharedState, section: &str, key: &str) -> Value {
     }
 }
 
-fn register_crud_handlers(socket: SocketRef, state: SharedState) {
+fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     // ---- pilots ----
     socket.on("add_pilot", move |_: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
@@ -719,7 +706,7 @@ fn register_crud_handlers(socket: SocketRef, state: SharedState) {
     });
 }
 
-fn register_race_handlers(socket: SocketRef, state: SharedState) {
+fn register_race_handlers(socket: SocketRef, _state: SharedState) {
     socket.on("stage_race", move |_: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
         race_ops::stage_race(&state);
@@ -871,10 +858,9 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
             let race = state.race.lock().unwrap();
             json!({"scheduled": race.scheduled, "scheduled_at": race.scheduled_time})
         };
-        socket.emit("race_scheduled", &payload);
+        let _ = socket.emit("race_scheduled", &payload);
     });
 
-    let st = state.clone();
     socket.on("resave_laps", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -949,7 +935,6 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         }
     });
 
-    let st = state.clone();
     socket.on("replace_current_laps", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1005,7 +990,6 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         broadcast(&state, "current_laps", payload);
     });
 
-    let st = state.clone();
     socket.on("current_race_marshal", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
         let (status, heat_id, format_id, start_time, start_time_formatted) = {
@@ -1074,10 +1058,9 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
                 "seats": seats,
             })
         });
-        sock.emit("current_marshal_data", &payload);
+        let _ = sock.emit("current_marshal_data", &payload);
     });
 
-    let st = state.clone();
     socket.on("get_pilotrace", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1135,10 +1118,9 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
             })
         });
         if !payload.is_null() {
-            sock.emit("race_details", &payload);
+            let _ = sock.emit("race_details", &payload);
         }
     });
-    let st = state.clone();
     socket.on("delete_race_round", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1216,7 +1198,6 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         }
     });
 
-    let st = state.clone();
     socket.on("check_deleted_race", move |_: SocketRef, ack: AckSender, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1228,14 +1209,13 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         }
     });
 
-    let st = state.clone();
     socket.on("restore_deleted_race", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
         let id = data.get("id").and_then(|v| v.as_i64());
         if let Some(problem) = check_restore_problem(&state, id) {
             emit_priority_message(&state, &problem, false);
-            sock.emit("deleted_race_restored", &json!({"ok": false, "id": id}));
+            let _ = sock.emit("deleted_race_restored", &json!({"ok": false, "id": id}));
             return;
         }
         let Some(id) = id else { return };
@@ -1307,12 +1287,10 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
             conn.execute("DELETE FROM deleted_race WHERE id = ?1", [id]).unwrap_or(0);
             true
         });
-        sock.emit("deleted_race_restored", &json!({"ok": restored, "id": id}));
+        let _ = sock.emit("deleted_race_restored", &json!({"ok": restored, "id": id}));
     });
 
-    let st = state.clone();
     // ---- heat generation (heat_automation) ----
-    let st = state.clone();
     socket.on("calc_pilots", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1350,7 +1328,6 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         }
     });
 
-    let st = state.clone();
     socket.on("calc_reset", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1365,7 +1342,6 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         broadcast(&state, "heat_plan_result", payload);
     });
 
-    let st = state.clone();
     socket.on("confirm_heat_plan", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1388,7 +1364,6 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
     });
 
     // ---- callouts ----
-    let st = state.clone();
     socket.on("save_callouts", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1406,31 +1381,29 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         }
     });
 
-    let st = state.clone();
     socket.on("reload_callouts", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
         let callouts = crate::phase3::persisted_callouts(&state.data_dir);
         if let Some(c) = callouts {
-            sock.emit("callouts", &c);
+            let _ = sock.emit("callouts", &c);
         }
     });
 
-    let st = state.clone();
     socket.on("get_callout_text", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
         let callout = data.get("callout").and_then(|v| v.as_str()).unwrap_or("");
         let text = crate::phase3::expand_callout(&state, callout);
-        sock.emit("callout_text", &json!({"callout": callout, "text": text}));
+        let _ = sock.emit("callout_text", &json!({"callout": callout, "text": text}));
     });
 
-    socket.on("get_server_time", move |_: SocketRef, ack: AckSender, s: State<SharedState>| async move {
+    socket.on("get_server_time", move |_: SocketRef, ack: AckSender, _s: State<SharedState>| async move {
         // replies via socket.io ack callback
         let _ = ack.send(&json!({"server_time_s": monotonic()}));
     });
 }
 
-fn register_export_import_handlers(socket: SocketRef, state: SharedState) {
+fn register_export_import_handlers(socket: SocketRef, _state: SharedState) {
     socket.on("export_database", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1440,7 +1413,7 @@ fn register_export_import_handlers(socket: SocketRef, state: SharedState) {
             Some(payload) => {
                 let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
                 let filename = format!("RotorHazard Export {} {}.json", stamp, exporter);
-                sock.emit("exported_data", &json!({
+                let _ = sock.emit("exported_data", &json!({
                     "filename": filename,
                     "encoding": "application/json",
                     "data": serde_json::to_string(&payload).unwrap_or_default(),
@@ -1473,7 +1446,7 @@ fn register_export_import_handlers(socket: SocketRef, state: SharedState) {
     });
 }
 
-fn register_settings_handlers(socket: SocketRef, state: SharedState) {
+fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
     socket.on("set_frequency", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
@@ -1583,7 +1556,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
         });
         // response goes only to the requesting socket
         let payload = db::with_db(&state, payloads::build_enter_exit_levels);
-        sock.emit("enter_and_exit_at_levels", &payload);
+        let _ = sock.emit("enter_and_exit_at_levels", &payload);
     });
 
     socket.on("set_exit_at_level", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
@@ -1610,7 +1583,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
             );
         });
         let payload = db::with_db(&state, payloads::build_enter_exit_levels);
-        sock.emit("enter_and_exit_at_levels", &payload);
+        let _ = sock.emit("enter_and_exit_at_levels", &payload);
     });
 
     socket.on("set_start_thresh_lower_amount", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
@@ -1622,7 +1595,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
             db::set_option(conn, "TIMING_startThreshLowerAmount", &val.to_string());
         });
         let payload = json!({"start_thresh_lower_amount": val.as_i64().unwrap_or(0)});
-        sock.emit("start_thresh_lower_amount", &payload);
+        let _ = sock.emit("start_thresh_lower_amount", &payload);
     });
 
     socket.on("set_start_thresh_lower_duration", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
@@ -1633,7 +1606,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
             db::set_option(conn, "TIMING_startThreshLowerDuration", &val.to_string());
         });
         let payload = json!({"start_thresh_lower_duration": val.as_i64().unwrap_or(0)});
-        sock.emit("start_thresh_lower_duration", &payload);
+        let _ = sock.emit("start_thresh_lower_duration", &payload);
     });
 
     let sid = socket.id;
@@ -1665,7 +1638,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
         }
     });
 
-    socket.on("set_config", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_config", move |_sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;
         if let (Some(section), Some(key), Some(value)) = (
@@ -1733,7 +1706,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
         }
         files.sort();
         files.reverse(); // newest first, matching list_backup_files()
-        sock.emit("backups_list", &json!({"backup_files": files}));
+        let _ = sock.emit("backups_list", &json!({"backup_files": files}));
     });
 }
 

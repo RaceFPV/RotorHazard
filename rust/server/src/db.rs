@@ -6,7 +6,6 @@
 
 use crate::state::SharedState;
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
 
 const SCHEMA_SQL: &str = include_str!("../../schema_reference.sql");
 const SEED_SQL: &str = include_str!("../../seed_data.sql");
@@ -153,24 +152,6 @@ pub fn next_heat_node_id(conn: &Connection) -> i64 {
     .unwrap_or(1)
 }
 
-pub fn unique_name(base: &str, existing: &[String]) -> String {
-    if !existing.iter().any(|n| n == base) {
-        return base.to_string();
-    }
-    // 'name 2', 'name 3', ... following RHUtils.uniqueName
-    let (stem, mut n) = match base.rsplit_once(' ') {
-        Some((stem, num)) if num.chars().all(|c| c.is_ascii_digit()) && !num.is_empty() => {
-            (format!("{} ", stem), num.parse::<u64>().unwrap_or(1) + 1)
-        }
-        _ => (format!("{} ", base), 2),
-    };
-    let mut candidate = format!("{}{}", stem, n);
-    while existing.iter().any(|n2| n2 == &candidate) {
-        n += 1;
-        candidate = format!("{}{}", stem, n);
-    }
-    candidate
-}
 
 /// Shared-state convenience: run a closure with the DB connection.
 pub fn with_db<T>(state: &SharedState, f: impl FnOnce(&Connection) -> T) -> T {

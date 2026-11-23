@@ -46,8 +46,6 @@ async fn main() {
     let (admin_username, admin_password) = read_admin_creds(&data_dir);
     let http_port_cfg = read_config_port(&data_dir).unwrap_or(port);
 
-    state::set_program_start_epoch_ms(state::now_epoch_ms() as u64);
-
     let templates_dir = std::env::var("RH_TEMPLATES_DIR")
         .unwrap_or_else(|_| "src/server/templates".to_string());
     if let Err(e) = pages::init(&templates_dir) {
@@ -82,10 +80,8 @@ async fn main() {
             json_api: 3,
         },
         data_dir: data_dir.clone(),
-        static_dir: static_dir.clone(),
         admin_username,
         admin_password,
-        mock_nodes: num_nodes,
         config_items: Arc::new(Mutex::new(std::collections::HashMap::new())),
     });
 

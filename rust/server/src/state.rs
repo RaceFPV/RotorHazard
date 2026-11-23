@@ -2,15 +2,12 @@
 
 use rusqlite::Connection;
 use socketioxide::SocketIo;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const RACE_STATUS_READY: i64 = 0;
 pub const RACE_STATUS_RACING: i64 = 1;
 pub const RACE_STATUS_DONE: i64 = 2;
 pub const RACE_STATUS_STAGING: i64 = 3;
-
-pub const PILOT_ID_NONE: Option<i64> = None;
 
 /// A single lap crossing in the current (unsaved) race.
 /// `lap_time_stamp` is monotonic-based seconds; `lap_time` is milliseconds.
@@ -71,16 +68,6 @@ pub fn monotonic() -> f64 {
     start.elapsed().as_secs_f64()
 }
 
-static START_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
-
-pub fn program_start_epoch_ms() -> u64 {
-    START_EPOCH_MS.load(Ordering::Relaxed)
-}
-
-pub fn set_program_start_epoch_ms(v: u64) {
-    START_EPOCH_MS.store(v, Ordering::Relaxed);
-}
-
 pub fn now_epoch_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -104,10 +91,8 @@ pub struct AppState {
     pub io: std::sync::OnceLock<SocketIo>,
     pub info: ServerInfo,
     pub data_dir: String,
-    pub static_dir: String,
     pub admin_username: String,
     pub admin_password: String,
-    pub mock_nodes: usize,
     /// GENERAL-section config items (Python keeps these in config.json; the
     /// Rust build holds runtime-set values here for Phase 1)
     pub config_items: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,

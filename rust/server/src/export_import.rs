@@ -93,7 +93,6 @@ fn table_dicts(conn: &Connection, table: &str) -> Vec<Value> {
 
 /// assembles an export payload for the given exporter name.
 pub fn assemble(conn: &Connection, exporter_name: &str) -> Option<Value> {
-    let friendly = exporter_name.starts_with("JSON__Friendly");
     let mut payload = Map::new();
 
     if exporter_name == clean_var_name("JSON (Friendly) / Pilots")

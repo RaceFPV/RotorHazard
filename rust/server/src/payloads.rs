@@ -293,7 +293,7 @@ pub fn build_current_heat(conn: &Connection, race: &RaceState) -> Value {
     })
 }
 
-pub fn build_seat_data(conn: &Connection) -> Value {
+pub fn build_seat_data(_conn: &Connection) -> Value {
     let seat_colors: Vec<String> = [
         "#0022ff", "#ff5500", "#00ff22", "#ff0055", "#ddff00", "#7700ff", "#00ffdd", "#aaaaaa",
     ]

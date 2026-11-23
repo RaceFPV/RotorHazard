@@ -1,8 +1,5 @@
 //! Frequency tables and small helpers ported from frequencies.py / RHUtils.
 
-use serde_json::json;
-use serde_json::Value;
-
 /// The band/channel frequency table, in table order (order decides which
 /// band/channel a shared frequency resolves to, matching frequencies.py).
 pub const BAND_CHANNEL_FREQUENCIES: &[(&str, u8, u16)] = &[
@@ -43,12 +40,6 @@ pub fn band_channel_for(frequency: u16) -> Option<(&'static str, u8)> {
         .map(|(b, c, _)| (*b, *c))
 }
 
-pub fn frequency_for(band: &str, channel: u8) -> Option<u16> {
-    BAND_CHANNEL_FREQUENCIES
-        .iter()
-        .find(|(b, c, _)| *b == band && *c == channel)
-        .map(|(_, _, f)| *f)
-}
 
 /// Frequency presets, matching set_frequency_preset supported values.
 pub fn preset_frequencies(preset: &str) -> Vec<(&'static str, u8, u16)> {
@@ -119,36 +110,4 @@ pub fn hsl_to_hex(h: f32, s: f32, l: f32) -> String {
     format!("#{:02x}{:02x}{:02x}", to8(r), to8(g), to8(b))
 }
 
-/// Preset frequency sets keyed the way the UI sends them.
-pub fn frequency_preset(preset: &str) -> Vec<(String, u8, u16)> {
-    let mk = |band: &str| -> Vec<(String, u8, u16)> {
-        (1..=8)
-            .map(|c| {
-                let ch = c as u8;
-                (
-                    band.to_string(),
-                    ch,
-                    frequency_for(band, ch).unwrap_or(0),
-                )
-            })
-            .collect()
-    };
-    match preset {
-        "RB" => {
-            let mut v = mk("R");
-            v.extend(mk("B"));
-            v
-        }
-        "R" => mk("R"),
-        "B" => mk("B"),
-        "F" => mk("F"),
-        "E" => mk("E"),
-        "A" => mk("A"),
-        "L" => mk("L"),
-        _ => mk("R"),
-    }
-}
 
-pub fn _unused(_: Value) {
-    let _ = json!(null);
-}
