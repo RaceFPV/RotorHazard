@@ -97,7 +97,12 @@ pub fn stage_race(state: &SharedState) {
 
 /// Simulates a lap crossing on the given node (mock-node debug path).
 pub fn simulate_lap(state: &SharedState, node_index: usize) {
-    let now = monotonic();
+    register_lap_at(state, node_index, monotonic());
+}
+
+/// Registers a lap on the given node at the given monotonic time, if the
+/// race is running (the shared crossing-to-lap path).
+pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
     let mut race = state.race.lock().unwrap();
     if race.race_status != RACE_STATUS_RACING {
         return;

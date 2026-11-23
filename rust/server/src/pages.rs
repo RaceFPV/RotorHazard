@@ -99,6 +99,9 @@ pub fn init(templates_dir: &str) -> Result<(), String> {
         })),
     );
 
+    env.add_global("Debug", Value::from(false));
+    env.add_global("restart_flag", Value::from(false));
+
     // band/channel frequency table for the layouts (pair list; order decides
     // shared frequencies, matching the Python context processor)
     env.add_global(
@@ -174,6 +177,12 @@ pub const PAGES: &[(&str, &str)] = &[
     ("/imdtabler", "imdtabler.html"),
     ("/database", "database.html"),
     ("/vrxstatus", "vrxstatus.html"),
+    ("/advanced-settings", "advanced-settings.html"),
+    ("/updatenodes", "updatenodes.html"),
+    ("/plugins", "plugins.html"),
+    ("/hardwarelog", "hardwarelog.html"),
+    ("/first-run", "first-run.html"),
+    ("/stream/results", "streamresults.html"),
 ];
 
 /// Extra context for pages that need it (Null entries use defaults).

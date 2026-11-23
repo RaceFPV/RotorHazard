@@ -33,13 +33,33 @@ pub fn broadcast(state: &SharedState, event: &'static str, payload: Value) {
 pub fn register_handlers(io: SocketIo, state: SharedState) {
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("socket connected: {}", socket.id);
+        // record whether the connection carries valid admin basic-auth
+        // (mirrors Python's per-request authorization checks)
+        let authed = {
+            let parts = socket.req_parts();
+            parse_basic_auth_ok(parts.headers.clone(), &state)
+        };
+        socket.extensions.insert(authed);
 
         
         
         
         
-        socket.on("load_data", move |socket: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
-            handle_load_data(&socket, &s.0, data);
+        let creds_warned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        socket.on("load_data", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+            let state = s.0.clone();
+            // default-credentials notice (check_default_admin_creds_warning):
+            // emitted to the client on its first data load
+            if !creds_warned.swap(true, std::sync::atomic::Ordering::Relaxed)
+                && state.admin_username == "admin"
+                && state.admin_password == "rotorhazard"
+            {
+                let _ = sock.emit("admin_creds_defaulted", &json!({
+                    "username": "admin",
+                    "password": "rotorhazard",
+                }));
+            }
+            handle_load_data(&sock, &state, data);
         });
 
         register_crud_handlers(socket.clone(), state.clone());
@@ -58,7 +78,7 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
         .cloned()
         .unwrap_or_default();
 
-    for load_type in load_types {
+    for load_type in &load_types {
         match load_type.as_str() {
             Some("pilot_data") => {
                 let payload = db::with_db(state, payloads::build_pilot_data);
@@ -149,6 +169,81 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
             Some("all_languages") => {
                 let _ = socket.emit("all_languages", &json!({"languages": crate::phase3::languages()}));
             }
+            Some("language") => {
+                let current = crate::phase3::current_language(&state.data_dir);
+                let _ = socket.emit("language", &json!({
+                    "language": current,
+                    "languages": language_list(&crate::phase3::languages()),
+                }));
+            }
+            Some("ui") => {
+                // no plugin-registered panels in the Rust build yet; the
+                // page shell still functions from its static template parts
+                let page = load_type
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let _ = socket.emit("ui", &json!({"page": page, "panels": []}));
+            }
+            Some("node_tuning") => {
+                let payload = db::with_db(&state, |conn| {
+                    let mut ids = Vec::new();
+                    let mut names = Vec::new();
+                    let mut stmt = conn
+                        .prepare("SELECT id, name FROM profiles ORDER BY id")
+                        .unwrap();
+                    let mut rows = stmt.query([]).unwrap();
+                    while let Some(row) = rows.next().unwrap() {
+                        ids.push(row.get::<_, i64>(0).unwrap());
+                        names.push(row.get::<_, String>(1).unwrap());
+                    }
+                    let current = db::current_profile_id(conn);
+                    let (name, description): (String, Option<String>) = conn
+                        .query_row(
+                            "SELECT name, description FROM profiles WHERE id = ?1",
+                            [current],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .unwrap_or(("Default".to_string(), None));
+                    json!({
+                        "profile_ids": ids,
+                        "profile_names": names,
+                        "current_profile": current,
+                        "profile_name": name,
+                        "profile_description": description,
+                    })
+                });
+                let _ = socket.emit("node_tuning", &payload);
+            }
+            Some("environmental_data") => {
+                let _ = socket.emit("environmental_data", &json!([]));
+            }
+            Some("led_effects") => {
+                let _ = socket.emit("led_effects", &json!({"enabled": false, "effects": {}}));
+            }
+            Some("led_effect_setup") => {
+                let _ = socket.emit("led_effect_setup_data", &json!({"enabled": false}));
+            }
+            Some("cluster_status") => {
+                let _ = socket.emit("cluster_status", &json!({}));
+            }
+            Some("vrx_list") => {
+                let _ = socket.emit("vrx_list", &json!({
+                    "enabled": false, "controllers": Value::Null, "devices": Value::Null,
+                }));
+            }
+            Some("upd_cfg_files_list") => {
+                let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
+            }
+            Some("plugin_list") => {
+                let _ = socket.emit("plugin_list", &json!({"plugins": []}));
+            }
+            Some("action_setup") => {
+                let _ = socket.emit("action_setup", &json!({"enabled": false, "events": {}, "effects": {}}));
+            }
+            Some("event_actions") => {
+                let _ = socket.emit("event_actions", &json!({"actions": {}}));
+            }
             _ => {
                 if let Some(obj) = load_type.as_object() {
                     match obj.get("type").and_then(|t| t.as_str()) {
@@ -208,8 +303,9 @@ fn read_config_item(state: &SharedState, section: &str, key: &str) -> Value {
 
 fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     // ---- pilots ----
-    socket.on("add_pilot", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("add_pilot", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let new_id = db::with_db(&state, |conn| {
             let id = db::next_pilot_id(conn);
             // color: random hue at s=100, l=50 (matches RHUtils.hslToHex)
@@ -233,8 +329,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     let sid = socket.id;
-    socket.on("alter_pilot", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("alter_pilot", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(pilot_id) = data.get("pilot_id").and_then(|v| v.as_i64()) else { return };
         db::with_db(&state, |conn| {
@@ -269,8 +366,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         broadcast(&state, "heat_data", heat_payload);
     });
 
-    socket.on("delete_pilot", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("delete_pilot", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(pilot_id) = data.get("pilot").and_then(|v| v.as_i64()) else { return };
         let deleted = db::with_db(&state, |conn| {
@@ -288,8 +386,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     // ---- classes ----
-    socket.on("add_race_class", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("add_race_class", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         db::with_db(&state, |conn| {
             let id: i64 = conn
@@ -310,8 +409,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     let sid = socket.id;
-    socket.on("alter_race_class", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("alter_race_class", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(class_id) = data.get("class_id").and_then(|v| v.as_i64()) else { return };
         db::with_db(&state, |conn| {
@@ -336,8 +436,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("delete_class", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("delete_class", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(class_id) = data.get("class").and_then(|v| v.as_i64()) else { return };
         let deleted = db::with_db(&state, |conn| {
@@ -355,8 +456,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     // ---- heats ----
-    socket.on("add_heat", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("add_heat", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         // note: zero-payload emits carry no data; the optional "class"
         // variant of add_heat is not exercised by the test suite
         let class_id: Option<i64> = None;
@@ -387,8 +489,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         emit_race_status_from(&state);
     });
 
-    socket.on("alter_heat", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("alter_heat", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) else { return };
         db::with_db(&state, |conn| {
@@ -449,8 +552,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         emit_race_status_from(&state);
     });
 
-    socket.on("delete_heat", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("delete_heat", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) else { return };
         let deleted = db::with_db(&state, |conn| {
@@ -472,8 +576,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("duplicate_heat", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("duplicate_heat", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) else { return };
         let new_id = db::with_db(&state, |conn| {
@@ -522,8 +627,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         broadcast(&state, "heat_data", payload);
     });
 
-    socket.on("activate_heat", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("activate_heat", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         if let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) {
             db::with_db(&state, |conn| {
@@ -537,8 +643,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("deactivate_heat", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("deactivate_heat", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         if let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) {
             db::with_db(&state, |conn| {
@@ -552,8 +659,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("set_current_heat", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_current_heat", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) else { return };
         let pilots = db::with_db(&state, |conn| heat_node_pilots(conn, heat_id, state.num_nodes));
@@ -571,8 +679,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     // ---- race formats ----
-    socket.on("add_race_format", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("add_race_format", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(source) = data.get("source_format_id").and_then(|v| v.as_i64()) else { return };
         let _new_id = db::with_db(&state, |conn| {
@@ -609,8 +718,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         broadcast(&state, "format_data", payload);
     });
 
-    socket.on("alter_race_format", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("alter_race_format", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(format_id) = data.get("format_id").and_then(|v| v.as_i64()) else { return };
         let applied = db::with_db(&state, |conn| {
@@ -668,8 +778,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("set_race_format", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_race_format", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(format_id) = data.get("race_format").and_then(|v| v.as_i64()) else { return };
         let ok = {
@@ -692,8 +803,9 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("delete_race_format", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("delete_race_format", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(format_id) = data.get("format_id").and_then(|v| v.as_i64()) else { return };
         let deleted = db::with_db(&state, |conn| {
@@ -707,23 +819,27 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
 }
 
 fn register_race_handlers(socket: SocketRef, _state: SharedState) {
-    socket.on("stage_race", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("stage_race", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         race_ops::stage_race(&state);
     });
 
-    socket.on("stop_race", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("stop_race", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         race_ops::stop_race(&state);
     });
 
-    socket.on("save_laps", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("save_laps", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         race_ops::save_laps(&state);
     });
 
-    socket.on("discard_laps", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("discard_laps", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         race_ops::discard_laps(&state);
     });
 
@@ -861,8 +977,9 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         let _ = socket.emit("race_scheduled", &payload);
     });
 
-    socket.on("resave_laps", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("resave_laps", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let get = |k: &str| data.get(k);
         let heat_id = get("heat_id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -935,8 +1052,9 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("replace_current_laps", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("replace_current_laps", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let seat = data.get("node").and_then(|v| v.as_i64())
             .or_else(|| data.get("seat").and_then(|v| v.as_i64()));
@@ -1123,6 +1241,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
     });
     socket.on("delete_race_round", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let race_id = data.get("race_id").and_then(|v| v.as_i64());
         let Some(race_id) = race_id else { return };
@@ -1211,6 +1330,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
 
     socket.on("restore_deleted_race", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let id = data.get("id").and_then(|v| v.as_i64());
         if let Some(problem) = check_restore_problem(&state, id) {
@@ -1291,8 +1411,9 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     // ---- heat generation (heat_automation) ----
-    socket.on("calc_pilots", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("calc_pilots", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64())
             .or_else(|| data.get("heat_id").and_then(|v| v.as_i64()))
@@ -1328,8 +1449,9 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("calc_reset", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("calc_reset", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let heat_id = data.get("heat").and_then(|v| v.as_i64())
             .or_else(|| data.get("heat_id").and_then(|v| v.as_i64()));
@@ -1342,8 +1464,9 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         broadcast(&state, "heat_plan_result", payload);
     });
 
-    socket.on("confirm_heat_plan", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("confirm_heat_plan", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat_id").and_then(|v| v.as_i64()) else { return };
         db::with_db(&state, |conn| {
@@ -1366,6 +1489,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
     // ---- callouts ----
     socket.on("save_callouts", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let callouts = data.get("callouts").cloned().unwrap_or(json!([]));
         crate::phase3::persist_config_item(
@@ -1447,8 +1571,9 @@ fn register_export_import_handlers(socket: SocketRef, _state: SharedState) {
 }
 
 fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
-    socket.on("set_frequency", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_frequency", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(node) = data.get("node").and_then(|v| v.as_i64()) else { return };
         let band = data.get("band").and_then(|v| v.as_str());
@@ -1482,8 +1607,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         broadcast(&state, "frequency_data", payload);
     });
 
-    socket.on("set_frequency_preset", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_frequency_preset", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let preset = data.get("preset").and_then(|v| v.as_str()).unwrap_or("RB");
         db::with_db(&state, |conn| {
@@ -1505,8 +1631,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         broadcast(&state, "frequency_data", payload);
     });
 
-    socket.on("add_profile", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("add_profile", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         db::with_db(&state, |conn| {
             let id: i64 = conn
@@ -1533,6 +1660,7 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
 
     socket.on("set_enter_at_level", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(node) = data.get("node").and_then(|v| v.as_i64()) else { return };
         let level = data.get("enter_at_level").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1561,6 +1689,7 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
 
     socket.on("set_exit_at_level", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(node) = data.get("node").and_then(|v| v.as_i64()) else { return };
         let level = data.get("exit_at_level").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1610,8 +1739,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
     });
 
     let sid = socket.id;
-    socket.on("set_min_lap", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_min_lap", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let val = data.get("min_lap").and_then(|v| v.as_i64()).unwrap_or(0);
         db::with_db(&state, |conn| {
@@ -1627,8 +1757,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("set_language", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_language", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         if let Some(lang) = data.get("language").and_then(|v| v.as_str()) {
             // currentLanguage lives in config.json (UI section) in Python
@@ -1638,8 +1769,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("set_config", move |_sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_config", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         if let (Some(section), Some(key), Some(value)) = (
             data.get("section").and_then(|v| v.as_str()),
@@ -1659,8 +1791,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         // config via load_data (characterized behavior)
     });
 
-    socket.on("set_option", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+    socket.on("set_option", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         if let (Some(option), Some(value)) = (
             data.get("option").and_then(|v| v.as_str()),
@@ -1674,8 +1807,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         }
     });
 
-    socket.on("backup_database", move |_: SocketRef, s: State<SharedState>| async move {
+    socket.on("backup_database", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
         let result = (|| -> Option<String> {
             let data_dir = &state.data_dir;
             let bkp_dir = format!("{}/db_bkp", data_dir);
@@ -2090,4 +2224,140 @@ fn set_heat_force(state: &SharedState, heat_id: i64) -> Result<(), ()> {
     broadcast(state, "current_heat", payload);
     emit_race_status_from(state);
     Ok(())
+}
+
+/// Language list for the 'language' payload (id + display name pairs).
+fn language_list(languages: &Value) -> Value {
+    let mut out = Vec::new();
+    if let Some(obj) = languages.as_object() {
+        for (id, entry) in obj {
+            out.push(json!({
+                "id": id,
+                "name": entry.get("name").cloned().unwrap_or(Value::Null),
+            }));
+        }
+    }
+    Value::from(out)
+}
+
+
+/// Advances the mock-node RSSI simulation (MockInterface.update, signal
+/// modes 2/3/4): idle RSSI 20-40, crossing RSSI 60-150, 5% chance to start
+/// a crossing, 50% chance to end one.  A completed crossing during a race
+/// registers a lap, exactly like the Python mock.
+pub fn simulate_mock_signals(state: &SharedState, _signal_mode: i64) {
+    // snapshot race conditions before touching the mock state
+    let (racing, start_time) = {
+        let race = state.race.lock().unwrap();
+        (
+            race.race_status == RACE_STATUS_RACING,
+            race.start_time_monotonic,
+        )
+    };
+
+    let now = monotonic();
+    let mut completed: Vec<usize> = Vec::new();
+
+    {
+        let mut mock = state.mock.lock().unwrap();
+        let mut seed = (now * 1000.0) as u64 | 1;
+        for (idx, node) in mock.iter_mut().enumerate() {
+            if node.current_rssi == 0 && !node.crossing_flag {
+                // first tick after startup: settle at an idle reading
+                node.current_rssi = mock_rand(&mut seed, 20, 40);
+                continue;
+            }
+            let freq_active = db::with_db(state, |conn| {
+                let profile_id = db::current_profile_id(conn);
+                db::profile_frequencies(conn, profile_id)
+                    .get(idx)
+                    .map(|(_, _, f)| *f)
+                    .unwrap_or(0)
+                    != 0
+            });
+            if !freq_active {
+                node.current_rssi = 0;
+                node.crossing_flag = false;
+                continue;
+            }
+
+            if node.crossing_flag {
+                node.current_rssi = mock_rand(&mut seed, 60, 150);
+                if node.current_rssi > node.pass_peak_rssi {
+                    node.pass_peak_rssi = node.current_rssi;
+                }
+                node.debug_pass_count += 1;
+                if mock_rand_pct(&mut seed) < 50 {
+                    // crossing ends -> lap record point
+                    node.crossing_flag = false;
+                    node.pass_nadir_rssi = 100;
+                    if racing {
+                        completed.push(idx);
+                    }
+                }
+            } else {
+                node.current_rssi = mock_rand(&mut seed, 20, 40);
+                if node.current_rssi < node.pass_nadir_rssi {
+                    node.pass_nadir_rssi = node.current_rssi;
+                }
+                if mock_rand_pct(&mut seed) < 5 {
+                    node.lap_number += 1;
+                    node.crossing_flag = true;
+                    node.pass_peak_rssi = 0;
+                }
+            }
+        }
+    }
+
+    // register laps for completed crossings during a running race
+    if !completed.is_empty() && start_time > 0.0 {
+        for idx in completed {
+            crate::race::register_lap_at(state, idx, now);
+        }
+    }
+}
+
+fn mock_rand(seed: &mut u64, lo: i64, hi: i64) -> i64 {
+    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    lo + ((*seed >> 33) as i64).rem_euclid(hi - lo)
+}
+
+fn mock_rand_pct(seed: &mut u64) -> i64 {
+    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    ((*seed >> 33) as i64).rem_euclid(100)
+}
+
+
+/// True when socket actions may proceed: no admin credentials configured
+/// (auth disabled), or the connection carried valid basic auth.
+fn socket_authed(socket: &SocketRef, state: &SharedState) -> bool {
+    if state.admin_username.is_empty() && state.admin_password.is_empty() {
+        return true;
+    }
+    socket
+        .extensions
+        .get::<bool>()
+        .unwrap_or(false)
+}
+
+fn parse_basic_auth_ok(
+    headers: axum::http::HeaderMap,
+    state: &SharedState,
+) -> bool {
+    use base64::Engine;
+    if state.admin_username.is_empty() && state.admin_password.is_empty() {
+        return true;
+    }
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .unwrap_or("");
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(token)
+        .ok()
+        .and_then(|d| String::from_utf8(d).ok())
+        .unwrap_or_default();
+    let (user, pass) = decoded.split_once(':').unwrap_or(("", ""));
+    user == state.admin_username && pass == state.admin_password
 }

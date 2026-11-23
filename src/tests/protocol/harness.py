@@ -90,26 +90,27 @@ def _shutdown_active_server():
         _ACTIVE_SERVER = None
 
 
-def _spawn_server(config_overrides=None):
+def _spawn_server(config_overrides=None, write_config=True):
     port = _free_port()
     data_dir = tempfile.mkdtemp(prefix='rh_proto_')
     # minimal config: empty admin credentials disable socket auth (same as
     # the in-process unit tests); unspecified values fall back to defaults
-    config = {
-        'SECRETS': {
-            'ADMIN_USERNAME': '',
-            'ADMIN_PASSWORD': '',
-        },
-        'GENERAL': {
-            'HTTP_PORT': port,
-            'DEBUG': False,
-        },
-    }
-    if config_overrides:
-        for section, items in config_overrides.items():
-            config.setdefault(section, {}).update(items)
-    with open(os.path.join(data_dir, 'config.json'), 'w') as handle:
-        json.dump(config, handle)
+    if write_config:
+        config = {
+            'SECRETS': {
+                'ADMIN_USERNAME': '',
+                'ADMIN_PASSWORD': '',
+            },
+            'GENERAL': {
+                'HTTP_PORT': port,
+                'DEBUG': False,
+            },
+        }
+        if config_overrides:
+            for section, items in config_overrides.items():
+                config.setdefault(section, {}).update(items)
+        with open(os.path.join(data_dir, 'config.json'), 'w') as handle:
+            json.dump(config, handle)
 
     env = dict(os.environ)
     env['RH_DATA_DIR'] = data_dir
@@ -142,10 +143,12 @@ def _spawn_server(config_overrides=None):
             _START_TIMEOUT, last_error, _read_log_tail(log_path)))
 
 
-def spawn_custom_server(config_overrides=None):
+def spawn_custom_server(config_overrides=None, write_config=True):
     '''Spawns an independent server instance (separate from the shared one
-    used by ProtocolTestCase) for tests needing a specific configuration.'''
-    return _spawn_server(config_overrides=config_overrides)
+    used by ProtocolTestCase) for tests needing a specific configuration.
+    With write_config=False the data dir starts WITHOUT a config.json so the
+    server exercises its own first-run default-configuration creation.'''
+    return _spawn_server(config_overrides=config_overrides, write_config=write_config)
 
 
 def _read_log_tail(log_path, max_bytes=6000):
@@ -157,6 +160,54 @@ def _read_log_tail(log_path, max_bytes=6000):
             return handle.read().decode('utf-8', errors='replace')
     except OSError:
         return '(log unavailable)'
+
+
+def spawn_rust_server(config_overrides=None, write_config=True, binary=None):
+    """Spawns the Rust server binary (rust/target/debug/rh-server by
+    default, overridable via RH_RUST_BIN) with the same first-run
+    environment the Python spawner uses."""
+    binary = binary or os.environ.get(
+        'RH_RUST_BIN',
+        os.path.join(_REPO_ROOT, 'rust', 'target', 'debug', 'rh-server'))
+    port = _free_port()
+    data_dir = tempfile.mkdtemp(prefix='rh_rust_')
+    if write_config:
+        config = {
+            'SECRETS': {'ADMIN_USERNAME': '', 'ADMIN_PASSWORD': ''},
+            'GENERAL': {'HTTP_PORT': port, 'DEBUG': False},
+        }
+        if config_overrides:
+            for section, items in config_overrides.items():
+                config.setdefault(section, {}).update(items)
+        with open(os.path.join(data_dir, 'config.json'), 'w') as handle:
+            json.dump(config, handle)
+
+    env = dict(os.environ)
+    env['RH_DATA_DIR'] = data_dir
+    env['RH_NODES'] = '8'
+    env['RH_PORT'] = str(port)
+    log_path = os.path.join(data_dir, 'server_test.log')
+    log_file = open(log_path, 'w')
+    proc = subprocess.Popen(
+        [binary], env=env, cwd=_REPO_ROOT,
+        stdout=log_file, stderr=subprocess.STDOUT)
+
+    server = ServerHandle('http://127.0.0.1:{}'.format(port), proc, data_dir)
+    deadline = time.monotonic() + _START_TIMEOUT
+    last_error = None
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError('Rust server exited (code {}) -- log:\n{}'.format(
+                proc.returncode, _read_log_tail(log_path)))
+        try:
+            with urllib.request.urlopen(server.base_url + '/api/status', timeout=2) as resp:
+                if 200 <= resp.status < 300:
+                    return server
+        except Exception as ex:  #pylint: disable=broad-except
+            last_error = ex
+        time.sleep(0.2)
+    raise RuntimeError('Rust server not ready in {}s -- log:\n{}'.format(
+        _START_TIMEOUT, _read_log_tail(log_path)))
 
 
 class Client:

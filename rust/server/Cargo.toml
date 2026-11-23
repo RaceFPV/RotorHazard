@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
-socketioxide = { version = "0.16", features = ["state"] }
+socketioxide = { version = "0.16", features = ["state", "extensions"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 tower = "0.5"
 rusqlite = { version = "0.37", features = ["bundled"] }

@@ -60,6 +60,34 @@ impl RaceState {
     }
 }
 
+/// Per-node mock simulation state (MockInterface equivalent).
+#[derive(Debug, Clone)]
+pub struct MockNodeState {
+    pub current_rssi: i64,
+    pub crossing_flag: bool,
+    pub lap_number: i64,
+    pub pass_peak_rssi: i64,
+    pub pass_nadir_rssi: i64,
+    pub node_peak_rssi: i64,
+    pub node_nadir_rssi: i64,
+    pub debug_pass_count: i64,
+}
+
+impl MockNodeState {
+    pub fn new() -> Self {
+        MockNodeState {
+            current_rssi: 0,
+            crossing_flag: false,
+            lap_number: 0,
+            pass_peak_rssi: 0,
+            pass_nadir_rssi: 100,
+            node_peak_rssi: 100,
+            node_nadir_rssi: 20,
+            debug_pass_count: 0,
+        }
+    }
+}
+
 /// Monotonic clock in seconds (comparable to Python's time.monotonic()).
 pub fn monotonic() -> f64 {
     use std::time::Instant;
@@ -96,6 +124,8 @@ pub struct AppState {
     /// GENERAL-section config items (Python keeps these in config.json; the
     /// Rust build holds runtime-set values here for Phase 1)
     pub config_items: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
+    /// Mock-node simulation state (one entry per node)
+    pub mock: Mutex<Vec<crate::state::MockNodeState>>,
 }
 
 pub type SharedState = Arc<AppState>;

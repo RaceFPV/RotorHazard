@@ -43,8 +43,91 @@ async fn main() {
         .unwrap_or(5000);
 
     // minimal config.json support (same file the Python server writes)
-    let (admin_username, admin_password) = read_admin_creds(&data_dir);
+    // first-run: create config.json with the Python default values
+    // (admin/rotorhazard credentials, standard sections) when absent
+    let config_path = format!("{}/config.json", data_dir);
+    if !std::path::Path::new(&config_path).exists() {
+        std::fs::create_dir_all(&data_dir).expect("failed to create data directory");
+        let secret_key: String = (0..50)
+            .map(|_| {
+                let idx = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(0)
+                    % 62) as usize;
+                const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+                CHARS[idx] as char
+            })
+            .collect();
+        let default_config = json!({
+            "SECRETS": {
+                "ADMIN_USERNAME": "admin",
+                "ADMIN_PASSWORD": "rotorhazard",
+                "SECRET_KEY": secret_key,
+            },
+            "GENERAL": {
+                "HTTP_PORT": port,
+                "SECONDARIES": [],
+                "SECONDARY_TIMEOUT": 300,
+                "DEBUG": false,
+                "CORS_ALLOWED_HOSTS": "*",
+                "ADMIN_SOCKET_AUTH": true,
+                "FORCE_S32_BPILL_FLAG": false,
+                "DEF_NODE_FWUPDATE_URL": "",
+                "SHUTDOWN_BUTTON_GPIOPIN": 18,
+                "SHUTDOWN_BUTTON_DELAYMS": 2500,
+                "DB_AUTOBKP_NUM_KEEP": 30,
+                "SYNC_LEADTIME_SECS": 0.9,
+                "AUDIO_SINGLE_TAB": true,
+                "LOG_SENSORS_DATA_RATE": 300,
+                "SERIAL_PORTS": [],
+                "MOCK_NODES": 0,
+                "MOCK_NODE_SIGNAL": 0,
+                "LAST_MODIFIED_TIME": 0,
+            },
+            "TIMING": {
+                "startThreshLowerAmount": "0",
+                "startThreshLowerDuration": "0",
+                "calibrationMode": "1",
+                "MinLapBehavior": "0",
+            },
+            "UI": {
+                "timerName": "RotorHazard",
+                "timerLogo": "",
+                "hue_0": "212", "sat_0": "55",
+                "lum_0_low": "29.2", "lum_0_high": "46.7",
+                "contrast_0_low": "#ffffff", "contrast_0_high": "#ffffff",
+                "hue_1": "25", "sat_1": "85.3",
+                "lum_1_low": "37.6", "lum_1_high": "54.5",
+                "contrast_1_low": "#ffffff", "contrast_1_high": "#000000",
+                "currentLanguage": "",
+                "timeFormat": "{m}:{s}.{d}",
+                "timeFormatPhonetic": "{m} {s}.{d}",
+            },
+            "USER": {},
+            "HARDWARE": {"I2C_BUS": 1},
+            "LED": {
+                "LED_COUNT": 0, "LED_GPIO": 10, "LED_FREQ_HZ": 800000,
+                "LED_DMA": 10, "LED_INVERT": false, "LED_CHANNEL": 0,
+                "LED_STRIP": "GRB", "LED_ROWS": 1, "PANEL_ROTATE": 0,
+                "INVERTED_PANEL_ROWS": false,
+                "SERIAL_CTRLR_PORT": null, "SERIAL_CTRLR_BAUD": 115200,
+                "ledEffects": "", "ledBrightness": 32, "ledColorMode": "",
+                "seatColors": ["#0022ff", "#ff5500", "#00ff22", "#ff0055",
+                               "#ddff00", "#7700ff", "#00ffdd", "#aaaaaa"],
+            },
+            "LOGGING": {"CONSOLE_LOG_LEVEL": 30, "FILE_LOG_LEVEL": 10,
+                        "EVENTS": 0, "DEBUG_SENSORS": false},
+            "SENSORS": {},
+            "PLUGINS": {},
+        });
+        std::fs::write(&config_path, serde_json::to_string_pretty(&default_config).unwrap())
+            .expect("failed to write default config.json");
+        tracing::info!("Created default configuration file (admin/rotorhazard credentials)");
+    }
+
     let http_port_cfg = read_config_port(&data_dir).unwrap_or(port);
+    let (admin_username, admin_password) = read_admin_creds(&data_dir);
 
     let templates_dir = std::env::var("RH_TEMPLATES_DIR")
         .unwrap_or_else(|_| "src/server/templates".to_string());
@@ -83,6 +166,7 @@ async fn main() {
         admin_username,
         admin_password,
         config_items: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        mock: Mutex::new((0..num_nodes).map(|_| state::MockNodeState::new()).collect()),
     });
 
     let (socketio_layer, io) = SocketIo::builder()
@@ -101,18 +185,56 @@ async fn main() {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
+
+                // mock-node signal mode from config.json (GENERAL section)
+                let signal_mode = db::with_db(&hb_state, |conn| {
+                    db::get_option_or_config_int(&hb_state, conn, "GENERAL", "MOCK_NODE_SIGNAL")
+                });
+                if (2..=4).contains(&signal_mode) {
+                    socket::simulate_mock_signals(&hb_state, signal_mode);
+                }
+
                 let payload = db::with_db(&hb_state, |conn| {
                     let profile_id = db::current_profile_id(conn);
                     let freqs = db::profile_frequencies(conn, profile_id);
-                    let n = hb_state.num_nodes;
+                    let mock = hb_state.mock.lock().unwrap();
                     json!({
-                        "current_rssi": vec![45i64; n],
-                        "frequency": (0..n).map(|i| freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0)).collect::<Vec<_>>(),
-                        "loop_time": vec![0.5f64; n],
-                        "crossing_flag": vec![false; n],
+                        "current_rssi": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.current_rssi).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                        "frequency": (0..hb_state.num_nodes)
+                            .map(|i| freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                        "loop_time": vec![1i64; hb_state.num_nodes],
+                        "crossing_flag": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.crossing_flag).unwrap_or(false))
+                            .collect::<Vec<_>>(),
                     })
                 });
                 socket::broadcast(&hb_state, "heartbeat", payload);
+
+                // node_data follows the live mock values
+                let node_payload = {
+                    let mock = hb_state.mock.lock().unwrap();
+                    json!({
+                        "node_peak_rssi": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.node_peak_rssi).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                        "node_nadir_rssi": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.node_nadir_rssi).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                        "pass_peak_rssi": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.pass_peak_rssi).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                        "pass_nadir_rssi": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.pass_nadir_rssi).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                        "debug_pass_count": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.debug_pass_count).unwrap_or(0))
+                            .collect::<Vec<_>>(),
+                    })
+                };
+                socket::broadcast(&hb_state, "node_data", node_payload);
             }
         });
     }
@@ -150,6 +272,14 @@ async fn main() {
         .route("/imdtabler", axum::routing::get(render_page))
         .route("/database", axum::routing::get(render_page))
         .route("/vrxstatus", axum::routing::get(render_page))
+        .route("/advanced-settings", axum::routing::get(render_page))
+        .route("/updatenodes", axum::routing::get(render_page))
+        .route("/plugins", axum::routing::get(render_page))
+        .route("/hardwarelog", axum::routing::get(render_page))
+        .route("/first-run", axum::routing::get(render_page))
+        .route("/stream/node/{node_id}", axum::routing::get(render_page))
+        .route("/stream/class/{class_id}", axum::routing::get(render_page))
+        .route("/stream/heat/{heat_id}", axum::routing::get(render_page))
         .nest_service("/static", ServeDir::new(&static_dir))
         .layer(socketio_layer)
         .with_state(state);

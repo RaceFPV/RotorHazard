@@ -207,3 +207,149 @@ class CalloutTest(harness.ProtocolTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DefaultConfigTest(unittest.TestCase):
+    """First-run behavior: the server creates config.json with default
+    admin/rotorhazard credentials and gates authed pages accordingly."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = harness.spawn_rust_server(write_config=False)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.stop()
+
+    def test_default_config_and_auth(self):
+        cfg = json.load(open(os.path.join(self.server.data_dir, "config.json")))
+        self.assertEqual(cfg["SECRETS"]["ADMIN_USERNAME"], "admin")
+        self.assertEqual(cfg["SECRETS"]["ADMIN_PASSWORD"], "rotorhazard")
+        self.assertTrue(cfg["SECRETS"]["SECRET_KEY"])
+        self.assertIn("MOCK_NODE_SIGNAL", cfg["GENERAL"])
+
+        try:
+            urllib.request.urlopen(self.server.base_url + "/marshal", timeout=10)
+            self.fail("expected 401")
+        except urllib.error.HTTPError as ex:
+            self.assertEqual(ex.code, 401)
+        req = urllib.request.Request(self.server.base_url + "/marshal")
+        req.add_header("Authorization", "Basic " +
+                       base64.b64encode(b"admin:rotorhazard").decode())
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+
+        req = urllib.request.Request(self.server.base_url + "/advanced-settings")
+        req.add_header("Authorization", "Basic " +
+                       base64.b64encode(b"admin:rotorhazard").decode())
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+
+        client = harness.Client(self.server.base_url)
+        client.connect()
+        try:
+            resp = client.emit_and_wait("load_data",
+                                        {"load_types": ["pilot_data"]},
+                                        "admin_creds_defaulted", timeout=15, drain=True)
+            self.assertEqual(resp[0]["username"], "admin")
+        finally:
+            client.disconnect()
+
+
+class MockSignalTest(unittest.TestCase):
+    """Mock node RSSI simulation (MOCK_NODE_SIGNAL=2): heartbeat rssi values
+    vary, crossing flags appear, and laps register automatically during a
+    running race."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = harness.spawn_rust_server({
+            "GENERAL": {"MOCK_NODE_SIGNAL": 2},
+        })
+        cls.tc = harness.ProtocolTestCase.__new__(harness.ProtocolTestCase)
+        cls.tc.server = cls.server
+        cls.tc.client = harness.Client(cls.server.base_url)
+        cls.tc.observer = harness.Client(cls.server.base_url)
+        cls.tc.client.connect()
+        cls.tc.observer.connect()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tc.client.disconnect()
+        cls.tc.observer.disconnect()
+        cls.server.stop()
+
+    def _wait_racing(self):
+        deadline = time.monotonic() + 45
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("race never started")
+            args = self.tc.wait_any("race_status", timeout=remaining)
+            if args[0].get("race_status") == 1:
+                return
+
+    def test_mock_rssi_varies_and_laps_register(self):
+        seen = set()
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and len(seen) < 3:
+            args = self.tc.wait_any("heartbeat", timeout=2)
+            for v in args[0]["current_rssi"]:
+                if v:
+                    seen.add(v)
+        self.assertGreaterEqual(len(seen), 3, "rssi not varying")
+        for v in seen:
+            self.assertTrue(20 <= v < 150, "rssi out of range")
+
+        # pilots must be assigned to heat seats for crossings to count
+        resp = self.tc.emit_and_wait("load_data", {"load_types": ["pilot_data"]},
+                                     "pilot_data", drain=True)
+        pilot_ids = [p["pilot_id"] for p in resp[0]["pilots"]]
+        resp = self.tc.emit_and_wait("load_data", {"load_types": ["heat_data"]},
+                                     "heat_data", drain=True)
+        heat = max((h["id"] for h in resp[0]["heats"]), default=None)
+        if heat is None:
+            self.tc.emit_and_wait("add_heat", None, "heat_data", drain=True)
+            resp = self.tc.emit_and_wait("load_data", {"load_types": ["heat_data"]},
+                                         "heat_data")
+            heat = max(h["id"] for h in resp[0]["heats"])
+        resp = self.tc.emit_and_wait("load_data", {"load_types": ["heat_data"]},
+                                     "heat_data")
+        heat_row = next(h for h in resp[0]["heats"] if h["id"] == heat)
+        for slot, pid in zip(heat_row["slots"][:2], pilot_ids[:2]):
+            self.tc.emit_and_wait("alter_heat",
+                                  {"heat": heat, "slot_id": slot["id"], "pilot": pid},
+                                  "heat_data", drain=True)
+        self.tc.emit_and_wait("set_current_heat", {"heat": heat}, "current_heat",
+                              drain=True)
+
+        self.tc.client.drain()
+        self.tc.observer.drain()
+        self.tc.client.emit("stage_race")
+        self._wait_racing()
+
+        saw_crossing = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            args = self.tc.wait_any("heartbeat", timeout=max(1, deadline - time.monotonic()))
+            if any(args[0]["crossing_flag"]):
+                saw_crossing = True
+                break
+        self.assertTrue(saw_crossing, "no crossing flags in mock simulation")
+
+        laps_seen = False
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not laps_seen:
+            try:
+                args = self.tc.wait_any("current_laps",
+                                        timeout=max(1, deadline - time.monotonic()))
+                for node in args[0]["current"]["node_index"]:
+                    if node["laps"]:
+                        laps_seen = True
+            except AssertionError:
+                pass
+        self.assertTrue(laps_seen, "no automatic laps during race")
+
+        self.tc.client.emit("stop_race")
+        time.sleep(1)
+        self.tc.client.emit("discard_laps")

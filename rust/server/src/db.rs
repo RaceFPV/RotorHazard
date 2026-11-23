@@ -160,3 +160,29 @@ pub fn with_db<T>(state: &SharedState, f: impl FnOnce(&Connection) -> T) -> T {
     let conn = state.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     f(&conn)
 }
+
+
+/// Reads an integer config item from config.json (mirroring
+/// serverconfig.get_item_int); falls back to zero.
+pub fn get_option_or_config_int(
+    state: &SharedState,
+    _conn: &Connection,
+    section: &str,
+    key: &str,
+) -> i64 {
+    if let Ok(text) = std::fs::read_to_string(format!("{}/config.json", state.data_dir)) {
+        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(v) = cfg.get(section).and_then(|s| s.get(key)) {
+                if let Some(i) = v.as_i64() {
+                    return i;
+                }
+                if let Some(s) = v.as_str() {
+                    if let Ok(i) = s.parse::<i64>() {
+                        return i;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
