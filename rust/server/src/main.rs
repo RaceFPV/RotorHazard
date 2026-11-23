@@ -10,6 +10,7 @@ mod db;
 mod export_import;
 mod pages;
 mod payloads;
+mod phase3;
 mod results;
 mod race;
 mod socket;
@@ -52,6 +53,9 @@ async fn main() {
     if let Err(e) = pages::init(&templates_dir) {
         tracing::warn!("template environment: {}", e);
     }
+    let language_file_dir = std::env::var("RH_PROGRAM_DIR")
+        .unwrap_or_else(|_| ".".to_string());
+    crate::phase3::set_languages(crate::phase3::load_languages(&language_file_dir));
 
     let conn = db::open_or_init(&data_dir).expect("failed to open/init database");
     let num_nodes: usize = std::env::var("RH_NODES")
@@ -161,12 +165,54 @@ async fn main() {
     axum::serve(listener, app).await.expect("server error");
 }
 
+/// Routes that require admin auth when credentials are configured
+/// (mirrors the Python @requires_auth set).
+const AUTHED_PAGES: &[&str] = &[
+    "/first-run", "/run", "/marshal", "/format", "/settings", "/advanced-settings",
+    "/scanner", "/updatenodes", "/plugins", "/hardwarelog", "/database", "/vrxstatus",
+];
+
 /// Renders the page for the request path (page map in pages::PAGES).
 async fn render_page(
     uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
     State(state): State<SharedState>,
 ) -> impl axum::response::IntoResponse {
     let path = uri.path().to_string();
+
+    // page auth: when admin credentials are configured, authed pages require
+    // HTTP basic auth (401 challenge otherwise), matching requires_auth
+    if AUTHED_PAGES.contains(&path.as_str())
+        && !state.admin_username.is_empty()
+        && !state.admin_password.is_empty()
+    {
+        let authed = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Basic "))
+            .and_then(|b| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(b)
+                    .ok()
+            })
+            .and_then(|decoded| String::from_utf8(decoded).ok())
+            .map(|creds| {
+                let (user, pass) = creds.split_once(':').unwrap_or(("", ""));
+                user == state.admin_username && pass == state.admin_password
+            })
+            .unwrap_or(false);
+        if !authed {
+            let mut resp = axum::http::Response::new(axum::body::Body::empty());
+            *resp.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+            resp.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                axum::http::HeaderValue::from_static("Basic realm=\"Login Required\""),
+            );
+            return resp;
+        }
+    }
+
     let template = pages::PAGES
         .iter()
         .find(|(p, _)| *p == path)

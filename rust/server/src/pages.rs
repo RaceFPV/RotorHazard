@@ -76,11 +76,17 @@ pub fn init(templates_dir: &str) -> Result<(), String> {
         );
     }
 
-    // translation function: pass-through (English) until language packs are
-    // ported; templates call __("...") everywhere
+    // translation function: language.json lookup with English pass-through
     env.add_global(
         "__",
-        Value::from_function(|s: String| -> Value { Value::from(s) }),
+        Value::from_function(move |s: String| -> Value {
+            let data_dir = PAGE_STATE
+                .get()
+                .map(|s| s.data_dir.clone())
+                .unwrap_or_default();
+            let lang = crate::phase3::current_language(&data_dir);
+            Value::from(crate::phase3::translate(&crate::phase3::languages(), &lang, &s))
+        }),
     );
 
     // serverInfo used by the layout (release version in asset URLs / about box)

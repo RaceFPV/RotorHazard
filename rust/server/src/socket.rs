@@ -159,6 +159,9 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
             Some("importer_list") => {
                 socket.emit("importer_list", &crate::export_import::importer_list());
             }
+            Some("all_languages") => {
+                socket.emit("all_languages", &json!({"languages": crate::phase3::languages()}));
+            }
             _ => {
                 if let Some(obj) = load_type.as_object() {
                     match obj.get("type").and_then(|t| t.as_str()) {
@@ -409,6 +412,30 @@ fn register_crud_handlers(socket: SocketRef, state: SharedState) {
                 let _ = conn.execute("UPDATE heat SET class_id = ?1 WHERE id = ?2", rusqlite::params![v, heat_id]);
             }
             if let Some(slot_id) = data.get("slot_id").and_then(|v| v.as_i64()) {
+                if let Some(v) = data.get("method").and_then(|v| v.as_i64()) {
+                    let _ = conn.execute(
+                        "UPDATE heat_node SET method = ?1, seed_id = NULL WHERE id = ?2",
+                        rusqlite::params![v, slot_id],
+                    );
+                }
+                if let Some(v) = data.get("seed_heat_id").and_then(|v| v.as_i64()) {
+                    let _ = conn.execute(
+                        "UPDATE heat_node SET seed_id = ?1 WHERE id = ?2",
+                        rusqlite::params![v, slot_id],
+                    );
+                }
+                if let Some(v) = data.get("seed_class_id").and_then(|v| v.as_i64()) {
+                    let _ = conn.execute(
+                        "UPDATE heat_node SET seed_id = ?1 WHERE id = ?2",
+                        rusqlite::params![v, slot_id],
+                    );
+                }
+                if let Some(v) = data.get("seed_rank").and_then(|v| v.as_i64()) {
+                    let _ = conn.execute(
+                        "UPDATE heat_node SET seed_rank = ?1 WHERE id = ?2",
+                        rusqlite::params![v, slot_id],
+                    );
+                }
                 if let Some(pilot) = data.get("pilot").and_then(|v| v.as_i64()) {
                     let pilot_val: Option<i64> = if pilot == 0 { None } else { Some(pilot) };
                     let _ = conn.execute(
@@ -1284,6 +1311,119 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
     });
 
     let st = state.clone();
+    // ---- heat generation (heat_automation) ----
+    let st = state.clone();
+    socket.on("calc_pilots", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64())
+            .or_else(|| data.get("heat_id").and_then(|v| v.as_i64()))
+        else { return };
+        // preassignments: {'slot': seat} map
+        let mut preassignments: Vec<(i64, i64)> = Vec::new();
+        if let Some(pre) = data.get("preassignments").and_then(|v| v.as_object()) {
+            for (slot, seat) in pre {
+                if let (Ok(slot_id), Some(seat)) = (slot.parse::<i64>(), seat.as_i64()) {
+                    preassignments.push((slot_id, seat));
+                }
+            }
+        }
+        let calc_result = crate::phase3::calc_heat_pilots(&state, heat_id);
+        let auto_frequency = db::with_db(&state, |conn| {
+            conn.query_row("SELECT auto_frequency FROM heat WHERE id = ?1", [heat_id], |r| r.get::<_, bool>(0))
+                .unwrap_or(false)
+        });
+        // characterized: heat_plan_result is only emitted when there is
+        // dynamic pilot data (has_calc_pilots) or auto-frequency is on;
+        // a simple confirmed/static heat returns silently ('safe')
+        let emit_plan = calc_result.calc_success == Some(true)
+            && (calc_result.has_calc_pilots || auto_frequency);
+        if emit_plan {
+            if calc_result.calc_success == Some(true) {
+                crate::phase3::resolve_slot_unset_nodes(&state, heat_id);
+            }
+            let payload = crate::phase3::build_heat_plan_result(
+                &state, heat_id, &calc_result,
+                &preassignments.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            );
+            broadcast(&state, "heat_plan_result", payload);
+        }
+    });
+
+    let st = state.clone();
+    socket.on("calc_reset", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let heat_id = data.get("heat").and_then(|v| v.as_i64())
+            .or_else(|| data.get("heat_id").and_then(|v| v.as_i64()));
+        let Some(heat_id) = heat_id else { return };
+        db::with_db(&state, |conn| {
+            let _ = conn.execute("UPDATE heat SET status = 0 WHERE id = ?1", [heat_id]);
+        });
+        let calc_result = crate::phase3::calc_heat_pilots(&state, heat_id);
+        let payload = crate::phase3::build_heat_plan_result(&state, heat_id, &calc_result, &[]);
+        broadcast(&state, "heat_plan_result", payload);
+    });
+
+    let st = state.clone();
+    socket.on("confirm_heat_plan", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let Some(heat_id) = data.get("heat_id").and_then(|v| v.as_i64()) else { return };
+        db::with_db(&state, |conn| {
+            let _ = conn.execute("UPDATE heat SET status = 2 WHERE id = ?1", [heat_id]);
+        });
+        crate::phase3::resolve_slot_unset_nodes(&state, heat_id);
+        let payload = db::with_db(&state, |conn| {
+            let race = state.race.lock().unwrap();
+            payloads::build_heat_data(conn, &race)
+        });
+        broadcast(&state, "heat_data", payload);
+        if data.get("source").and_then(|v| v.as_str()) == Some("run") {
+            let ready = state.race.lock().unwrap().race_status == RACE_STATUS_READY;
+            if ready {
+                let _ = set_heat_force(&state, heat_id);
+            }
+        }
+    });
+
+    // ---- callouts ----
+    let st = state.clone();
+    socket.on("save_callouts", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let callouts = data.get("callouts").cloned().unwrap_or(json!([]));
+        crate::phase3::persist_config_item(
+            &state.data_dir, "USER", "voiceCallouts", &callouts,
+        );
+        tracing::info!("Set all voice callouts");
+        // sent to other clients, not the page that saved it
+        if let Some(ns) = state.io.get().and_then(|io| io.of("/")) {
+            let ns = ns.except(sock.id);
+            tokio::spawn(async move {
+                let _ = ns.emit("callouts", &callouts).await;
+            });
+        }
+    });
+
+    let st = state.clone();
+    socket.on("reload_callouts", move |sock: SocketRef, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let callouts = crate::phase3::persisted_callouts(&state.data_dir);
+        if let Some(c) = callouts {
+            sock.emit("callouts", &c);
+        }
+    });
+
+    let st = state.clone();
+    socket.on("get_callout_text", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let callout = data.get("callout").and_then(|v| v.as_str()).unwrap_or("");
+        let text = crate::phase3::expand_callout(&state, callout);
+        sock.emit("callout_text", &json!({"callout": callout, "text": text}));
+    });
+
     socket.on("get_server_time", move |_: SocketRef, ack: AckSender, s: State<SharedState>| async move {
         // replies via socket.io ack callback
         let _ = ack.send(&json!({"server_time_s": monotonic()}));
@@ -1518,9 +1658,10 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
         let state = s.0.clone();
         let data = data.0;
         if let Some(lang) = data.get("language").and_then(|v| v.as_str()) {
-            db::with_db(&state, |conn| {
-                db::set_option(conn, "currentLanguage", lang);
-            });
+            // currentLanguage lives in config.json (UI section) in Python
+            crate::phase3::persist_config_item(
+                &state.data_dir, "UI", "currentLanguage", &json!(lang),
+            );
         }
     });
 
@@ -1538,6 +1679,7 @@ fn register_settings_handlers(socket: SocketRef, state: SharedState) {
                 format!("{}_{}", section, key),
                 value.clone(),
             );
+            crate::phase3::persist_config_item(&state.data_dir, section, key, value);
             tracing::info!("config set: {}.{} = {}", section, key, value);
         }
         // note: set_config does not emit config_update; clients re-request
@@ -1957,4 +2099,22 @@ pub fn build_race_list(state: &SharedState) -> Value {
 pub fn broadcast_race_list(state: &SharedState) {
     let payload = build_race_list(state);
     broadcast(state, "race_list", payload);
+}
+
+
+/// Switches the current heat even mid-race-state restrictions (set_heat force).
+fn set_heat_force(state: &SharedState, heat_id: i64) -> Result<(), ()> {
+    let pilots = db::with_db(state, |conn| heat_node_pilots(conn, heat_id, state.num_nodes));
+    {
+        let mut race = state.race.lock().unwrap();
+        race.current_heat = Some(heat_id);
+        race.node_pilots = pilots;
+    }
+    let payload = db::with_db(state, |conn| {
+        let race = state.race.lock().unwrap();
+        payloads::build_current_heat(conn, &race)
+    });
+    broadcast(state, "current_heat", payload);
+    emit_race_status_from(state);
+    Ok(())
 }
