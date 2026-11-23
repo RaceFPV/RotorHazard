@@ -337,12 +337,23 @@ pub async fn race_detail(
             }
         }
 
+        let leaderboard: Value = conn
+            .query_row(
+                "SELECT results FROM saved_race_meta WHERE id = ?1",
+                [race_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or_else(|| json!({"by_race_time": []}));
+
         json!({
             "race": {
                 "start_time_formatted": start_time_formatted,
                 "nodes": nodes,
                 "sort": "name",
-                "leaderboard": {"by_race_time": []},
+                "leaderboard": leaderboard,
                 "class_id": class_id,
                 "format_id": format_id,
                 "start_time": start_time,

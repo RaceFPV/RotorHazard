@@ -9,7 +9,7 @@ use crate::db;
 use crate::payloads;
 use crate::race as race_ops;
 use crate::state::*;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use socketioxide::extract::{AckSender, Data, SocketRef, State};
 use socketioxide::SocketIo;
 use std::sync::Arc;
@@ -145,8 +145,12 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 socket.emit("class_list", &payload);
             }
             Some("leaderboard") => {
-                let payload = json!({"current": {"leads": []}});
+                let payload = build_current_leaderboard(&state);
                 socket.emit("leaderboard", &payload);
+            }
+            Some("race_list") => {
+                let payload = build_race_list(&state);
+                socket.emit("race_list", &payload);
             }
             Some("exporter_list") => {
                 // no data exporters registered in the Rust build yet
@@ -841,6 +845,443 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
         socket.emit("race_scheduled", &payload);
     });
 
+    let st = state.clone();
+    socket.on("resave_laps", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let get = |k: &str| data.get(k);
+        let heat_id = get("heat_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let round_id = get("round_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let callsign = get("callsign").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let pilotrace_id = get("pilotrace_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let enter_at = get("enter_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let exit_at = get("exit_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let laps = get("laps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+        let ok = db::with_db(&state, |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE saved_pilot_race SET enter_at = ?1, exit_at = ?2 WHERE id = ?3",
+                    rusqlite::params![enter_at, exit_at, pilotrace_id],
+                )
+                .unwrap_or(0);
+            if updated == 0 {
+                return false;
+            }
+            conn.execute("DELETE FROM saved_race_lap WHERE pilotrace_id = ?1", [pilotrace_id])
+                .unwrap_or(0);
+            for lap in &laps {
+                let lap_time = lap.get("lap_time").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let stamp = lap.get("lap_time_stamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let source = lap.get("source").and_then(|v| v.as_i64()).unwrap_or(1);
+                let deleted = lap.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+                let node_index: i64 = conn
+                    .query_row(
+                        "SELECT node_index FROM saved_pilot_race WHERE id = ?1",
+                        [pilotrace_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                let pilot_id: Option<i64> = conn
+                    .query_row(
+                        "SELECT pilot_id FROM saved_pilot_race WHERE id = ?1",
+                        [pilotrace_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(None);
+                conn.execute(
+                    "INSERT INTO saved_race_lap (race_id, pilotrace_id, node_index, pilot_id,
+                                                 lap_time_stamp, lap_time, lap_time_formatted,
+                                                 source, deleted, peak_rssi)
+                     SELECT race_id, ?1, node_index, pilot_id, ?2, ?3, ?4, ?5, ?6, NULL
+                     FROM saved_pilot_race WHERE id = ?1",
+                    rusqlite::params![
+                        pilotrace_id,
+                        stamp,
+                        lap_time,
+                        db::format_time_to_str(lap_time),
+                        source,
+                        deleted
+                    ],
+                )
+                .unwrap();
+                let _ = (node_index, pilot_id);
+            }
+            true
+        });
+        if ok {
+            emit_priority_message(
+                &state,
+                &format!("Race times adjusted for: Heat {} Round {} / {}", heat_id, round_id, callsign),
+                false,
+            );
+        } else {
+            tracing::warn!("resave_laps: unable to resave pilotrace_id={}", pilotrace_id);
+        }
+    });
+
+    let st = state.clone();
+    socket.on("replace_current_laps", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let seat = data.get("node").and_then(|v| v.as_i64())
+            .or_else(|| data.get("seat").and_then(|v| v.as_i64()));
+        let Some(seat) = seat else { return };
+        let enter_at = data.get("enter_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let exit_at = data.get("exit_at").and_then(|v| v.as_i64()).unwrap_or(0);
+
+        // update profile enter/exit levels for the seat
+        db::with_db(&state, |conn| {
+            let profile_id = db::current_profile_id(conn);
+            for (col, val) in [("enter_ats", enter_at), ("exit_ats", exit_at)] {
+                let cur: Option<String> = conn
+                    .query_row(&format!("SELECT {} FROM profiles WHERE id = ?1", col), [profile_id], |r| r.get(0))
+                    .ok();
+                let mut arr = cur
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .unwrap_or(json!({"v": []}));
+                let v = arr.as_object_mut().unwrap().entry("v").or_insert(json!([]));
+                while v.as_array().unwrap().len() <= seat as usize {
+                    v.as_array_mut().unwrap().push(Value::Null);
+                }
+                v.as_array_mut().unwrap()[seat as usize] = json!(val);
+                let _ = conn.execute(
+                    &format!("UPDATE profiles SET {} = ?1 WHERE id = ?2", col),
+                    rusqlite::params![arr.to_string(), profile_id],
+                );
+            }
+        });
+
+        // replace the seat's live laps
+        {
+            let mut race = state.race.lock().unwrap();
+            if let Some(laps_slot) = race.node_laps.get_mut(seat as usize) {
+                laps_slot.clear();
+                if let Some(laps) = data.get("laps").and_then(|v| v.as_array()) {
+                    for lap in laps {
+                        laps_slot.push(Lap {
+                            lap_time_stamp: lap.get("lap_time_stamp").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            lap_time: lap.get("lap_time").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            source: lap.get("source").and_then(|v| v.as_i64()).unwrap_or(1),
+                            deleted: lap.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false),
+                        });
+                    }
+                }
+            }
+        }
+        let payload = db::with_db(&state, |conn| {
+            let race = state.race.lock().unwrap();
+            payloads::build_current_laps(conn, &race)
+        });
+        broadcast(&state, "current_laps", payload);
+    });
+
+    let st = state.clone();
+    socket.on("current_race_marshal", move |sock: SocketRef, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let (status, heat_id, format_id, start_time, start_time_formatted) = {
+            let race = state.race.lock().unwrap();
+            (
+                race.race_status,
+                race.current_heat,
+                race.format_id,
+                race.start_time_monotonic,
+                race.start_time_formatted.clone(),
+            )
+        };
+        if status != RACE_STATUS_DONE || heat_id.is_none() {
+            return;
+        }
+        let race_snapshot = {
+            let race = state.race.lock().unwrap();
+            race.node_laps.clone()
+        };
+        let payload = db::with_db(&state, |conn| {
+            let profile_id = db::current_profile_id(conn);
+            let freqs = db::profile_frequencies(conn, profile_id);
+            let mut seats = Map::new();
+            for (index, laps) in race_snapshot.iter().enumerate() {
+                let (enter_at, exit_at) = (
+                    freqs.get(index).map(|_| 90).unwrap_or(0),
+                    freqs.get(index).map(|_| 80).unwrap_or(0),
+                );
+                let seat_laps: Vec<Value> = laps
+                    .iter()
+                    .enumerate()
+                    .map(|(lap_number, l)| {
+                        json!({
+                            "lap_number": lap_number,
+                            "lap_time_stamp": l.lap_time_stamp,
+                            "lap_time": l.lap_time,
+                            "lap_time_formatted": db::format_time_to_str(l.lap_time),
+                            "source": l.source,
+                            "deleted": l.deleted,
+                        })
+                    })
+                    .collect();
+                seats.insert(
+                    index.to_string(),
+                    json!({
+                        "pilotrace_index": index,
+                        "history_values": [],
+                        "history_times": [],
+                        "enter_at": enter_at,
+                        "exit_at": exit_at,
+                        "laps": seat_laps,
+                        "marshal_type": 0,
+                    }),
+                );
+            }
+            json!({
+                "race": {
+                    "round_id": -1,
+                    "heat_id": heat_id,
+                    "race_id": Value::Null,
+                    "class_id": Value::Null,
+                    "format_id": format_id,
+                    "start_time": start_time,
+                    "start_time_formatted": start_time_formatted,
+                },
+                "seats": seats,
+            })
+        });
+        sock.emit("current_marshal_data", &payload);
+    });
+
+    let st = state.clone();
+    socket.on("get_pilotrace", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let Some(pilotrace_id) = data.get("pilotrace_id").and_then(|v| v.as_i64()) else {
+            return;
+        };
+        let payload = db::with_db(&state, |conn| {
+            let row: Option<(i64, i64, i64, Option<i64>, Option<i64>)> = conn
+                .query_row(
+                    "SELECT node_index, enter_at, exit_at, marshal_type, pilot_id
+                     FROM saved_pilot_race WHERE id = ?1",
+                    [pilotrace_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .ok();
+            let Some((node_index, enter_at, exit_at, marshal_type, pilot_id)) = row else {
+                return Value::Null;
+            };
+            let callsign = pilot_id.and_then(|pid| {
+                conn.query_row("SELECT callsign FROM pilot WHERE id = ?1", [pid], |r| {
+                    r.get::<_, String>(0)
+                })
+                .ok()
+            });
+            let mut laps = Vec::new();
+            let mut lstmt = conn
+                .prepare(
+                    "SELECT id, lap_time_stamp, lap_time, lap_time_formatted, source, deleted, peak_rssi
+                     FROM saved_race_lap WHERE pilotrace_id = ?1 ORDER BY id",
+                )
+                .unwrap();
+            let mut lrows = lstmt.query([pilotrace_id]).unwrap();
+            while let Some(lrow) = lrows.next().unwrap() {
+                laps.push(json!({
+                    "id": lrow.get::<_, i64>(0).unwrap(),
+                    "lap_time_stamp": lrow.get::<_, f64>(1).unwrap(),
+                    "lap_time": lrow.get::<_, f64>(2).unwrap(),
+                    "lap_time_formatted": lrow.get::<_, String>(3).unwrap(),
+                    "source": lrow.get::<_, i64>(4).unwrap(),
+                    "deleted": lrow.get::<_, bool>(5).unwrap(),
+                    "peak_rssi": lrow.get::<_, Option<i64>>(6).unwrap(),
+                }));
+            }
+            json!({
+                "pilotrace_id": pilotrace_id,
+                "callsign": callsign,
+                "pilot_id": pilot_id,
+                "node_index": node_index,
+                "history_values": [],
+                "history_times": [],
+                "laps": laps,
+                "enter_at": enter_at,
+                "exit_at": exit_at,
+                "marshal_type": marshal_type,
+            })
+        });
+        if !payload.is_null() {
+            sock.emit("race_details", &payload);
+        }
+    });
+    let st = state.clone();
+    socket.on("delete_race_round", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let race_id = data.get("race_id").and_then(|v| v.as_i64());
+        let Some(race_id) = race_id else { return };
+        let deleted = db::with_db(&state, |conn| {
+            let meta: Option<(i64, i64, Option<i64>, Option<i64>, String)> = conn
+                .query_row(
+                    "SELECT round_id, heat_id, class_id, format_id, start_time_formatted
+                     FROM saved_race_meta WHERE id = ?1",
+                    [race_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .ok();
+            let Some((round_id, heat_id, class_id, format_id, start_time_formatted)) = meta else {
+                return None;
+            };
+            // snapshot the full race into the deleted_race table
+            let mut blob = json!({});
+            {
+                let mut mstmt = conn
+                    .prepare("SELECT * FROM saved_race_meta WHERE id = ?1")
+                    .unwrap();
+                let mut mrows = mstmt.query([race_id]).unwrap();
+                if let Some(row) = mrows.next().unwrap() {
+                    blob["meta"] = row_to_json(row);
+                }
+            }
+            let mut pilotraces = Vec::new();
+            {
+                let mut pstmt = conn
+                    .prepare("SELECT * FROM saved_pilot_race WHERE race_id = ?1")
+                    .unwrap();
+                let mut prows = pstmt.query([race_id]).unwrap();
+                while let Some(row) = prows.next().unwrap() {
+                    pilotraces.push(row_to_json(row));
+                }
+            }
+            let mut laps = Vec::new();
+            {
+                let mut lstmt = conn
+                    .prepare("SELECT * FROM saved_race_lap WHERE race_id = ?1")
+                    .unwrap();
+                let mut lrows = lstmt.query([race_id]).unwrap();
+                while let Some(row) = lrows.next().unwrap() {
+                    laps.push(row_to_json(row));
+                }
+            }
+            blob["pilotraces"] = json!(pilotraces);
+            blob["laps"] = json!(laps);
+            let deleted_time = crate::race::now_formatted_str();
+            conn.execute(
+                "INSERT INTO deleted_race (id, race_id, round_id, heat_id, class_id, format_id,
+                                           start_time_formatted, deleted_time_formatted, data)
+                 VALUES ((SELECT COALESCE(MAX(id), 0) + 1 FROM deleted_race), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    race_id, round_id, heat_id, class_id, format_id,
+                    start_time_formatted, deleted_time, blob.to_string()
+                ],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM saved_race_lap WHERE race_id = ?1", [race_id]).unwrap();
+            conn.execute("DELETE FROM saved_pilot_race WHERE race_id = ?1", [race_id]).unwrap();
+            conn.execute("DELETE FROM saved_race_meta WHERE id = ?1", [race_id]).unwrap();
+            Some(race_id)
+        });
+        match deleted {
+            Some(rid) => {
+                let _ = sock.emit("race_round_deleted", &json!({"ok": true, "race_id": rid}));
+            }
+            None => {
+                emit_priority_message(&state, "That round no longer exists; it may already have been deleted", false);
+                let _ = sock.emit("race_round_deleted", &json!({"ok": false, "race_id": race_id}));
+            }
+        }
+    });
+
+    let st = state.clone();
+    socket.on("check_deleted_race", move |_: SocketRef, ack: AckSender, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let id = data.get("id").and_then(|v| v.as_i64());
+        let problem = check_restore_problem(&state, id);
+        let _ = ack.send(&json!({"ok": problem.is_none()}));
+        if let Some(problem) = problem {
+            emit_priority_message(&state, &problem, false);
+        }
+    });
+
+    let st = state.clone();
+    socket.on("restore_deleted_race", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let id = data.get("id").and_then(|v| v.as_i64());
+        if let Some(problem) = check_restore_problem(&state, id) {
+            emit_priority_message(&state, &problem, false);
+            sock.emit("deleted_race_restored", &json!({"ok": false, "id": id}));
+            return;
+        }
+        let Some(id) = id else { return };
+        let restored = db::with_db(&state, |conn| {
+            let (race_id, blob): (i64, String) = match conn
+                .query_row("SELECT race_id, data FROM deleted_race WHERE id = ?1", [id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                }) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            let doc: Value = match serde_json::from_str(&blob) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            if let Some(meta) = doc.get("meta") {
+                conn.execute(
+                    "INSERT INTO saved_race_meta (id, round_id, heat_id, class_id, format_id,
+                                                  start_time, start_time_formatted, results, \"cacheStatus\")
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        race_id,
+                        val_to_sql(meta.get("round_id")),
+                        val_to_sql(meta.get("heat_id")),
+                        val_to_sql(meta.get("class_id")),
+                        val_to_sql(meta.get("format_id")),
+                        val_to_sql(meta.get("start_time")),
+                        val_to_sql(meta.get("start_time_formatted")),
+                        val_to_sql(meta.get("results")),
+                        val_to_sql(meta.get("cacheStatus")),
+                    ],
+                )
+                .unwrap_or(0);
+            }
+            if let Some(prs) = doc.get("pilotraces").and_then(|v| v.as_array()) {
+                for pr in prs {
+                    conn.execute(
+                        "INSERT INTO saved_pilot_race (id, race_id, node_index, pilot_id, history_values,
+                                                       history_times, penalty_time, penalty_desc,
+                                                       enter_at, exit_at, frequency, marshal_type)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        rusqlite::params![
+                            val_to_sql(pr.get("id")), val_to_sql(pr.get("race_id")), val_to_sql(pr.get("node_index")),
+                            val_to_sql(pr.get("pilot_id")), val_to_sql(pr.get("history_values")), val_to_sql(pr.get("history_times")),
+                            val_to_sql(pr.get("penalty_time")), val_to_sql(pr.get("penalty_desc")), val_to_sql(pr.get("enter_at")),
+                            val_to_sql(pr.get("exit_at")), val_to_sql(pr.get("frequency")), val_to_sql(pr.get("marshal_type")),
+                        ],
+                    )
+                    .unwrap_or(0);
+                }
+            }
+            if let Some(ls) = doc.get("laps").and_then(|v| v.as_array()) {
+                for l in ls {
+                    conn.execute(
+                        "INSERT INTO saved_race_lap (id, race_id, pilotrace_id, node_index, pilot_id,
+                                                     lap_time_stamp, lap_time, lap_time_formatted,
+                                                     source, deleted, peak_rssi)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        rusqlite::params![
+                            val_to_sql(l.get("id")), val_to_sql(l.get("race_id")), val_to_sql(l.get("pilotrace_id")),
+                            val_to_sql(l.get("node_index")), val_to_sql(l.get("pilot_id")), val_to_sql(l.get("lap_time_stamp")),
+                            val_to_sql(l.get("lap_time")), val_to_sql(l.get("lap_time_formatted")), val_to_sql(l.get("source")),
+                            val_to_sql(l.get("deleted")), val_to_sql(l.get("peak_rssi")),
+                        ],
+                    )
+                    .unwrap_or(0);
+                }
+            }
+            conn.execute("DELETE FROM deleted_race WHERE id = ?1", [id]).unwrap_or(0);
+            true
+        });
+        sock.emit("deleted_race_restored", &json!({"ok": restored, "id": id}));
+    });
+
+    let st = state.clone();
     socket.on("get_server_time", move |_: SocketRef, ack: AckSender, s: State<SharedState>| async move {
         // replies via socket.io ack callback
         let _ = ack.send(&json!({"server_time_s": monotonic()}));
@@ -1165,4 +1606,310 @@ fn emit_race_status_from(state: &SharedState) {
         payloads::build_race_status(conn, &race)
     });
     broadcast(&state, "race_status", payload);
+}
+
+
+/// Builds the current-race leaderboard payload (emit_current_leaderboard).
+fn build_current_leaderboard(state: &SharedState) -> Value {
+    let snapshot = {
+        let race = state.race.lock().unwrap();
+        Some((
+            race.current_heat,
+            race.format_id,
+            race.node_laps.clone(),
+            race.node_pilots.clone(),
+        ))
+    };
+    let Some((heat_id, format_id, laps, node_pilots)) = snapshot else {
+        return json!({"current": {}});
+    };
+    db::with_db(state, |conn| {
+        let (displayname, round_num) = match heat_id {
+            Some(h) => {
+                let dn: String = conn
+                    .query_row(
+                        "SELECT COALESCE(note, 'Heat ' || id) FROM heat WHERE id = ?1",
+                        [h],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or_else(|_| format!("Heat {}", h));
+                (dn, db::max_round(conn, h))
+            }
+            None => ("Practice".to_string(), 0),
+        };
+        let fmt = crate::results::FormatInfo::from_conn(conn, format_id);
+        let consec = db::get_option_int(conn, "consecutivesCount", 3);
+        let profile_id = db::current_profile_id(conn);
+        let freqs = db::profile_frequencies(conn, profile_id);
+        let mut pilots_in = Vec::new();
+        for node_index in 0..state.num_nodes {
+            let freq = freqs.get(node_index).map(|(_, _, f)| *f).unwrap_or(0);
+            if freq == 0 {
+                continue;
+            }
+            let pilot_id = node_pilots[node_index];
+            let (callsign, team) = match pilot_id {
+                Some(pid) => {
+                    let row: Option<(String, String)> = conn
+                        .query_row(
+                            "SELECT callsign, team FROM pilot WHERE id = ?1",
+                            [pid],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .ok();
+                    match row {
+                        Some((cs, tm)) => (cs, Some(tm)),
+                        None => (format!("{}", freq), None),
+                    }
+                }
+                None => match freqs.get(node_index) {
+                    Some((Some(b), Some(c), _)) => (format!("{}{}", b, c), None),
+                    _ => (format!("{}", freq), None),
+                },
+            };
+            let crossings: Vec<(f64, f64)> = laps[node_index]
+                .iter()
+                .filter(|l| !l.deleted)
+                .map(|l| (l.lap_time, l.lap_time_stamp))
+                .collect();
+            pilots_in.push(crate::results::PilotLaps {
+                pilot_id,
+                callsign,
+                team_name: team,
+                node: node_index,
+                crossings,
+            });
+        }
+        let leaderboard =
+            crate::results::calc_leaderboard(&pilots_in, &fmt, round_num, heat_id, &displayname, consec);
+        json!({
+            "current": {
+                "displayname": displayname,
+                "heat": heat_id,
+                "leaderboard": leaderboard,
+            }
+        })
+    })
+}
+
+
+/// Broadcasts a priority message (emit_priority_message).
+pub fn emit_priority_message(state: &SharedState, message: &str, interrupt: bool) {
+    broadcast(
+        state,
+        "priority_message",
+        json!({"message": message, "interrupt": interrupt, "caller": Value::Null}),
+    );
+}
+
+
+fn row_to_json(row: &rusqlite::Row<'_>) -> Value {
+    let mut obj = Map::new();
+    for (idx, col) in row.as_ref().column_names().iter().enumerate() {
+        let val: Value = match row.get_ref(idx) {
+            Ok(rusqlite::types::ValueRef::Null) => Value::Null,
+            Ok(rusqlite::types::ValueRef::Integer(i)) => json!(i),
+            Ok(rusqlite::types::ValueRef::Real(f)) => json!(f),
+            Ok(rusqlite::types::ValueRef::Text(t)) => {
+                json!(String::from_utf8_lossy(t).to_string())
+            }
+            Ok(rusqlite::types::ValueRef::Blob(b)) => json!(String::from_utf8_lossy(b).to_string()),
+            Err(_) => Value::Null,
+        };
+        obj.insert((*col).to_string(), val);
+    }
+    Value::Object(obj)
+}
+
+/// Returns a problem message when a deleted race cannot be restored.
+fn check_restore_problem(state: &SharedState, deleted_id: Option<i64>) -> Option<String> {
+    let Some(id) = deleted_id else {
+        return Some("No deleted race was specified".to_string());
+    };
+    let conflict = db::with_db(state, |conn| {
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT round_id, heat_id FROM deleted_race WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        match row {
+            None => None,
+            Some((round_id, heat_id)) => conn
+                .query_row(
+                    "SELECT id FROM saved_race_meta WHERE heat_id = ?1 AND round_id = ?2",
+                    rusqlite::params![heat_id, round_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok(),
+        }
+    });
+    match conflict {
+        Some(_) => Some("Unable to restore deleted race; conflicts with an existing race".to_string()),
+        None => None,
+    }
+}
+
+
+/// Converts a serde_json::Value into a rusqlite-compatible parameter
+/// (NULL / integer / real / text).
+enum SqlVal {
+    Null,
+    Int(i64),
+    Real(f64),
+    Text(String),
+}
+
+impl rusqlite::ToSql for SqlVal {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
+        Ok(match self {
+            SqlVal::Null => ToSqlOutput::Owned(SqlValue::Null),
+            SqlVal::Int(i) => ToSqlOutput::Owned(SqlValue::Integer(*i)),
+            SqlVal::Real(f) => ToSqlOutput::Owned(SqlValue::Real(*f)),
+            SqlVal::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
+        })
+    }
+}
+
+fn val_to_sql(v: Option<&Value>) -> SqlVal {
+    match v {
+        None | Some(Value::Null) => SqlVal::Null,
+        Some(Value::Bool(b)) => SqlVal::Int(*b as i64),
+        Some(Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                SqlVal::Int(i)
+            } else {
+                SqlVal::Real(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        Some(Value::String(s)) => SqlVal::Text(s.clone()),
+        Some(other) => SqlVal::Text(other.to_string()),
+    }
+}
+
+
+/// Builds the race_list payload (emit_race_list): saved races grouped by
+/// heat and round, with per-seat pilotrace entries carrying pilotrace_id.
+pub fn build_race_list(state: &SharedState) -> Value {
+    db::with_db(state, |conn| {
+        let mut heats = Map::new();
+        let profile_id = db::current_profile_id(conn);
+        let freqs = db::profile_frequencies(conn, profile_id);
+
+        let mut heat_rows = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT id, COALESCE(note, 'Heat ' || id), class_id FROM heat ORDER BY id")
+                .unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                heat_rows.push((
+                    row.get::<_, i64>(0).unwrap(),
+                    row.get::<_, Option<i64>>(2).unwrap(),
+                    row.get::<_, String>(1).unwrap(),
+                ));
+            }
+        }
+
+        for (heat_id, class_id, displayname) in heat_rows {
+            let mut rounds = Map::new();
+            let mut race_ids = Vec::new();
+            {
+                let mut stmt = conn
+                    .prepare("SELECT id, round_id, format_id, start_time, start_time_formatted
+                              FROM saved_race_meta WHERE heat_id = ?1 ORDER BY round_id")
+                    .unwrap();
+                let mut rows = stmt.query([heat_id]).unwrap();
+                while let Some(row) = rows.next().unwrap() {
+                    race_ids.push((
+                        row.get::<_, i64>(0).unwrap(),
+                        row.get::<_, i64>(1).unwrap(),
+                        row.get::<_, Option<i64>>(2).unwrap(),
+                        row.get::<_, f64>(3).unwrap(),
+                        row.get::<_, String>(4).unwrap(),
+                    ));
+                }
+            }
+            for (race_id, round_id, format_id, start_time, start_time_formatted) in race_ids {
+                let mut pilotraces = Vec::new();
+                let mut stmt = conn
+                    .prepare("SELECT id, pilot_id, node_index, frequency
+                              FROM saved_pilot_race WHERE race_id = ?1")
+                    .unwrap();
+                let mut rows = stmt.query([race_id]).unwrap();
+                let mut prs = Vec::new();
+                while let Some(row) = rows.next().unwrap() {
+                    prs.push((
+                        row.get::<_, i64>(0).unwrap(),
+                        row.get::<_, Option<i64>>(1).unwrap(),
+                        row.get::<_, i64>(2).unwrap(),
+                        row.get::<_, Option<i64>>(3).unwrap(),
+                    ));
+                }
+                for (pr_id, pilot_id, node_index, frequency) in prs {
+                    let callsign = pilot_id.and_then(|pid| {
+                        conn.query_row("SELECT callsign FROM pilot WHERE id = ?1", [pid], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .ok()
+                    });
+                    let pilot_freq = match frequency {
+                        Some(f) if f > 0 => {
+                            let band_channel = freqs
+                                .iter()
+                                .find(|(_, _, nf)| *nf == f)
+                                .map(|(b, c, _)| (b.clone(), *c));
+                            match band_channel {
+                                Some((Some(b), Some(c))) => json!({"band": b, "channel": c, "frequency": f}),
+                                _ => json!({"band": Value::Null, "channel": Value::Null, "frequency": f}),
+                            }
+                        }
+                        _ => match freqs.get(node_index as usize) {
+                            Some((Some(b), Some(c), f)) => {
+                                json!({"band": b, "channel": c, "frequency": f})
+                            }
+                            _ => json!({"band": Value::Null, "channel": Value::Null, "frequency": 0}),
+                        },
+                    };
+                    pilotraces.push(json!({
+                        "pilotrace_id": pr_id,
+                        "callsign": callsign,
+                        "pilot_id": pilot_id,
+                        "node_index": node_index,
+                        "pilot_freq": pilot_freq,
+                    }));
+                }
+                rounds.insert(
+                    round_id.to_string(),
+                    json!({
+                        "race_id": race_id,
+                        "format_id": format_id,
+                        "start_time": start_time,
+                        "start_time_formatted": start_time_formatted,
+                        "pilotraces": pilotraces,
+                    }),
+                );
+            }
+            if !rounds.is_empty() {
+                heats.insert(
+                    heat_id.to_string(),
+                    json!({
+                        "heat_id": heat_id,
+                        "class_id": class_id,
+                        "displayname": displayname,
+                        "rounds": rounds,
+                    }),
+                );
+            }
+        }
+        json!({ "heats": heats })
+    })
+}
+
+/// Broadcasts the race list (called after laps are saved).
+pub fn broadcast_race_list(state: &SharedState) {
+    let payload = build_race_list(state);
+    broadcast(state, "race_list", payload);
 }

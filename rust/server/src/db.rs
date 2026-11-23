@@ -174,6 +174,8 @@ pub fn unique_name(base: &str, existing: &[String]) -> String {
 
 /// Shared-state convenience: run a closure with the DB connection.
 pub fn with_db<T>(state: &SharedState, f: impl FnOnce(&Connection) -> T) -> T {
-    let conn = state.db.lock().unwrap();
+    // poison-tolerant: a panic in one handler must not take down the server
+    // (Python recovers from per-handler exceptions the same way)
+    let conn = state.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     f(&conn)
 }

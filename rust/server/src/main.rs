@@ -8,6 +8,7 @@
 mod api;
 mod db;
 mod payloads;
+mod results;
 mod race;
 mod socket;
 mod state;
@@ -81,6 +82,30 @@ async fn main() {
     state.io.set(io.clone()).expect("io set once");
 
     socket::register_handlers(io, state.clone());
+
+    // heartbeat: broadcast node state every 500ms (heartbeat_thread_function)
+    {
+        let hb_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let payload = db::with_db(&hb_state, |conn| {
+                    let profile_id = db::current_profile_id(conn);
+                    let freqs = db::profile_frequencies(conn, profile_id);
+                    let n = hb_state.num_nodes;
+                    json!({
+                        "current_rssi": vec![45i64; n],
+                        "frequency": (0..n).map(|i| freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0)).collect::<Vec<_>>(),
+                        "loop_time": vec![0.5f64; n],
+                        "crossing_flag": vec![false; n],
+                    })
+                });
+                socket::broadcast(&hb_state, "heartbeat", payload);
+            }
+        });
+    }
 
     let app = axum::Router::new()
         .route("/api/status", axum::routing::get(api::status))

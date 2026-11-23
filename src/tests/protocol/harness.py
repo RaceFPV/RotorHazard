@@ -214,7 +214,9 @@ class Client:
                             timeout, event, [name for name, _ in self._events]))
                 self._cond.wait(remaining)
 
-    def emit_and_wait(self, event, data, resp_event, timeout=10.0):
+    def emit_and_wait(self, event, data, resp_event, timeout=10.0, drain=False):
+        if drain:
+            self.drain()
         self.emit(event, data)
         return self.wait_for(resp_event, timeout=timeout)
 

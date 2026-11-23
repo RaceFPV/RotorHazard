@@ -221,14 +221,16 @@ pub fn save_laps(state: &SharedState) -> bool {
                     "INSERT INTO saved_pilot_race (race_id, node_index, pilot_id, history_values,
                                                    history_times, penalty_time, penalty_desc,
                                                    enter_at, exit_at, frequency, marshal_type)
-                     VALUES (?1, ?2, ?3, NULL, NULL, 0, NULL, ?4, ?5, ?6, NULL)",
+                     VALUES (?1, ?2, ?3, ?7, ?8, 0, NULL, ?4, ?5, ?6, NULL)",
                     rusqlite::params![
                         race_id,
                         node_index,
                         pilot_id,
                         enter_levels.get(node_index).copied().unwrap_or(90),
                         enter_levels.get(node_index).copied().unwrap_or(80),
-                        freq
+                        freq,
+                        json!([]).to_string(),
+                        json!([]).to_string()
                     ],
                 )
                 .unwrap();
@@ -258,6 +260,59 @@ pub fn save_laps(state: &SharedState) -> bool {
                 }
                 let _ = lap_id;
             }
+
+            // compute and cache the race leaderboard (matching the Python
+            // results cache in saved_race_meta.results)
+            let displayname: String = conn
+                .query_row(
+                    "SELECT COALESCE(note, 'Heat ' || id) FROM heat WHERE id = ?1",
+                    [heat_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| format!("Heat {}", heat_id));
+            let fmt = crate::results::FormatInfo::from_conn(conn, format_id);
+            let consec = db::get_option_int(conn, "consecutivesCount", 3);
+            let mut pilots_in = Vec::new();
+            for node_index in 0..state.num_nodes {
+                let pilot_id = pilots_snap[node_index];
+                if pilot_id.is_none() {
+                    continue;
+                }
+                let callsign = pilot_id
+                    .and_then(|pid| {
+                        conn.query_row("SELECT callsign FROM pilot WHERE id = ?1", [pid], |r| r.get::<_, String>(0))
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                let team = pilot_id
+                    .and_then(|pid| {
+                        conn.query_row("SELECT team FROM pilot WHERE id = ?1", [pid], |r| r.get::<_, String>(0))
+                            .ok()
+                    });
+                let crossings: Vec<(f64, f64)> = laps_snap[node_index]
+                    .iter()
+                    .filter(|l| !l.deleted)
+                    .map(|l| (l.lap_time, l.lap_time_stamp))
+                    .collect();
+                pilots_in.push(crate::results::PilotLaps {
+                    pilot_id,
+                    callsign,
+                    team_name: team,
+                    node: node_index,
+                    crossings,
+                });
+            }
+            let leaderboard = crate::results::calc_leaderboard(
+                &pilots_in, &fmt, max_round + 1, Some(heat_id), &displayname, consec);
+            conn.execute(
+                "UPDATE saved_race_meta SET results = ?1, \"cacheStatus\" = ?2 WHERE id = ?3",
+                rusqlite::params![
+                    leaderboard.to_string(),
+                    json!({"data_ver": 1.0, "build_ver": 1.0}).to_string(),
+                    race_id
+                ],
+            )
+            .unwrap();
         });
         // release DB before taking the race lock again (lock order)
         true
@@ -270,6 +325,8 @@ pub fn save_laps(state: &SharedState) -> bool {
     if saved {
         broadcast(&state, "race_saved", json!({}));
         emit_race_status(state);
+        // race list broadcast lives in socket.rs to reuse its builder
+        crate::socket::broadcast_race_list(state);
     }
     saved
 }
