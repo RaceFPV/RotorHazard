@@ -82,7 +82,9 @@ async fn main() {
                 "LOG_SENSORS_DATA_RATE": 300,
                 "SERIAL_PORTS": [],
                 "MOCK_NODES": 0,
-                "MOCK_NODE_SIGNAL": 0,
+                // mock nodes simulate live RSSI by default so the Run
+                // page graphs and auto-crossings work out of the box
+                "MOCK_NODE_SIGNAL": 2,
                 "LAST_MODIFIED_TIME": 0,
             },
             "TIMING": {

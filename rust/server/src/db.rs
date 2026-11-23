@@ -163,7 +163,8 @@ pub fn with_db<T>(state: &SharedState, f: impl FnOnce(&Connection) -> T) -> T {
 
 
 /// Reads an integer config item from config.json (mirroring
-/// serverconfig.get_item_int); falls back to zero.
+/// serverconfig.get_item_int).  An absent MOCK_NODE_SIGNAL defaults to 2
+/// (simulated RSSI) so mock-node graphs work out of the box.
 pub fn get_option_or_config_int(
     state: &SharedState,
     _conn: &Connection,
@@ -184,5 +185,9 @@ pub fn get_option_or_config_int(
             }
         }
     }
-    0
+    match (section, key) {
+        // absent key defaults to simulated RSSI so mock-node graphs work
+        ("GENERAL", "MOCK_NODE_SIGNAL") => 2,
+        _ => 0,
+    }
 }

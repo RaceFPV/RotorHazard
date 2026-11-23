@@ -226,7 +226,7 @@ class DefaultConfigTest(unittest.TestCase):
         self.assertEqual(cfg["SECRETS"]["ADMIN_USERNAME"], "admin")
         self.assertEqual(cfg["SECRETS"]["ADMIN_PASSWORD"], "rotorhazard")
         self.assertTrue(cfg["SECRETS"]["SECRET_KEY"])
-        self.assertIn("MOCK_NODE_SIGNAL", cfg["GENERAL"])
+        self.assertEqual(cfg["GENERAL"]["MOCK_NODE_SIGNAL"], 2)
 
         try:
             urllib.request.urlopen(self.server.base_url + "/marshal", timeout=10)

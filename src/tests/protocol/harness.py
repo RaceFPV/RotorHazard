@@ -104,6 +104,8 @@ def _spawn_server(config_overrides=None, write_config=True):
             'GENERAL': {
                 'HTTP_PORT': port,
                 'DEBUG': False,
+                # idle mocks: deterministic laps for the characterization tests
+                'MOCK_NODE_SIGNAL': 0,
             },
         }
         if config_overrides:
@@ -174,7 +176,8 @@ def spawn_rust_server(config_overrides=None, write_config=True, binary=None):
     if write_config:
         config = {
             'SECRETS': {'ADMIN_USERNAME': '', 'ADMIN_PASSWORD': ''},
-            'GENERAL': {'HTTP_PORT': port, 'DEBUG': False},
+            'GENERAL': {'HTTP_PORT': port, 'DEBUG': False,
+                        'MOCK_NODE_SIGNAL': 0},
         }
         if config_overrides:
             for section, items in config_overrides.items():
