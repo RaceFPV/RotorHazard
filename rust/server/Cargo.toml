@@ -15,6 +15,4 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
-
-[dev-dependencies]
-tempfile = "3"
+minijinja = { version = "2", features = ["urlencode", "json"] }

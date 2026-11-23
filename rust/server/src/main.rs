@@ -8,6 +8,7 @@
 mod api;
 mod db;
 mod export_import;
+mod pages;
 mod payloads;
 mod results;
 mod race;
@@ -15,6 +16,7 @@ mod socket;
 mod state;
 mod util;
 
+use axum::extract::State;
 use serde_json::json;
 use socketioxide::SocketIo;
 use state::{AppState, ServerInfo, SharedState};
@@ -44,6 +46,12 @@ async fn main() {
     let http_port_cfg = read_config_port(&data_dir).unwrap_or(port);
 
     state::set_program_start_epoch_ms(state::now_epoch_ms() as u64);
+
+    let templates_dir = std::env::var("RH_TEMPLATES_DIR")
+        .unwrap_or_else(|_| "src/server/templates".to_string());
+    if let Err(e) = pages::init(&templates_dir) {
+        tracing::warn!("template environment: {}", e);
+    }
 
     let conn = db::open_or_init(&data_dir).expect("failed to open/init database");
     let num_nodes: usize = std::env::var("RH_NODES")
@@ -82,6 +90,7 @@ async fn main() {
         .build_layer();
     state.io.set(io.clone()).expect("io set once");
 
+    pages::set_state(state.clone());
     socket::register_handlers(io, state.clone());
 
     // heartbeat: broadcast node state every 500ms (heartbeat_thread_function)
@@ -127,7 +136,20 @@ async fn main() {
         )
         .route("/api/options", axum::routing::get(api::options))
         .route("/api", axum::routing::get(api_docs))
-        .route("/", axum::routing::get(index_placeholder))
+        .route("/", axum::routing::get(render_page))
+        .route("/event", axum::routing::get(render_page))
+        .route("/results", axum::routing::get(render_page))
+        .route("/run", axum::routing::get(render_page))
+        .route("/current", axum::routing::get(render_page))
+        .route("/marshal", axum::routing::get(render_page))
+        .route("/format", axum::routing::get(render_page))
+        .route("/settings", axum::routing::get(render_page))
+        .route("/scanner", axum::routing::get(render_page))
+        .route("/streams", axum::routing::get(render_page))
+        .route("/stream/results", axum::routing::get(render_page))
+        .route("/imdtabler", axum::routing::get(render_page))
+        .route("/database", axum::routing::get(render_page))
+        .route("/vrxstatus", axum::routing::get(render_page))
         .nest_service("/static", ServeDir::new(&static_dir))
         .layer(socketio_layer)
         .with_state(state);
@@ -139,11 +161,18 @@ async fn main() {
     axum::serve(listener, app).await.expect("server error");
 }
 
-/// Placeholder until the Jinja templates render server-side (Phase 2 plan:
-/// minijinja over src/server/templates).  The protocol/API surface is
-/// fully functional without this.
-async fn index_placeholder() -> impl axum::response::IntoResponse {
-    axum::http::StatusCode::OK
+/// Renders the page for the request path (page map in pages::PAGES).
+async fn render_page(
+    uri: axum::http::Uri,
+    State(state): State<SharedState>,
+) -> impl axum::response::IntoResponse {
+    let path = uri.path().to_string();
+    let template = pages::PAGES
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, t)| *t)
+        .unwrap_or("home.html");
+    pages::render(template, state.num_nodes, pages::page_context(&path, &state))
 }
 
 async fn api_docs() -> impl axum::response::IntoResponse {
