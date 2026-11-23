@@ -386,7 +386,7 @@ def hslToHex(h, s, l):
     l = l / 100.0
 
     if s == 0:
-        r = g = b = l
+        r = g = b = int(round(l * 255))
     else:
         def hue2rgb(p, q, t):
             if t < 0:

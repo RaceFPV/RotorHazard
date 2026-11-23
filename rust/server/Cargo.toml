@@ -1,0 +1,20 @@
+[package]
+name = "rh-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+socketioxide = { version = "0.16", features = ["state"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
+tower = "0.5"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

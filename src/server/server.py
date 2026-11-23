@@ -2896,7 +2896,10 @@ def build_atomic_result_caches(params):
 @SOCKET_IO.on('discard_laps')
 @requires_socketio_auth
 @catchLogExceptionsWrapper
-def on_discard_laps(**kwargs):
+def on_discard_laps(data=None, **kwargs):
+    # tolerate an empty-payload emit (a bare '{}') from clients
+    if isinstance(data, dict):
+        kwargs.update(data)
     RaceContext.race.discard_laps(**kwargs)
 
 @SOCKET_IO.on('calc_pilots')

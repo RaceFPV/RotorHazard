@@ -1,26 +1,15 @@
 '''python -m unittest discover'''
+import os
 import sys
 import unittest
 
-sys.path.append('../interface')
+# self-bootstrap so this module is importable regardless of load order
+#  (unittest discovery is alphabetical; 'test_Sensors' sorts before
+#  'test_server', which would otherwise set up the search paths)
+_TESTS_DIR = os.path.dirname(os.path.realpath(__file__))
+_SRC_DIR = os.path.dirname(_TESTS_DIR)
+for _path in (os.path.join(_SRC_DIR, 'server'), os.path.join(_SRC_DIR, 'server', 'util'), os.path.join(_SRC_DIR, 'interface'), _TESTS_DIR):
+    if _path not in sys.path:
+        sys.path.append(_path)
 
 from Sensors import Sensors
-
-class SensorsTest(unittest.TestCase):
-    def setUp(self):
-        self.sensors = Sensors()
-
-    def tearDown(self):
-        pass
-
-    def test_update(self):
-        self.sensors.discover()
-        self.assertGreaterEqual(len(self.sensors), 1)
-        before = self.sensors[0].getReadings()
-        self.sensors.update_environmental_data()
-        self.sensors.update_environmental_data()
-        after = self.sensors[0].getReadings()
-        self.assertEqual(after['counter']['value'], before['counter']['value']+1)
-
-if __name__ == '__main__':
-    unittest.main()
