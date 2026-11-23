@@ -324,7 +324,7 @@ class RaceLifecycleTest(HeatCrudTest):
         self.assertTrue(len(node0_laps) >= 1,
                         'expected >=1 lap on node 0, got: ' + json.dumps(resp[0], default=str))
 
-        time.sleep(1.2)
+        time.sleep(0.6)
         resp = self.emit_and_wait('simulate_lap', {'node': 0}, 'current_laps', timeout=15, drain=True)
         node0_laps = resp[0]['current']['node_index'][0]['laps']
         self.assertTrue(len(node0_laps) >= 2)

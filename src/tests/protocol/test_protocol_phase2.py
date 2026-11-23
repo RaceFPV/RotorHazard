@@ -77,7 +77,7 @@ class Phase2Base(harness.ProtocolTestCase):
         for node, count in ((0, 2), (1, 1)):
             for _ in range(count):
                 cls.client.emit('simulate_lap', {'node': node})
-                time.sleep(1.2)
+                time.sleep(0.6)
 
         cls.client.emit('stop_race')
         deadline = time.monotonic() + 20
@@ -177,7 +177,7 @@ class RaceListAndMarshalTest(Phase2Base):
             if args[0].get('race_status') == 1:
                 break
         self.client.emit('simulate_lap', {'node': 0})
-        time.sleep(1.2)
+        time.sleep(0.6)
         self.client.emit('stop_race')
         deadline = time.monotonic() + 20
         while True:
@@ -228,7 +228,7 @@ class HeartbeatTest(harness.ProtocolTestCase):
         # server broadcasts heartbeat events roughly every 500ms
         self.client.drain()
         self.observer.drain()
-        time.sleep(1.6)
+        time.sleep(1.3)
         count = 0
         for cl in (self.client, self.observer):
             with cl._cond:

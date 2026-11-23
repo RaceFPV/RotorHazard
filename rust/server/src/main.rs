@@ -147,6 +147,12 @@ async fn main() {
         .unwrap_or(0)
         .max(8); // mock-node count, mirroring the Python test configuration
 
+    // mock mode: give every node a frequency so no seat sits disabled.
+    // Missing entries are filled with unused Raceband channels in order.
+    if db::autofill_mock_frequencies(&conn, num_nodes) {
+        tracing::info!("Auto-assigned frequencies to disabled mock nodes");
+    }
+
     tracing::info!(
         "RotorHazard (Rust) starting: data dir {}, port {}, {} nodes",
         data_dir, http_port_cfg, num_nodes

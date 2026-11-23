@@ -95,7 +95,7 @@ class HeatPlanTest(harness.ProtocolTestCase):
                 break
         for node in (0, 1):
             self.client.emit('simulate_lap', {'node': node})
-            time.sleep(1.2)
+            time.sleep(0.6)
         self.client.emit('stop_race')
         deadline = time.monotonic() + 20
         while True:
@@ -263,9 +263,9 @@ class MockSignalTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = harness.spawn_rust_server({
-            "GENERAL": {"MOCK_NODE_SIGNAL": 2},
-        })
+        os.environ["RH_MOCK_CROSSING_PCT"] = "60"
+        env_spawn = {"GENERAL": {"MOCK_NODE_SIGNAL": 2}}
+        cls.server = harness.spawn_rust_server(env_spawn)
         cls.tc = harness.ProtocolTestCase.__new__(harness.ProtocolTestCase)
         cls.tc.server = cls.server
         cls.tc.client = harness.Client(cls.server.base_url)
@@ -275,6 +275,7 @@ class MockSignalTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        os.environ.pop("RH_MOCK_CROSSING_PCT", None)
         cls.tc.client.disconnect()
         cls.tc.observer.disconnect()
         cls.server.stop()

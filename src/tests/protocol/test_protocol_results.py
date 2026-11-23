@@ -84,7 +84,7 @@ class ResultsTest(harness.ProtocolTestCase):
         for node, count in ((0, 3), (1, 2), (2, 1)):
             for _ in range(count):
                 cls.client.emit('simulate_lap', {'node': node})
-                time.sleep(1.3)
+                time.sleep(0.6)
 
         # current leaderboard mid-race is gone after stop; query before stop
         cls.client.emit('stop_race')

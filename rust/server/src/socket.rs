@@ -1865,19 +1865,7 @@ fn heat_node_pilots(conn: &rusqlite::Connection, heat_id: i64, num_nodes: usize)
 type FreqArrays = (Vec<Value>, Vec<Value>, Vec<Value>);
 
 fn read_freq_arrays(conn: &rusqlite::Connection, profile_id: i64) -> FreqArrays {
-    let json_str: Option<String> = conn
-        .query_row("SELECT frequencies FROM profiles WHERE id = ?1", [profile_id], |r| r.get(0))
-        .ok();
-    let val = json_str
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .unwrap_or(json!({}));
-    let get = |key: &str| -> Vec<Value> {
-        val.get(key)
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default()
-    };
-    (get("b"), get("c"), get("f"))
+    db::read_freq_arrays(conn, profile_id)
 }
 
 fn write_freq_arrays(
@@ -1887,11 +1875,7 @@ fn write_freq_arrays(
     c: &[Value],
     f: &[Value],
 ) {
-    let payload = json!({"b": b, "c": c, "f": f});
-    let _ = conn.execute(
-        "UPDATE profiles SET frequencies = ?1 WHERE id = ?2",
-        rusqlite::params![payload.to_string(), profile_id],
-    );
+    db::write_freq_arrays(conn, profile_id, b, c, f)
 }
 
 fn emit_race_status_from(state: &SharedState) {
@@ -2246,6 +2230,12 @@ fn language_list(languages: &Value) -> Value {
 /// a crossing, 50% chance to end one.  A completed crossing during a race
 /// registers a lap, exactly like the Python mock.
 pub fn simulate_mock_signals(state: &SharedState, _signal_mode: i64) {
+    // crossing-start probability per tick; Python's rate is 5%.  The env
+    // knob exists purely to accelerate mock-driven tests.
+    let crossing_pct: i64 = std::env::var("RH_MOCK_CROSSING_PCT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
     // snapshot race conditions before touching the mock state
     let (racing, start_time) = {
         let race = state.race.lock().unwrap();
@@ -2300,7 +2290,7 @@ pub fn simulate_mock_signals(state: &SharedState, _signal_mode: i64) {
                 if node.current_rssi < node.pass_nadir_rssi {
                     node.pass_nadir_rssi = node.current_rssi;
                 }
-                if mock_rand_pct(&mut seed) < 5 {
+                if mock_rand_pct(&mut seed) < crossing_pct {
                     node.lap_number += 1;
                     node.crossing_flag = true;
                     node.pass_peak_rssi = 0;

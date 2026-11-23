@@ -6,6 +6,8 @@
 
 use crate::state::SharedState;
 use rusqlite::Connection;
+use serde_json::json;
+use serde_json::Value;
 
 const SCHEMA_SQL: &str = include_str!("../../schema_reference.sql");
 const SEED_SQL: &str = include_str!("../../seed_data.sql");
@@ -190,4 +192,79 @@ pub fn get_option_or_config_int(
         ("GENERAL", "MOCK_NODE_SIGNAL") => 2,
         _ => 0,
     }
+}
+
+
+/// Reads a profile frequency table as (b, c, f) JSON arrays.
+pub fn read_freq_arrays(conn: &Connection, profile_id: i64) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+    let json_str: Option<String> = conn
+        .query_row("SELECT frequencies FROM profiles WHERE id = ?1", [profile_id], |r| r.get(0))
+        .ok();
+    let val = json_str
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(json!({}));
+    let get = |key: &str| -> Vec<Value> {
+        val.get(key)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    (get("b"), get("c"), get("f"))
+}
+
+/// Writes a profile frequency table.
+pub fn write_freq_arrays(
+    conn: &Connection,
+    profile_id: i64,
+    b: &[Value],
+    c: &[Value],
+    f: &[Value],
+) {
+    let payload = json!({"b": b, "c": c, "f": f});
+    let _ = conn.execute(
+        "UPDATE profiles SET frequencies = ?1 WHERE id = ?2",
+        rusqlite::params![payload.to_string(), profile_id],
+    );
+}
+
+/// Returns the first Raceband channel whose frequency is not yet present in
+/// the given frequency list (R1..R8 in order).
+fn next_unused_raceband(existing: &[Value]) -> Option<(&'static str, u8, u16)> {
+    let used: Vec<u16> = existing
+        .iter()
+        .filter_map(|v| v.as_i64().map(|x| x as u16))
+        .collect();
+    crate::util::BAND_CHANNEL_FREQUENCIES
+        .iter()
+        .take(8) // Raceband R1..R8
+        .find(|(_, _, f)| !used.contains(f))
+        .map(|(b, c, f)| (*b, *c, *f))
+}
+
+/// Mock mode: give every node a frequency so no seat sits disabled.
+/// Missing entries are filled with unused Raceband channels in order.
+/// Returns true when any entry was filled.
+pub fn autofill_mock_frequencies(conn: &Connection, num_nodes: usize) -> bool {
+    let profile_id = current_profile_id(conn);
+    let (mut b, mut c, mut f) = read_freq_arrays(conn, profile_id);
+    while b.len() < num_nodes {
+        b.push(Value::Null);
+        c.push(Value::Null);
+        f.push(Value::Null);
+    }
+    let mut changed = false;
+    for i in 0..num_nodes {
+        if f[i].as_i64().unwrap_or(0) == 0 {
+            if let Some((band, chan, freq)) = next_unused_raceband(&f) {
+                b[i] = json!(band);
+                c[i] = json!(chan);
+                f[i] = json!(freq);
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        write_freq_arrays(conn, profile_id, &b, &c, &f);
+    }
+    changed
 }

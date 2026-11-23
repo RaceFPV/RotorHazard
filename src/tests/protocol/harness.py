@@ -328,7 +328,7 @@ class ProtocolTestCase(unittest.TestCase):
                 if remaining <= 0:
                     break
                 try:
-                    return cl.wait_for(event, timeout=min(0.4, remaining))
+                    return cl.wait_for(event, timeout=min(0.1, remaining))
                 except AssertionError:
                     continue
 
@@ -355,11 +355,12 @@ class ProtocolTestCase(unittest.TestCase):
         Drains both queues before emitting by default, so the response is
         always a fresh event (not a stale broadcast from a previous action).'''
         if drain:
-            # drain, then pause to let any in-flight broadcasts from previous
-            # actions land, then drain again so the matched response is fresh
+            # drain, then pause briefly to let any in-flight broadcasts from
+            # previous actions land, then drain again so the matched response
+            # is fresh (localhost delivery is well under 100ms)
             self.client.drain()
             self.observer.drain()
-            time.sleep(0.5)
+            time.sleep(0.15)
             self.client.drain()
             self.observer.drain()
         self.client.emit(event, data)
