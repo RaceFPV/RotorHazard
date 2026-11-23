@@ -33,9 +33,70 @@ async fn main() {
         )
         .init();
 
-    let data_dir = std::env::var("RH_DATA_DIR").unwrap_or_else(|_| "data".to_string());
-    let static_dir = std::env::var("RH_STATIC_DIR")
-        .unwrap_or_else(|_| "src/server/static".to_string());
+    // asset/data directory resolution: explicit env var first, then the
+    // directory the executable lives in (release bundles), then the working
+    // directory (source-tree runs)
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    fn find_dir(env_var: &str, marker: &str, rel_names: &[&str]) -> Option<std::path::PathBuf> {
+        if let Ok(v) = std::env::var(env_var) {
+            let p = std::path::PathBuf::from(&v);
+            if p.join(marker).exists() {
+                return Some(p);
+            }
+        }
+        let mut candidates = Vec::new();
+        if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
+            for rel in rel_names {
+                candidates.push(exe.join(rel));
+            }
+            // running from rust/target/<profile> inside a source tree
+            candidates.push(exe.join("../../../").join(rel_names[0]));
+        }
+        for rel in rel_names {
+            candidates.push(std::path::PathBuf::from(rel));
+        }
+        candidates
+            .into_iter()
+            .find(|c| c.join(marker).exists())
+    }
+
+    let templates_dir = find_dir(
+        "RH_TEMPLATES_DIR",
+        "home.html",
+        &["templates", "src/server/templates", "../../src/server/templates"],
+    )
+    .unwrap_or_else(|| std::path::PathBuf::from("src/server/templates"));
+    let static_dir = find_dir(
+        "RH_STATIC_DIR",
+        "rotorhazard.js",
+        &["static", "src/server/static", "../../src/server/static"],
+    )
+    .unwrap_or_else(|| std::path::PathBuf::from("src/server/static"));
+
+    // data directory: explicit env var; otherwise next to the executable
+    // when running from a bundle, else ./data (source-tree dev flow)
+    let data_dir = match std::env::var("RH_DATA_DIR") {
+        Ok(v) => v,
+        Err(_) => {
+            let tpl_canon = templates_dir
+                .canonicalize()
+                .unwrap_or_else(|_| templates_dir.clone());
+            let bundle_mode = exe_dir
+                .as_ref()
+                .and_then(|exe| exe.canonicalize().ok())
+                .map(|exe_canon| tpl_canon.parent().map(|p| p == exe_canon).unwrap_or(false))
+                .unwrap_or(false);
+            if bundle_mode {
+                exe_dir.as_ref().unwrap().join("data").to_string_lossy().to_string()
+            } else {
+                "data".to_string()
+            }
+        }
+    };
+
     let port: u16 = std::env::var("RH_PORT")
         .or_else(|_| std::env::var("HTTP_PORT"))
         .ok()
@@ -131,14 +192,18 @@ async fn main() {
     let http_port_cfg = read_config_port(&data_dir).unwrap_or(port);
     let (admin_username, admin_password) = read_admin_creds(&data_dir);
 
-    let templates_dir = std::env::var("RH_TEMPLATES_DIR")
-        .unwrap_or_else(|_| "src/server/templates".to_string());
-    if let Err(e) = pages::init(&templates_dir) {
+    if let Err(e) = pages::init(templates_dir.to_string_lossy().as_ref()) {
         tracing::warn!("template environment: {}", e);
     }
-    let language_file_dir = std::env::var("RH_PROGRAM_DIR")
-        .unwrap_or_else(|_| ".".to_string());
-    crate::phase3::set_languages(crate::phase3::load_languages(&language_file_dir));
+    let language_dir = find_dir(
+        "RH_PROGRAM_DIR",
+        "language.json",
+        &[".", "src/server", "../../src/server"],
+    )
+    .unwrap_or_else(|| std::path::PathBuf::from("."));
+    crate::phase3::set_languages(crate::phase3::load_languages(
+        language_dir.to_string_lossy().as_ref(),
+    ));
 
     let conn = db::open_or_init(&data_dir).expect("failed to open/init database");
     let num_nodes: usize = std::env::var("RH_NODES")
@@ -156,6 +221,11 @@ async fn main() {
     tracing::info!(
         "RotorHazard (Rust) starting: data dir {}, port {}, {} nodes",
         data_dir, http_port_cfg, num_nodes
+    );
+    tracing::info!(
+        "assets: templates {}, static {}",
+        templates_dir.display(),
+        static_dir.display()
     );
 
 
