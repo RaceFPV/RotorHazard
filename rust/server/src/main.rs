@@ -7,6 +7,7 @@
 
 mod api;
 mod db;
+mod export_import;
 mod payloads;
 mod results;
 mod race;

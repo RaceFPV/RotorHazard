@@ -58,6 +58,7 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
         register_crud_handlers(socket.clone(), state.clone());
         register_race_handlers(socket.clone(), state.clone());
         register_settings_handlers(socket.clone(), state.clone());
+        register_export_import_handlers(socket.clone(), state.clone());
     });
 }
 
@@ -153,9 +154,10 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 socket.emit("race_list", &payload);
             }
             Some("exporter_list") => {
-                // no data exporters registered in the Rust build yet
-                let payload = json!({"exporters": []});
-                socket.emit("exporter_list", &payload);
+                socket.emit("exporter_list", &crate::export_import::exporter_list());
+            }
+            Some("importer_list") => {
+                socket.emit("importer_list", &crate::export_import::importer_list());
             }
             _ => {
                 if let Some(obj) = load_type.as_object() {
@@ -1285,6 +1287,49 @@ fn register_race_handlers(socket: SocketRef, state: SharedState) {
     socket.on("get_server_time", move |_: SocketRef, ack: AckSender, s: State<SharedState>| async move {
         // replies via socket.io ack callback
         let _ = ack.send(&json!({"server_time_s": monotonic()}));
+    });
+}
+
+fn register_export_import_handlers(socket: SocketRef, state: SharedState) {
+    socket.on("export_database", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let Some(exporter) = data.get("exporter").and_then(|v| v.as_str()) else { return };
+        let result = db::with_db(&state, |conn| crate::export_import::assemble(conn, exporter));
+        match result {
+            Some(payload) => {
+                let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                let filename = format!("RotorHazard Export {} {}.json", stamp, exporter);
+                sock.emit("exported_data", &json!({
+                    "filename": filename,
+                    "encoding": "application/json",
+                    "data": serde_json::to_string(&payload).unwrap_or_default(),
+                }));
+            }
+            None => {
+                crate::socket::emit_priority_message(&state, "Data export failed. (See log)", false);
+            }
+        }
+    });
+
+    socket.on("import_data", move |_: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let Some(importer) = data.get("importer").and_then(|v| v.as_str()) else { return };
+        if importer != crate::export_import::IMPORTER_NAME {
+            crate::socket::emit_priority_message(&state, "Data import failed. (See log)", true);
+            return;
+        }
+        let Some(source_data) = data.get("source_data").and_then(|v| v.as_str()) else {
+            crate::socket::emit_priority_message(&state, "Data import failed. No source data.", true);
+            return;
+        };
+        let ok = crate::export_import::run_import(&state, source_data, &data);
+        if ok {
+            broadcast(&state, "database_restore_done", json!({}));
+        } else {
+            crate::socket::emit_priority_message(&state, "Data import failed. (See log)", true);
+        }
     });
 }
 
