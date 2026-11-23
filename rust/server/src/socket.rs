@@ -45,6 +45,17 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
         
         
         
+        // push initial data trigger: the browser requests its page data in
+        // response to load_all (emit_frontend_load, delayed 50ms like Python)
+        {
+            let load_sock = socket.clone();
+            let token = state.server_instance_token;
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let _ = load_sock.emit("load_all", &json!({"server_instance_token": token}));
+            });
+        }
+
         let creds_warned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         socket.on("load_data", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
             let state = s.0.clone();

@@ -126,6 +126,8 @@ pub struct AppState {
     pub config_items: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
     /// Mock-node simulation state (one entry per node)
     pub mock: Mutex<Vec<crate::state::MockNodeState>>,
+    /// Instance token emitted in load_all; clients reload when it changes
+    pub server_instance_token: f64,
 }
 
 pub type SharedState = Arc<AppState>;

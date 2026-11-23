@@ -175,6 +175,7 @@ async fn main() {
         admin_password,
         config_items: Arc::new(Mutex::new(std::collections::HashMap::new())),
         mock: Mutex::new((0..num_nodes).map(|_| state::MockNodeState::new()).collect()),
+        server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
 
     let (socketio_layer, io) = SocketIo::builder()

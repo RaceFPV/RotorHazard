@@ -252,6 +252,19 @@ pub fn autofill_mock_frequencies(conn: &Connection, num_nodes: usize) -> bool {
         c.push(Value::Null);
         f.push(Value::Null);
     }
+    let needs_fill = (0..num_nodes).any(|i| f[i].as_i64().unwrap_or(0) == 0);
+    if needs_fill && num_nodes <= 8 {
+        // mock rig: set the whole profile to Raceband R1..R8 so every seat
+        // is active with a clean, predictable assignment
+        for i in 0..num_nodes {
+            let (band, chan, freq) = crate::util::BAND_CHANNEL_FREQUENCIES[i];
+            b[i] = json!(band);
+            c[i] = json!(chan);
+            f[i] = json!(freq);
+        }
+        write_freq_arrays(conn, profile_id, &b, &c, &f);
+        return true;
+    }
     let mut changed = false;
     for i in 0..num_nodes {
         if f[i].as_i64().unwrap_or(0) == 0 {
