@@ -1819,6 +1819,47 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         tracing::debug!("Received 'cluster_message_ack' message of type '{}'", msg_type);
     });
 
+    socket.on("do_bpillfw_update", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let Some(src_file) = data.get("src_file_str").and_then(|v| v.as_str()).map(|s| s.to_string()) else { return };
+        // take the port from the first hardware node (Python's
+        // get_fwupd_serial_name for the S32_BPill)
+        let node = state.hardware.lock().unwrap().as_ref().and_then(|hw| hw.nodes.first().cloned());
+        let Some(node) = node else {
+            let _ = sock.emit("upd_messages_init", &json!("No hardware node available for firmware update"));
+            let _ = sock.emit("upd_messages_finish", &json!({}));
+            return;
+        };
+        let msg = format!("Performing node update, port='{}', file: {}", node.port, src_file);
+        tracing::info!("{}", msg);
+        let init_msg = format!("{}\n", msg);
+        let _ = sock.emit("upd_messages_init", &json!([init_msg]));
+        let sock2 = sock.clone();
+        let state2 = state.clone();
+        // the flasher is blocking serial I/O; run it off the async executor
+        tokio::task::spawn_blocking(move || {
+            let emit_msg = |m: &str| {
+                let _ = sock2.emit("upd_messages_append", &json!(m));
+            };
+            emit_msg(&msg);
+            let result = crate::fwupdate::update_node_firmware(&node, &src_file, &emit_msg);
+            match result {
+                Ok(()) => {
+                    tracing::info!("Node update succeeded");
+                    emit_msg("\nNode update succeeded");
+                }
+                Err(e) => {
+                    tracing::error!("Node update failed: {}", e);
+                    emit_msg(&format!("\nNode update failed: {}", e));
+                }
+            }
+            state2.restart_required.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = sock2.emit("upd_messages_finish", &json!({}));
+        });
+    });
+
     socket.on("suggest_calibration", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
             if !socket_authed(&sock, &state) { return; }

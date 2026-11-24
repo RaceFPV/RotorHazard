@@ -151,6 +151,7 @@ impl RunningMedian {
             (sorted[len / 2] + sorted[len / 2 - 1]) as f64 / 2.0
         }
     }
+    #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }

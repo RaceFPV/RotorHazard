@@ -12,6 +12,7 @@ mod cluster;
 mod hardware;
 mod db;
 mod export_import;
+mod fwupdate;
 mod led;
 mod mock;
 mod vrx;
@@ -243,6 +244,7 @@ async fn main() {
         led_manager,
         vrx_manager: crate::vrx::VRxControlManager::new(),
         cluster: std::sync::OnceLock::new(),
+        restart_required: std::sync::atomic::AtomicBool::new(false),
         cluster_joined: std::sync::atomic::AtomicBool::new(false),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
