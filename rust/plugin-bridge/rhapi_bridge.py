@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 '''
-RotorHazard plugin bridge — runs third-party RHAPI plugins against the
+RustHazard plugin bridge — runs third-party RHAPI plugins against the
 Rust server, out-of-process.
 
 The Rust server is pure Rust; this sidecar loads user plugins (unmodified
@@ -207,7 +207,7 @@ class Bridge:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='RotorHazard plugin bridge')
+    parser = argparse.ArgumentParser(description='RustHazard plugin bridge')
     parser.add_argument('--server', default='http://127.0.0.1:5000')
     parser.add_argument('--plugins-dir', default='./plugins')
     parser.add_argument('--plugins', default=None,

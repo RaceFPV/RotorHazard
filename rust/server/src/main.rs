@@ -1,4 +1,4 @@
-//! RotorHazard server -- Rust implementation (Phase 1 skeleton).
+//! RustHazard server.
 //!
 //! Serves the existing static frontend, the /api JSON endpoints, and the
 //! Socket.IO event surface, against the same database.db schema and seed
@@ -119,7 +119,7 @@ async fn main() {
                 "MinLapBehavior": "0",
             },
             "UI": {
-                "timerName": "RotorHazard",
+                "timerName": "RustHazard",
                 "timerLogo": "",
                 "hue_0": "212", "sat_0": "55",
                 "lum_0_low": "29.2", "lum_0_high": "46.7",
@@ -208,7 +208,7 @@ async fn main() {
     }
 
     tracing::info!(
-        "RotorHazard (Rust) starting: data dir {}, port {}, {} nodes",
+        "RustHazard starting: data dir {}, port {}, {} nodes",
         data_dir, http_port_cfg, num_nodes
     );
     tracing::info!("assets: templates and static are embedded (debug builds read the source tree)");
@@ -619,7 +619,7 @@ fn resolve_data_dir(exe_dir: &Option<std::path::PathBuf>) -> String {
         }
     }
 
-    // 3: exe dir with a data/ subdirectory (standard RotorHazard install
+    // 3: exe dir with a data/ subdirectory (standard install
     //    layout: drop the binary next to an existing data/ dir)
     if let Some(exe) = exe_dir {
         let data = exe.join("data");

@@ -1,6 +1,6 @@
 '''
 Performance comparison harness: runs identical scenarios against the Python
-and Rust RotorHazard servers and prints a comparison table.
+and RustHazard servers and prints a comparison table.
 
 Scenarios:
   1. boot-to-ready (fresh data dir, timed process start -> /api/status OK)

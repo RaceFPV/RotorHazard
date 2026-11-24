@@ -1,4 +1,4 @@
-# RotorHazard plugin bridge (optional sidecar)
+# RustHazard plugin bridge (optional sidecar)
 
 Runs **third-party RHAPI plugins** against the Rust server without any
 Python inside the server itself.

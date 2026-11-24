@@ -22,7 +22,7 @@ cp LICENSE "$OUT/" 2>/dev/null || true
 
 cat > "$OUT/run.sh" <<'EOF'
 #!/bin/bash
-# Launches the RotorHazard Rust server from this bundle.
+# Launches the RustHazard server from this bundle.
 # DATA_DIR defaults to ./data next to this bundle.
 cd "$(dirname "$0")"
 export RH_STATIC_DIR="${RH_STATIC_DIR:-$PWD/static}"
@@ -34,7 +34,7 @@ EOF
 chmod +x "$OUT/run.sh"
 
 cat > "$OUT/README.txt" <<'EOF'
-RotorHazard server -- Rust implementation (release bundle)
+RustHazard server (release bundle)
 
 Run:      ./run.sh            (data in ./data; port from config.json, default 5000)
 Config:   data/config.json    (created on first run; default admin/rotorhazard)

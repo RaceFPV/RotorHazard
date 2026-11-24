@@ -1,4 +1,4 @@
-//! Shared application state and domain types for the RotorHazard Rust server.
+//! Shared application state and domain types for the RustHazard server.
 
 use rusqlite::Connection;
 use socketioxide::SocketIo;
