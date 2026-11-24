@@ -6,6 +6,7 @@
 //! characterization suite in src/tests/protocol/.
 
 mod api;
+mod assets;
 mod db;
 mod export_import;
 mod mock;
@@ -23,7 +24,6 @@ use serde_json::json;
 use socketioxide::SocketIo;
 use state::{AppState, ServerInfo, SharedState};
 use std::sync::{Arc, Mutex};
-use tower_http::services::ServeDir;
 
 #[tokio::main]
 async fn main() {
@@ -34,70 +34,6 @@ async fn main() {
         )
         .init();
 
-    // asset/data directory resolution: explicit env var first, then the
-    // directory the executable lives in (release bundles), then the working
-    // directory (source-tree runs)
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-
-    fn find_dir(env_var: &str, marker: &str, rel_names: &[&str]) -> Option<std::path::PathBuf> {
-        if let Ok(v) = std::env::var(env_var) {
-            let p = std::path::PathBuf::from(&v);
-            if p.join(marker).exists() {
-                return Some(p);
-            }
-        }
-        let mut candidates = Vec::new();
-        if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
-            for rel in rel_names {
-                candidates.push(exe.join(rel));
-            }
-            // running from rust/target/<profile> inside a source tree
-            candidates.push(exe.join("../../../").join(rel_names[0]));
-        }
-        for rel in rel_names {
-            candidates.push(std::path::PathBuf::from(rel));
-        }
-        candidates
-            .into_iter()
-            .find(|c| c.join(marker).exists())
-    }
-
-    let templates_dir = find_dir(
-        "RH_TEMPLATES_DIR",
-        "home.html",
-        &["templates", "src/server/templates", "../../src/server/templates"],
-    )
-    .unwrap_or_else(|| std::path::PathBuf::from("src/server/templates"));
-    let static_dir = find_dir(
-        "RH_STATIC_DIR",
-        "rotorhazard.js",
-        &["static", "src/server/static", "../../src/server/static"],
-    )
-    .unwrap_or_else(|| std::path::PathBuf::from("src/server/static"));
-
-    // data directory: explicit env var; otherwise next to the executable
-    // when running from a bundle, else ./data (source-tree dev flow)
-    let data_dir = match std::env::var("RH_DATA_DIR") {
-        Ok(v) => v,
-        Err(_) => {
-            let tpl_canon = templates_dir
-                .canonicalize()
-                .unwrap_or_else(|_| templates_dir.clone());
-            let bundle_mode = exe_dir
-                .as_ref()
-                .and_then(|exe| exe.canonicalize().ok())
-                .map(|exe_canon| tpl_canon.parent().map(|p| p == exe_canon).unwrap_or(false))
-                .unwrap_or(false);
-            if bundle_mode {
-                exe_dir.as_ref().unwrap().join("data").to_string_lossy().to_string()
-            } else {
-                "data".to_string()
-            }
-        }
-    };
-
     let port: u16 = std::env::var("RH_PORT")
         .or_else(|_| std::env::var("HTTP_PORT"))
         .ok()
@@ -107,6 +43,19 @@ async fn main() {
     // minimal config.json support (same file the Python server writes)
     // first-run: create config.json with the Python default values
     // (admin/rotorhazard credentials, standard sections) when absent
+    // Data directory resolution, mirroring the Python server's chain:
+    // 1. RH_DATA_DIR env var (must exist)
+    // 2. datapath.ini in the exe dir (expanduser, must exist)
+    // 3. ~/rh-data if it exists
+    // 4. exe dir if config.json exists there
+    // 5. cwd if config.json exists there
+    // 6. ~/rh-data created as needed
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    let data_dir = resolve_data_dir(&exe_dir);
+
     let config_path = format!("{}/config.json", data_dir);
     if !std::path::Path::new(&config_path).exists() {
         std::fs::create_dir_all(&data_dir).expect("failed to create data directory");
@@ -194,18 +143,10 @@ async fn main() {
     let http_port_cfg = read_config_port(&data_dir).unwrap_or(port);
     let (admin_username, admin_password) = read_admin_creds(&data_dir);
 
-    if let Err(e) = pages::init(templates_dir.to_string_lossy().as_ref()) {
+    if let Err(e) = pages::init() {
         tracing::warn!("template environment: {}", e);
     }
-    let language_dir = find_dir(
-        "RH_PROGRAM_DIR",
-        "language.json",
-        &[".", "src/server", "../../src/server"],
-    )
-    .unwrap_or_else(|| std::path::PathBuf::from("."));
-    crate::phase3::set_languages(crate::phase3::load_languages(
-        language_dir.to_string_lossy().as_ref(),
-    ));
+    crate::phase3::set_languages(crate::assets::load_languages());
 
     let conn = db::open_or_init(&data_dir).expect("failed to open/init database");
     let num_nodes: usize = std::env::var("RH_NODES")
@@ -224,11 +165,7 @@ async fn main() {
         "RotorHazard (Rust) starting: data dir {}, port {}, {} nodes",
         data_dir, http_port_cfg, num_nodes
     );
-    tracing::info!(
-        "assets: templates {}, static {}",
-        templates_dir.display(),
-        static_dir.display()
-    );
+    tracing::info!("assets: templates and static are embedded (debug builds read the source tree)");
 
 
     let state: SharedState = Arc::new(AppState {
@@ -383,7 +320,7 @@ async fn main() {
         .route("/stream/node/{node_id}", axum::routing::get(render_page))
         .route("/stream/class/{class_id}", axum::routing::get(render_page))
         .route("/stream/heat/{heat_id}", axum::routing::get(render_page))
-        .nest_service("/static", ServeDir::new(&static_dir))
+        .route("/static/{*path}", axum::routing::get(assets::static_handler))
         .layer(socketio_layer)
         .with_state(state);
 
@@ -499,4 +436,85 @@ fn read_config_port(data_dir: &str) -> Option<u16> {
         .get("HTTP_PORT")?
         .as_u64()
         .map(|p| p as u16)
+}
+
+fn resolve_data_dir(exe_dir: &Option<std::path::PathBuf>) -> String {
+    // 1: RH_DATA_DIR env var (must exist)
+    if let Ok(env_path) = std::env::var("RH_DATA_DIR") {
+        let expanded = expanduser(&env_path);
+        if std::path::Path::new(&expanded).exists() {
+            return expanded;
+        }
+        panic!(
+            "Unable to find data location given by RH_DATA_DIR: {}",
+            env_path
+        );
+    }
+
+    // 2: datapath.ini in the exe dir
+    if let Some(exe) = exe_dir {
+        let ini = exe.join("datapath.ini");
+        if let Ok(line) = std::fs::read_to_string(&ini) {
+            let expanded = expanduser(line.trim());
+            if !expanded.is_empty() {
+                if std::path::Path::new(&expanded).exists() {
+                    return expanded;
+                }
+                panic!(
+                    "datapath.ini points to an invalid location: {}",
+                    expanded
+                );
+            }
+        }
+    }
+
+    // 3: exe dir with a data/ subdirectory (standard RotorHazard install
+    //    layout: drop the binary next to an existing data/ dir)
+    if let Some(exe) = exe_dir {
+        let data = exe.join("data");
+        if data.join("config.json").exists() || data.join("database.db").exists() {
+            return data.to_string_lossy().to_string();
+        }
+    }
+
+    // 4: exe dir if config.json exists directly (data stored flat)
+    if let Some(exe) = exe_dir {
+        if exe.join("config.json").exists() {
+            return exe.to_string_lossy().to_string();
+        }
+    }
+
+    // 5: ~/rh-data if it exists
+    let home = std::env::var("HOME").unwrap_or_default();
+    let rh_data = format!("{}/rh-data", home);
+    if std::path::Path::new(&rh_data).is_dir() {
+        return rh_data;
+    }
+
+    // 6: cwd if config.json exists there
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("config.json").exists() {
+            return cwd.to_string_lossy().to_string();
+        }
+    }
+
+    // 7: ~/rh-data created as needed
+    std::fs::create_dir_all(&rh_data)
+        .expect("Unable to create ~/rh-data and no alternate path specified");
+    rh_data
+}
+
+/// Expands a leading '~' to the user home directory.
+fn expanduser(path: &str) -> String {
+    if path == "~" {
+        return std::env::var("HOME").unwrap_or_default();
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return format!(
+            "{}/{}",
+            std::env::var("HOME").unwrap_or_default(),
+            rest
+        );
+    }
+    path.to_string()
 }

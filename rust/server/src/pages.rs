@@ -18,9 +18,12 @@ pub fn set_state(state: crate::state::SharedState) {
 }
 
 /// Initializes the template environment; called once at startup.
-pub fn init(templates_dir: &str) -> Result<(), String> {
+pub fn init() -> Result<(), String> {
     let mut env = Environment::new();
-    env.set_loader(minijinja::path_loader(templates_dir));
+    env.set_loader(move |name| {
+        Ok(crate::assets::Templates::get(name)
+            .map(|f| String::from_utf8_lossy(&f.data).to_string()))
+    });
 
     // url_for shim: templates reference static assets via
     // url_for('static', filename='...')

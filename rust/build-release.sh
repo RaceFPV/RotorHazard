@@ -18,9 +18,6 @@ echo "== assembling ${OUT} =="
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cp rust/target/release/rh-server "$OUT/"
-cp -r src/server/static "$OUT/static"
-cp -r src/server/templates "$OUT/templates"
-cp src/server/language.json "$OUT/"
 cp LICENSE "$OUT/" 2>/dev/null || true
 
 cat > "$OUT/run.sh" <<'EOF'

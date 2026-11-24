@@ -6,22 +6,6 @@ use serde_json::{json, Value};
 
 // ---------- language packs ----------
 
-pub fn load_languages(program_dir: &str) -> Value {
-    for path in [
-        format!("{}/language.json", program_dir),
-        "src/server/language.json".to_string(),
-        "language.json".to_string(),
-    ] {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                if v.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
-                    return v;
-                }
-            }
-        }
-    }
-    json!({})
-}
 
 /// Translation lookup, matching Language.__(): text unchanged when the
 /// language or entry is missing.

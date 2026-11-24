@@ -2254,8 +2254,6 @@ fn language_list(languages: &Value) -> Value {
 pub fn mock_update_tick(state: &SharedState) {
     // the in-memory setting is the truth: set_config switches the provider
     // instantly; the config file is only read once at startup
-    let setting = state.mock_provider.lock().unwrap().0.clone();
-    tick_debug_count(state, &setting);
 
     let now = monotonic();
     let racing_start = {
@@ -2356,20 +2354,4 @@ fn parse_basic_auth_ok(
         .unwrap_or_default();
     let (user, pass) = decoded.split_once(':').unwrap_or(("", ""));
     user == state.admin_username && pass == state.admin_password
-}
-
-
-static TICK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn tick_debug_count(state: &SharedState, setting: &str) {
-    let n = TICK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if n % 10 == 0 {
-        let holder = state.mock_provider.lock().unwrap();
-        let variant = match &holder.1 {
-            crate::mock::MockProvider::NoSignal => "none",
-            crate::mock::MockProvider::ReplayCsv(_) => "replay",
-            crate::mock::MockProvider::Simulated(_) => "simulated",
-        };
-        tracing::info!("TICKDBG setting={} provider={}", setting, variant);
-    }
 }

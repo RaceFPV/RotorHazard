@@ -7,7 +7,6 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 socketioxide = { version = "0.16", features = ["state", "extensions"] }
-tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 tower = "0.5"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -15,5 +14,7 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
+rust-embed = { version = "8", features = ["include-exclude"] }
+mime_guess = "2"
 base64 = "0.22"
 minijinja = { version = "2", features = ["urlencode", "json"] }
