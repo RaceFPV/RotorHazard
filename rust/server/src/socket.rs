@@ -207,33 +207,7 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 let _ = socket.emit("ui", &json!({"page": page, "panels": []}));
             }
             Some("node_tuning") => {
-                let payload = db::with_db(&state, |conn| {
-                    let mut ids = Vec::new();
-                    let mut names = Vec::new();
-                    let mut stmt = conn
-                        .prepare("SELECT id, name FROM profiles ORDER BY id")
-                        .unwrap();
-                    let mut rows = stmt.query([]).unwrap();
-                    while let Some(row) = rows.next().unwrap() {
-                        ids.push(row.get::<_, i64>(0).unwrap());
-                        names.push(row.get::<_, String>(1).unwrap());
-                    }
-                    let current = db::current_profile_id(conn);
-                    let (name, description): (String, Option<String>) = conn
-                        .query_row(
-                            "SELECT name, description FROM profiles WHERE id = ?1",
-                            [current],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .unwrap_or(("Default".to_string(), None));
-                    json!({
-                        "profile_ids": ids,
-                        "profile_names": names,
-                        "current_profile": current,
-                        "profile_name": name,
-                        "profile_description": description,
-                    })
-                });
+                let payload = build_node_tuning_payload(&state);
                 let _ = socket.emit("node_tuning", &payload);
             }
             Some("led_effects") => {
@@ -308,23 +282,108 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
     }
 }
 
+/// Config values a page may fetch via a 'load_data' request
+/// (RHUI.CONFIG_LOAD_ITEMS). None allows the whole section.
+const CONFIG_LOAD_ITEMS: &[(&str, Option<&[&str]>)] = &[
+    ("GENERAL", Some(&["SECONDARIES", "SERIAL_PORTS"])),
+    ("SENSORS", None), // whole section, which holds no secrets
+];
+
+/// Sections never fetchable, whatever a plugin registers
+/// (RHUI.RESERVED_CONFIG_SECTIONS).
+const RESERVED_CONFIG_SECTIONS: &[&str] = &["SECRETS"];
+
+fn config_section_allowed(section: &str) -> Option<Option<&[&str]>> {
+    if RESERVED_CONFIG_SECTIONS.contains(&section) {
+        return None;
+    }
+    CONFIG_LOAD_ITEMS
+        .iter()
+        .find(|(s, _)| *s == section)
+        .map(|(_, items)| *items)
+}
+
 fn build_config_sections(state: &SharedState, request: Option<&Value>) -> Value {
     let mut config = serde_json::Map::new();
     if let Some(sections) = request.and_then(|v| v.as_object()) {
         for (section, keys) in sections {
+            // never serve a section such as SECRETS, or one no page may fetch
+            let Some(allowed) = config_section_allowed(section) else {
+                tracing::warn!("Ignoring 'load_data' request for config section: {}", section);
+                continue;
+            };
             let mut sec = serde_json::Map::new();
-            if let Some(arr) = keys.as_array() {
-                for key in arr {
-                    if let Some(key) = key.as_str() {
-                        let val = read_config_item(state, section, key);
-                        sec.insert(key.to_string(), val);
+            match (allowed, keys.as_array()) {
+                // whole section is allowed
+                (None, _) => {
+                    let whole = read_config_section(state, section);
+                    if let Value::Object(map) = whole {
+                        config.insert(section.clone(), Value::Object(map));
+                        continue;
                     }
                 }
+                (Some(items), Some(arr)) => {
+                    for key in arr {
+                        if let Some(key) = key.as_str() {
+                            if !items.contains(&key) {
+                                tracing::warn!(
+                                    "Ignoring 'load_data' request for config item: {}/{}",
+                                    section, key
+                                );
+                                continue;
+                            }
+                            let val = read_config_item(state, section, key);
+                            sec.insert(key.to_string(), val);
+                        }
+                    }
+                }
+                _ => {}
             }
-            config.insert(section.clone(), Value::Object(sec));
+            if !sec.is_empty() {
+                config.insert(section.clone(), Value::Object(sec));
+            }
         }
     }
     json!({ "config": config })
+}
+
+/// Reads a whole config section (serverconfig.get_section).
+fn read_config_section(state: &SharedState, section: &str) -> Value {
+    let mut map = serde_json::Map::new();
+    let prefix = format!("{}_", section);
+    db::with_db(state, |conn| {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT option_name, option_value FROM global_settings WHERE option_name LIKE ?1",
+        ) {
+            let pattern = format!("{}%", prefix);
+            if let Ok(mut rows) = stmt.query([pattern]) {
+                while let Some(r) = rows.next().unwrap() {
+                    let name: String = r.get(0).unwrap_or_default();
+                    let val: String = r.get(1).unwrap_or_default();
+                    if let Some(key) = name.strip_prefix(&prefix) {
+                        // runtime-set items take precedence
+                        if let Some(v) = state
+                            .config_items
+                            .lock()
+                            .unwrap()
+                            .get(&name)
+                        {
+                            map.insert(key.to_string(), v.clone());
+                        } else {
+                            map.insert(key.to_string(), json!(val));
+                        }
+                    }
+                }
+            }
+        }
+    });
+    // include runtime-only items for this section
+    for (k, v) in state.config_items.lock().unwrap().iter() {
+        if let Some(key) = k.strip_prefix(&prefix) {
+            map.entry(key.to_string()).or_insert_with(|| v.clone());
+        }
+    }
+    Value::Object(map)
 }
 
 fn read_config_item(state: &SharedState, section: &str, key: &str) -> Value {
@@ -1149,6 +1208,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
                             lap_time: lap.get("lap_time").and_then(|v| v.as_f64()).unwrap_or(0.0),
                             source: lap.get("source").and_then(|v| v.as_i64()).unwrap_or(1),
                             deleted: lap.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false),
+                            peak_rssi: lap.get("peak_rssi").and_then(|v| v.as_i64()),
                         });
                     }
                 }
@@ -1650,6 +1710,16 @@ fn register_export_import_handlers(socket: SocketRef, _state: SharedState) {
 }
 
 fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
+    socket.on("set_profile", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let Some(profile_val) = data.get("profile").and_then(|v| v.as_i64()) else { return };
+        handle_set_profile(&state, profile_val);
+        let payload = build_node_tuning_payload(&state);
+        let _ = sock.emit("node_tuning", &payload);
+    });
+
     socket.on("set_frequency", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
             if !socket_authed(&sock, &state) { return; }
@@ -1889,6 +1959,13 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                     .collect()
             })
             .unwrap_or_default();
+        // IMDTabler: bound the number of frequencies (RHUI.IMDTABLER_MAX_FREQS)
+        let freqs: Vec<u64> = if freqs.len() > 99 {
+            tracing::warn!("IMDTabler: too many frequencies ({}) — truncating to 99", freqs.len());
+            freqs[..99].to_vec()
+        } else {
+            freqs
+        };
         let payload = crate::imdtabler::run(&state.data_dir, &freqs);
         let _ = sock.emit("imdtabler_data", &payload);
     });
@@ -2017,6 +2094,100 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         payload["node"] = json!(node_req);
         // response goes only to the requesting socket (Python emit())
         let _ = sock.emit("calibration_suggestion", &payload);
+    });
+
+    socket.on("auto_adjust_laps", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let pilotrace_id = data.get("pilotrace_id").and_then(|v| v.as_i64());
+        let pilot_id_in = data.get("pilot_id").and_then(|v| v.as_i64());
+        let node_index = data.get("node").and_then(|v| v.as_i64());
+        let (result, reason, pilotrace_id, node_index, pilot_id) = if let Some(pid) = pilotrace_id {
+            let (result, reason) = crate::autoadjust::auto_adjust_pilotrun(&state, pid);
+            let (ni, pi) = db::with_db(&state, |conn| {
+                conn.query_row(
+                    "SELECT node_index, pilot_id FROM saved_pilot_race WHERE id = ?1",
+                    [pid],
+                    |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)),
+                )
+                .unwrap_or((None, None))
+            });
+            (result, reason, Some(pid), ni, pi)
+        } else {
+            let seat = node_index.unwrap_or(-1);
+            if seat < 0 || seat >= state.node_count() as i64 {
+                tracing::warn!("Bad parameter in 'auto_adjust_laps': node={}", seat);
+                (None, Some(crate::calibration::NoSuggestion::NotFound), None, None, pilot_id_in)
+            } else {
+                let (result, reason) = crate::autoadjust::auto_adjust_seat(&state, seat);
+                let pilot_id = pilot_id_in.or_else(|| {
+                    state.race.lock().unwrap().node_pilots.get(seat as usize).copied().flatten()
+                });
+                (result, reason, None, Some(seat), pilot_id)
+            }
+        };
+        let payload = json!({
+            "action": "adjusted",
+            "mode": result.as_ref().and_then(|r| r.get("mode").cloned()),
+            "pilotrace_id": pilotrace_id,
+            "node_index": node_index,
+            "pilot_id": pilot_id,
+            "enter_at": result.as_ref().and_then(|r| r.get("enter_at").cloned()),
+            "exit_at": result.as_ref().and_then(|r| r.get("exit_at").cloned()),
+            "lap_count": result.as_ref().and_then(|r| r.get("lap_count").cloned()),
+            "laps_added": result.as_ref().and_then(|r| r.get("laps_added").cloned()),
+            "recovered_laps": result.as_ref().and_then(|r| r.get("recovered_laps").cloned()).unwrap_or(json!([])),
+            "reason": reason.map(|r| json!(r.as_str())).unwrap_or(Value::Null),
+        });
+        let _ = sock.emit("laps_auto_adjusted", &payload);
+    });
+
+    socket.on("undo_auto_adjust", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let pilotrace_id = data.get("pilotrace_id").and_then(|v| v.as_i64());
+        let pilot_id_in = data.get("pilot_id").and_then(|v| v.as_i64());
+        let node_index = data.get("node").and_then(|v| v.as_i64());
+        let (result, reason, pilotrace_id, node_index, pilot_id) = if let Some(pid) = pilotrace_id {
+            let (result, reason) = crate::autoadjust::undo_auto_adjust_pilotrun(&state, pid);
+            let (ni, pi) = db::with_db(&state, |conn| {
+                conn.query_row(
+                    "SELECT node_index, pilot_id FROM saved_pilot_race WHERE id = ?1",
+                    [pid],
+                    |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)),
+                )
+                .unwrap_or((None, None))
+            });
+            (result, reason, Some(pid), ni, pi)
+        } else {
+            let seat = node_index.unwrap_or(-1);
+            if seat < 0 || seat >= state.node_count() as i64 {
+                tracing::warn!("Bad parameter in 'undo_auto_adjust': node={}", seat);
+                (None, Some(crate::calibration::NoSuggestion::NotFound), None, None, pilot_id_in)
+            } else {
+                let (result, reason) = crate::autoadjust::undo_auto_adjust_seat(&state, seat);
+                let pilot_id = pilot_id_in.or_else(|| {
+                    state.race.lock().unwrap().node_pilots.get(seat as usize).copied().flatten()
+                });
+                (result, reason, None, Some(seat), pilot_id)
+            }
+        };
+        let payload = json!({
+            "action": "undone",
+            "mode": result.as_ref().and_then(|r| r.get("mode").cloned()),
+            "pilotrace_id": pilotrace_id,
+            "node_index": node_index,
+            "pilot_id": pilot_id,
+            "enter_at": result.as_ref().and_then(|r| r.get("enter_at").cloned()),
+            "exit_at": result.as_ref().and_then(|r| r.get("exit_at").cloned()),
+            "lap_count": result.as_ref().and_then(|r| r.get("lap_count").cloned()),
+            "laps_added": result.as_ref().and_then(|r| r.get("laps_added").cloned()),
+            "recovered_laps": result.as_ref().and_then(|r| r.get("recovered_laps").cloned()).unwrap_or(json!([])),
+            "reason": reason.map(|r| json!(r.as_str())).unwrap_or(Value::Null),
+        });
+        let _ = sock.emit("laps_auto_adjusted", &payload);
     });
 
     socket.on("set_start_thresh_lower_amount", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
@@ -2205,6 +2376,12 @@ fn emit_race_status_from(state: &SharedState) {
 
 
 /// Builds the current-race leaderboard payload (emit_current_leaderboard).
+/// Public wrapper so other modules (race::insert_lap) can rebuild the
+/// live leaderboard and broadcast it.
+pub fn build_current_leaderboard_for(state: &SharedState) -> Value {
+    build_current_leaderboard(state)
+}
+
 fn build_current_leaderboard(state: &SharedState) -> Value {
     let snapshot = {
         let race = state.race.lock().unwrap();
@@ -2705,4 +2882,132 @@ fn parse_basic_auth_ok(
         .unwrap_or_default();
     let (user, pass) = decoded.split_once(':').unwrap_or(("", ""));
     user == state.admin_username && pass == state.admin_password
+}
+
+/// Broadcast helper for other modules (auto-adjust, cluster); accepts an
+/// owned event name. Intended for the fixed event names used internally.
+pub fn broadcast_payload(state: &SharedState, event: &str, payload: Value) {
+    let leaked: &'static str = Box::leak(event.to_string().into_boxed_str());
+    broadcast(state, leaked, payload);
+}
+
+/// Builds the node_tuning payload (emit_node_tuning).
+pub fn build_node_tuning_payload(state: &SharedState) -> Value {
+    db::with_db(state, |conn| {
+        let mut ids = Vec::new();
+        let mut names = Vec::new();
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM profiles ORDER BY id")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            ids.push(row.get::<_, i64>(0).unwrap());
+            names.push(row.get::<_, String>(1).unwrap());
+        }
+        let current = db::current_profile_id(conn);
+        let (name, description): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, description FROM profiles WHERE id = ?1",
+                [current],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or(("Default".to_string(), None));
+        json!({
+            "profile_ids": ids,
+            "profile_names": names,
+            "current_profile": current,
+            "profile_name": name,
+            "profile_description": description,
+        })
+    })
+}
+
+/// Sets the current profile and applies its frequencies and levels
+/// (on_set_profile in Python server.py).
+fn handle_set_profile(state: &SharedState, profile_val: i64) -> bool {
+    let applied = db::with_db(state, |conn| {
+        let row: Option<String> = conn
+            .query_row("SELECT name FROM profiles WHERE id = ?1", [profile_val], |r| r.get(0))
+            .ok();
+        if row.is_none() {
+            tracing::warn!("Invalid set_profile value: {}", profile_val);
+            return false;
+        }
+        db::set_option(conn, "currentProfile", &profile_val.to_string());
+        let num_nodes = state.node_count();
+        let freqs_json: String = conn
+            .query_row("SELECT frequencies FROM profiles WHERE id = ?1", [profile_val], |r| r.get(0))
+            .unwrap_or_else(|_| json!({"b": [], "c": [], "f": []}).to_string());
+        let mut freqs: Value = serde_json::from_str(&freqs_json)
+            .unwrap_or(json!({"b": [], "c": [], "f": []}));
+        let enter_raw: Option<String> = conn
+            .query_row("SELECT enter_ats FROM profiles WHERE id = ?1", [profile_val], |r| r.get(0))
+            .ok();
+        let exit_raw: Option<String> = conn
+            .query_row("SELECT exit_ats FROM profiles WHERE id = ?1", [profile_val], |r| r.get(0))
+            .ok();
+        let mut more_nodes = false;
+        for key in ["b", "c", "f"] {
+            let arr = freqs.as_object_mut().unwrap().entry(key).or_insert(json!([]));
+            while arr.as_array().map(|a| a.len()).unwrap_or(0) < num_nodes {
+                arr.as_array_mut().unwrap().push(json!(0));
+                more_nodes = true;
+            }
+        }
+        let mut enter_ats = enter_raw
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(json!({"v": []}));
+        let enter_arr = enter_ats.as_object_mut().unwrap().entry("v").or_insert(json!([]));
+        while enter_arr.as_array().map(|a| a.len()).unwrap_or(0) < num_nodes {
+            enter_arr.as_array_mut().unwrap().push(json!(90));
+            more_nodes = true;
+        }
+        let mut exit_ats = exit_raw
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(json!({"v": []}));
+        let exit_arr = exit_ats.as_object_mut().unwrap().entry("v").or_insert(json!([]));
+        while exit_arr.as_array().map(|a| a.len()).unwrap_or(0) < num_nodes {
+            exit_arr.as_array_mut().unwrap().push(json!(80));
+            more_nodes = true;
+        }
+        if more_nodes {
+            tracing::info!("Updating profile '{}' in DB to account for added nodes", profile_val);
+            let _ = conn.execute(
+                "UPDATE profiles SET frequencies = ?1, enter_ats = ?2, exit_ats = ?3 WHERE id = ?4",
+                rusqlite::params![freqs.to_string(), enter_ats.to_string(), exit_ats.to_string(), profile_val],
+            );
+        }
+        // push frequencies and levels to hardware
+        if let Some(hw) = state.hardware.lock().unwrap().as_mut() {
+            let f_arr = freqs.get("f").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            for (i, v) in f_arr.iter().enumerate() {
+                let f = v.as_i64().unwrap_or(0);
+                if f > 0 && i < hw.num_nodes() {
+                    hw.set_frequency(i, f as u16);
+                }
+            }
+        }
+        true
+    });
+    if !applied {
+        return false;
+    }
+    // apply enter/exit levels per seat to hardware and rebroadcast state
+    let count = state.node_count();
+    for seat in 0..count {
+        let (e, x) = crate::autoadjust::node_levels(state, seat);
+        if let Some(hw) = state.hardware.lock().unwrap().as_mut() {
+            hw.set_enter_at_level(seat, e);
+            hw.set_exit_at_level(seat, x);
+        }
+    }
+    broadcast(state, "node_tuning", build_node_tuning_payload(state));
+    let levels = db::with_db(state, payloads::build_enter_exit_levels);
+    broadcast(state, "enter_and_exit_at_levels", levels);
+    let freq_payload = db::with_db(state, payloads::build_frequency_data);
+    broadcast(state, "frequency_data", freq_payload);
+    if let Some(cluster) = state.cluster.get() {
+        cluster.resend_frequencies();
+    }
+    true
 }

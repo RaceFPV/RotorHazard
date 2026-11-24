@@ -69,6 +69,12 @@ pub enum NoSuggestion {
     WeakSignal,
     NoGatePasses,
     NoCleanExit,
+    /// The current race is neither running nor stopped.
+    NotRacing,
+    /// No auto adjustment to undo.
+    NothingToDo,
+    /// A running race's seat has a lap for every suggested pass.
+    NoMissedLap,
 }
 
 impl NoSuggestion {
@@ -80,6 +86,9 @@ impl NoSuggestion {
             NoSuggestion::WeakSignal => "weak_signal",
             NoSuggestion::NoGatePasses => "no_gate_passes",
             NoSuggestion::NoCleanExit => "no_clean_exit",
+            NoSuggestion::NotRacing => "not_racing",
+            NoSuggestion::NothingToDo => "nothing_to_undo",
+            NoSuggestion::NoMissedLap => "no_missed_lap",
         }
     }
 }

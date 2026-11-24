@@ -316,6 +316,11 @@ impl SecondaryNode {
     pub fn is_split_mode(&self) -> bool {
         self.mode == Mode::Split
     }
+
+    /// Resets the freqs-sent flag so frequencies are re-sent on next contact.
+    pub fn reset_freqs_sent(&self) {
+        self.state.lock().unwrap().freqs_sent = false;
+    }
     pub fn is_mirror_mode(&self) -> bool {
         self.mode == Mode::Mirror
     }
@@ -1218,6 +1223,16 @@ impl ClusterNodeSet {
         self.secondaries.get(idx).map_or(false, |s| {
             s.is_split_mode() && (s.last_contact_time() > 0.0 || s.num_disconnects() > 0)
         })
+    }
+
+    /// Forces split secondaries to re-send frequencies on next contact
+    /// (resendFrequencies in Python).
+    pub fn resend_frequencies(&self) {
+        for secondary in &self.secondaries {
+            if secondary.is_split_mode() {
+                secondary.reset_freqs_sent();
+            }
+        }
     }
 
     /// Emits an event to all secondaries (emit()).

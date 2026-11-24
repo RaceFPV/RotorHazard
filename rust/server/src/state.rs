@@ -17,6 +17,38 @@ pub struct Lap {
     pub lap_time: f64,
     pub source: i64,
     pub deleted: bool,
+    pub peak_rssi: Option<i64>,
+}
+
+/// Stored undo state for the last auto adjustment of a seat or saved pilot
+/// run (Calibration._undo in Python), keyed "seat:<idx>" or "run:<id>".
+#[derive(Debug, Clone)]
+pub enum CalUndo {
+    Run {
+        enter_at: i64,
+        exit_at: i64,
+        laps: Vec<UndoLap>,
+        node: Option<(usize, i64, i64)>, // (node_index, node enter_at, node exit_at)
+    },
+    Seat {
+        start_time: f64,
+        enter_at: i64,
+        exit_at: i64,
+        /// Recovered lap time stamps (recover mode) when present.
+        stamps: Option<Vec<f64>>,
+        /// Lap snapshot (replace mode) when present.
+        laps: Option<Vec<UndoLap>>,
+    },
+}
+
+/// A lap snapshot as stored for undo.
+#[derive(Debug, Clone)]
+pub struct UndoLap {
+    pub lap_time_stamp: f64,
+    pub lap_time: f64,
+    pub peak_rssi: Option<i64>,
+    pub source: i64,
+    pub deleted: bool,
 }
 
 /// Live race state, mirroring RHRace fields the protocol depends on.
@@ -315,6 +347,8 @@ pub struct AppState {
     pub cluster_joined: std::sync::atomic::AtomicBool,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
+    /// Undo states for the last auto adjustments (calibration module)
+    pub cal_undo: Mutex<std::collections::HashMap<String, CalUndo>>,
 }
 
 impl AppState {

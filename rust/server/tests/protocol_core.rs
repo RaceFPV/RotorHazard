@@ -404,21 +404,37 @@ fn test_stage_and_stop_without_save() {
 // ---- ConfigTest ----
 
 #[test]
-fn test_set_config_roundtrip() {
+fn test_config_load_limiting() {
     with_server(|_server, client, _| {
-        // set_config does not itself broadcast config_update; the UI
-        // re-requests config via load_data
+        // Upstream restricts which config sections a page may fetch
+        // (RHUI.CONFIG_LOAD_ITEMS): GENERAL is limited to SECONDARIES and
+        // SERIAL_PORTS, SENSORS allows the whole section, and SECRETS is
+        // never fetchable.
         client.emit("set_config", &json!({
             "section": "GENERAL",
             "key": "RACE_START_DELAY_EXTRA_SECS",
             "value": 0.5,
         }));
         std::thread::sleep(Duration::from_millis(500));
+        // an item outside the GENERAL allowlist is not served
         client.emit("load_data", &json!({"load_types": [
             {"type": "config", "value": {"GENERAL": ["RACE_START_DELAY_EXTRA_SECS"]}}]}));
         let resp = client.wait_for("config_update", T);
-        let val = resp["config"]["GENERAL"]["RACE_START_DELAY_EXTRA_SECS"].clone();
-        assert_eq!(val.as_f64().unwrap_or(0.0), 0.5);
+        let config = &resp["config"];
+        assert!(config["GENERAL"]["RACE_START_DELAY_EXTRA_SECS"].is_null());
+        // allowed GENERAL items are served
+        client.emit("load_data", &json!({"load_types": [
+            {"type": "config", "value": {"GENERAL": ["SERIAL_PORTS"]}}]}));
+        let resp = client.wait_for("config_update", T);
+        assert!(resp["config"]["GENERAL"]["SERIAL_PORTS"].is_object()
+            || resp["config"]["GENERAL"]["SERIAL_PORTS"].is_array()
+            || resp["config"]["GENERAL"]["SERIAL_PORTS"].is_null());
+        assert!(resp["config"]["GENERAL"].is_object());
+        // a reserved section is never served
+        client.emit("load_data", &json!({"load_types": [
+            {"type": "config", "value": {"SECRETS": ["adminPassword"]}}]}));
+        let resp = client.wait_for("config_update", T);
+        assert!(resp["config"]["SECRETS"].is_null());
     });
 }
 

@@ -219,6 +219,7 @@ pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
             lap_time,
             source: 1, // real-time source
             deleted: false,
+            peak_rssi: None,
         });
     }
     drop(race);
@@ -531,3 +532,72 @@ fn fake_rand() -> u64 {
     nanos.wrapping_mul(2654435761) >> 16
 }
 
+
+/// Inserts a lap at its place by time stamp, for a pass the seat missed
+/// (RHRace.insert_lap in Python). Returns its lap index, or None when the
+/// race is not running/stopped or the arguments are invalid.
+pub fn insert_lap(
+    state: &SharedState,
+    node_index: usize,
+    lap_time_stamp: f64,
+    source: i64,
+    peak_rssi: Option<i64>,
+    update_race_state: bool,
+) -> Option<usize> {
+    let mut race = state.race.lock().unwrap();
+    if race.race_status != RACE_STATUS_RACING && race.race_status != RACE_STATUS_DONE {
+        tracing::info!("Unable to insert lap: Node {} TimeStamp {}", node_index + 1, lap_time_stamp);
+        return None;
+    }
+    if lap_time_stamp < 0.0 || node_index >= race.node_laps.len() {
+        tracing::info!("Unable to insert lap: Node {} TimeStamp {}", node_index + 1, lap_time_stamp);
+        return None;
+    }
+    let start = race.start_time_monotonic;
+    let laps = &mut race.node_laps[node_index];
+    let lap_index = laps
+        .iter()
+        .position(|lap| lap.lap_time_stamp > lap_time_stamp)
+        .unwrap_or(laps.len());
+    laps.insert(
+        lap_index,
+        crate::state::Lap {
+            lap_time_stamp,
+            lap_time: 0.0,
+            source,
+            deleted: false,
+            peak_rssi,
+        },
+    );
+    // calc_lap_times from the insertion point: lap_time is the gap to the
+    // previous active lap (or the race start for the first active lap)
+    let mut last_stamp: Option<f64> = None;
+    for idx in 0..laps.len() {
+        if !laps[idx].deleted {
+            if idx >= lap_index {
+                laps[idx].lap_time = match last_stamp {
+                    Some(prev) => (laps[idx].lap_time_stamp - prev) * 1000.0,
+                    None => (laps[idx].lap_time_stamp - start) * 1000.0,
+                };
+            }
+            last_stamp = Some(laps[idx].lap_time_stamp);
+        }
+    }
+    tracing::info!("Inserted lap: Node {} LapIndex {} TimeStamp {}", node_index + 1, lap_index, lap_time_stamp);
+    drop(race);
+
+    if update_race_state {
+        // update the leaderboard and push lap/node data to clients
+        let node_data = payloads::build_node_data(&state.race.lock().unwrap());
+        broadcast(state, "node_data", node_data);
+        let laps_payload = db::with_db(state, |conn| {
+            let race = state.race.lock().unwrap();
+            payloads::build_current_laps(conn, &race)
+        });
+        broadcast(state, "current_laps", laps_payload);
+        let leaderboard = crate::socket::build_current_leaderboard_for(state);
+        broadcast(state, "leaderboard", leaderboard);
+        crate::socket::emit_plugin_event(state, "lapsInsert", &json!({"node_index": node_index}));
+    }
+    Some(lap_index)
+}

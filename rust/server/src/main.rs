@@ -7,6 +7,7 @@
 
 mod actions;
 mod api;
+mod autoadjust;
 mod heatgen;
 mod imdtabler;
 mod assets;
@@ -254,6 +255,7 @@ async fn main() {
         restart_required: std::sync::atomic::AtomicBool::new(false),
         cluster_joined: std::sync::atomic::AtomicBool::new(false),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
+        cal_undo: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     let (socketio_layer, io) = SocketIo::builder()

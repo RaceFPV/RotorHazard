@@ -359,20 +359,37 @@ class RaceLifecycleTest(HeatCrudTest):
 
 
 class ConfigTest(harness.ProtocolTestCase):
-    def test_set_config_roundtrip(self):
-        # note: set_config does not itself broadcast config_update; the UI
-        # re-requests config via load_data, so the roundtrip is verified that way
+    def test_config_load_limiting(self):
+        # set_config does not itself broadcast config_update; the UI
+        # re-requests config via load_data. Upstream restricts which config
+        # sections a page may fetch (RHUI.CONFIG_LOAD_ITEMS): GENERAL is
+        # limited to SECONDARIES/SERIAL_PORTS, SENSORS allows the whole
+        # section, and SECRETS is never fetchable.
         self.client.emit('set_config', {
             'section': 'GENERAL',
             'key': 'RACE_START_DELAY_EXTRA_SECS',
             'value': 0.5,
         })
         time.sleep(0.5)
+        # an item outside the GENERAL allowlist is not served
         self.client.emit('load_data', {'load_types': [
             {'type': 'config', 'value': {'GENERAL': ['RACE_START_DELAY_EXTRA_SECS']}}]})
         resp = self.client.wait_for('config_update', timeout=15)
-        val = resp[0]['config']['GENERAL']['RACE_START_DELAY_EXTRA_SECS']
-        self.assertEqual(float(val), 0.5)
+        config = resp[0]['config']
+        self.assertNotIn('RACE_START_DELAY_EXTRA_SECS', config.get('GENERAL', {}))
+        # allowed GENERAL items are served
+        self.client.emit('load_data', {'load_types': [
+            {'type': 'config', 'value': {'GENERAL': ['SERIAL_PORTS']}}]})
+        resp = self.client.wait_for('config_update', timeout=15)
+        config = resp[0]['config']
+        self.assertIn('GENERAL', config)
+        self.assertIn('SERIAL_PORTS', config['GENERAL'])
+        # a reserved section is never served
+        self.client.emit('load_data', {'load_types': [
+            {'type': 'config', 'value': {'SECRETS': ['adminPassword']}}]})
+        resp = self.client.wait_for('config_update', timeout=15)
+        config = resp[0]['config']
+        self.assertNotIn('SECRETS', config)
 
     def test_set_option_visible_via_http(self):
         # note: set_option does not broadcast option_update; option state is
