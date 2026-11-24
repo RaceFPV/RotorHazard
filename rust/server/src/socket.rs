@@ -1540,7 +1540,10 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         let state = s.0.clone();
         let data = data.0;
         let callout = data.get("callout").and_then(|v| v.as_str()).unwrap_or("");
-        let text = crate::phase3::expand_callout(&state, callout);
+        // spoken form with delay support (doReplace with spoken_flag=True)
+        let mut delay_holder = None;
+        let text = crate::actions::replace_tokens(&state, callout, &data, true, &mut delay_holder)
+            .unwrap_or_default();
         let _ = sock.emit("callout_text", &json!({"callout": callout, "text": text}));
     });
 
@@ -1838,6 +1841,23 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 _ => {}
             }
         }
+    });
+
+    socket.on("imdtabler_update_freqs", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let freqs: Vec<u64> = data
+            .get("freq_list")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                s.replace(',', " ")
+                    .split_whitespace()
+                    .filter_map(|f| f.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let payload = crate::imdtabler::run(&state.data_dir, &freqs);
+        let _ = sock.emit("imdtabler_data", &payload);
     });
 
     socket.on("retry_secondary", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {

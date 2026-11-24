@@ -7,6 +7,7 @@
 
 mod actions;
 mod api;
+mod imdtabler;
 mod assets;
 mod calibration;
 mod cluster;
