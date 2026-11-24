@@ -222,17 +222,38 @@ pub fn save_laps(state: &SharedState) -> bool {
                     .unwrap_or_else(|| vec![90; state.num_nodes])
             };
 
+            // snapshot the RSSI history and marshal type for calibration
+            // suggestions on saved runs (Python saves node.history_*)
+            let history_snap: Vec<(Vec<i64>, Vec<f64>)> = {
+                let mock = state.mock.lock().unwrap();
+                (0..state.num_nodes)
+                    .map(|i| {
+                        mock.get(i)
+                            .map(|m| (m.history_values.clone(), m.history_times.clone()))
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            };
+            let marshal_type = {
+                let holder = state.mock_provider.lock().unwrap();
+                holder.1.marshal_type()
+            };
+
             for node_index in 0..state.num_nodes {
                 let freq = freqs.get(node_index).map(|(_, _, f)| *f).unwrap_or(0);
                 if freq == 0 {
                     continue; // disabled node: no pilot race
                 }
                 let pilot_id = pilots_snap[node_index];
+                let (hist_values, hist_times) = history_snap
+                    .get(node_index)
+                    .cloned()
+                    .unwrap_or_default();
                 conn.execute(
                     "INSERT INTO saved_pilot_race (race_id, node_index, pilot_id, history_values,
                                                    history_times, penalty_time, penalty_desc,
                                                    enter_at, exit_at, frequency, marshal_type)
-                     VALUES (?1, ?2, ?3, ?7, ?8, 0, NULL, ?4, ?5, ?6, NULL)",
+                     VALUES (?1, ?2, ?3, ?7, ?8, 0, NULL, ?4, ?5, ?6, ?9)",
                     rusqlite::params![
                         race_id,
                         node_index,
@@ -240,8 +261,9 @@ pub fn save_laps(state: &SharedState) -> bool {
                         enter_levels.get(node_index).copied().unwrap_or(90),
                         enter_levels.get(node_index).copied().unwrap_or(80),
                         freq,
-                        json!([]).to_string(),
-                        json!([]).to_string()
+                        json!(hist_values).to_string(),
+                        json!(hist_times).to_string(),
+                        marshal_type,
                     ],
                 )
                 .unwrap();

@@ -72,6 +72,10 @@ pub struct MockNodeState {
     pub node_nadir_rssi: i64,
     pub debug_pass_count: i64,
     pub loop_time: i64,
+    /// Peak/nadir RSSI history events (node.history_values/history_times
+    /// in Python): the input to the calibration suggestion engine
+    pub history_values: Vec<i64>,
+    pub history_times: Vec<f64>,
 }
 
 impl MockNodeState {
@@ -86,6 +90,83 @@ impl MockNodeState {
             node_nadir_rssi: 20,
             debug_pass_count: 0,
             loop_time: 1,
+            history_values: Vec::new(),
+            history_times: Vec::new(),
+        }
+    }
+
+    /// One history entry; extends the last entry's time when the previous
+    /// two values are equal (PeakNadirHistory._addEntry).
+    fn history_add_entry(&mut self, value: i64, time: f64) {
+        let n = self.history_values.len();
+        if n >= 2 && self.history_values[n - 1] == value && self.history_values[n - 2] == value {
+            self.history_times[n - 1] = time;
+        } else {
+            self.history_values.push(value);
+            self.history_times.push(time);
+        }
+    }
+
+    /// Adds one peak/nadir history event (PeakNadirHistory.addTo).
+    /// Times are ms *since* the event (entry time = readtime - ms/1000).
+    #[allow(clippy::too_many_arguments)]
+    pub fn history_add_pn(
+        &mut self,
+        readtime: f64,
+        peak_rssi: i64,
+        peak_first_ms: u16,
+        peak_last_ms: u16,
+        nadir_rssi: i64,
+        nadir_first_ms: u16,
+        nadir_last_ms: u16,
+    ) {
+        let add_peak = |s: &mut Self| {
+            if peak_first_ms > peak_last_ms {
+                s.history_add_entry(peak_rssi, readtime - peak_first_ms as f64 / 1000.0);
+                s.history_add_entry(peak_rssi, readtime - peak_last_ms as f64 / 1000.0);
+            } else if peak_first_ms == peak_last_ms {
+                s.history_add_entry(peak_rssi, readtime - peak_last_ms as f64 / 1000.0);
+            }
+            // (first < last is corrupted; Python logs and skips)
+        };
+        let add_nadir = |s: &mut Self| {
+            if nadir_first_ms > nadir_last_ms {
+                s.history_add_entry(nadir_rssi, readtime - nadir_first_ms as f64 / 1000.0);
+                s.history_add_entry(nadir_rssi, readtime - nadir_last_ms as f64 / 1000.0);
+            } else if nadir_first_ms == nadir_last_ms {
+                s.history_add_entry(nadir_rssi, readtime - nadir_last_ms as f64 / 1000.0);
+            }
+        };
+        if peak_rssi > 0 {
+            if nadir_rssi > 0 {
+                // both: order by which event ended most recently
+                if peak_last_ms > nadir_first_ms {
+                    add_peak(self);
+                    add_nadir(self);
+                } else {
+                    add_nadir(self);
+                    add_peak(self);
+                }
+            } else {
+                add_peak(self);
+            }
+        } else if nadir_rssi > 0 {
+            add_nadir(self);
+        }
+    }
+
+    /// Prunes history older than 60 s; only called while the race is not
+    /// running (process_history in Python prunes when READY).
+    pub fn prune_history(&mut self, now: f64) {
+        let cutoff = now - 60.0;
+        let prune_count = self
+            .history_times
+            .iter()
+            .take_while(|&&t| t < cutoff)
+            .count();
+        if prune_count > 0 {
+            self.history_values.drain(..prune_count);
+            self.history_times.drain(..prune_count);
         }
     }
 }

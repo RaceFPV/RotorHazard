@@ -1547,6 +1547,166 @@ pub fn suggest_calibration_with_reason(
     }
 }
 
+/// Suggested EnterAt/ExitAt for a seat in the current (stopped, unsaved)
+/// race — suggest_for_seat in Python.
+pub fn suggest_for_seat(
+    state: &crate::state::SharedState,
+    seat_index: i64,
+) -> (Option<CalibrationSuggestion>, Option<NoSuggestion>) {
+    use crate::state::*;
+    if seat_index < 0 || seat_index >= state.num_nodes as i64 {
+        return (None, Some(NoSuggestion::NotFound));
+    }
+    // pass-peak-only interfaces record no RSSI trace
+    let hw_nodes = state
+        .hardware
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|hw| hw.num_nodes())
+        .unwrap_or(0);
+    let marshal_type = if (seat_index as usize) < hw_nodes {
+        0 // FULL_RSSI
+    } else {
+        let holder = state.mock_provider.lock().unwrap();
+        holder.1.marshal_type()
+    };
+    if marshal_type == 2 {
+        return (None, Some(NoSuggestion::PassPeakOnly));
+    }
+    let (values, times, start_time, format_id) = {
+        let mock = state.mock.lock().unwrap();
+        let race = state.race.lock().unwrap();
+        (
+            mock.get(seat_index as usize)
+                .map(|m| m.history_values.clone())
+                .unwrap_or_default(),
+            mock.get(seat_index as usize)
+                .map(|m| m.history_times.clone())
+                .unwrap_or_default(),
+            race.start_time_monotonic,
+            race.format_id,
+        )
+    };
+    suggest_common(
+        state, &values, &times, start_time, Some(format_id),
+    )
+}
+
+/// Suggested EnterAt/ExitAt for a saved pilot run — suggest_for_pilotrun
+/// in Python.  Reads the history recorded at race save.
+pub fn suggest_for_pilotrun(
+    state: &crate::state::SharedState,
+    pilotrace_id: i64,
+) -> (Option<CalibrationSuggestion>, Option<NoSuggestion>) {
+    let row: Option<(i64, i64, String, String)> = db_bridge(state, |conn| {
+        conn.query_row(
+            "SELECT marshal_type, race_id, history_values, history_times \
+             FROM saved_pilot_race WHERE id = ?1",
+            [pilotrace_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok()
+    });
+    let (marshal_type, race_id, history_values_json, history_times_json) = match row {
+        Some(r) => r,
+        None => return (None, Some(NoSuggestion::NotFound)),
+    };
+    let race_meta: Option<(f64, Option<i64>)> = db_bridge(state, |conn| {
+        conn.query_row(
+            "SELECT start_time, format_id FROM saved_race_meta WHERE id = ?1",
+            [race_id],
+            |r| Ok((r.get::<_, i64>(0)? as f64 / 1000.0, r.get(1)?)),
+        )
+        .ok()
+    });
+    let (start_time, format_id) = match race_meta {
+        Some(r) => r,
+        None => return (None, Some(NoSuggestion::NotFound)),
+    };
+    if marshal_type == 2 {
+        return (None, Some(NoSuggestion::PassPeakOnly));
+    }
+    let values: Vec<i64> = serde_json::from_str(&history_values_json).unwrap_or_default();
+    let times: Vec<f64> = serde_json::from_str(&history_times_json).unwrap_or_default();
+    if values.is_empty() {
+        return (None, Some(NoSuggestion::NoHistory));
+    }
+    suggest_common(state, &values, &times, start_time, format_id)
+}
+
+fn db_bridge<T>(
+    state: &crate::state::SharedState,
+    f: impl FnOnce(&rusqlite::Connection) -> T,
+) -> T {
+    crate::db::with_db(state, f)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn suggest_common(
+    state: &crate::state::SharedState,
+    values: &[i64],
+    times: &[f64],
+    start_time: f64,
+    format_id: Option<i64>,
+) -> (Option<CalibrationSuggestion>, Option<NoSuggestion>) {
+    let (unlimited_time, race_time_sec, min_lap_ms, min_first_crossing_ms, lap_limit) =
+        crate::db::with_db(state, |conn| {
+            let (unlimited_time, race_time_sec, team_racing_mode, win_condition, number_laps_win, start_behavior) =
+                format_id
+                    .and_then(|fid| {
+                        conn.query_row(
+                            "SELECT race_mode, race_time_sec, team_racing_mode, win_condition, \
+                             number_laps_win, start_behavior FROM race_format WHERE id = ?1",
+                            [fid],
+                            |r| {
+                                Ok((
+                                    r.get::<_, i64>(0)?,
+                                    r.get::<_, i64>(1)?,
+                                    r.get::<_, i64>(2)?,
+                                    r.get::<_, i64>(3)?,
+                                    r.get::<_, i64>(4)?,
+                                    r.get::<_, i64>(5)?,
+                                ))
+                            },
+                        )
+                        .ok()
+                    })
+                    .unwrap_or((1, 0, 0, 0, 0, 0));
+            let min_lap_ms =
+                crate::db::get_option_int(conn, "MinLapSec", 10) as f64 * 1000.0;
+            let min_first_crossing_ms =
+                crate::db::get_option_int(conn, "MinFirstCrossingSec", 0) as f64 * 1000.0;
+            // _lap_limit: individual first-to-laps races only
+            let lap_limit = if team_racing_mode == 0 && win_condition == 2 && number_laps_win > 0 {
+                number_laps_win + if start_behavior == 1 { 0 } else { 1 }
+            } else {
+                0
+            };
+            (
+                unlimited_time != 0,
+                race_time_sec as f64,
+                min_lap_ms,
+                min_first_crossing_ms,
+                lap_limit,
+            )
+        });
+    // MinLapBehavior (server config, default 1) gates min-lap enforcement
+    let min_lap_behavior =
+        crate::db::get_config_number(state, "TIMING", "MinLapBehavior", 1.0) != 0.0;
+    suggest_calibration_with_reason(
+        values,
+        times,
+        start_time,
+        unlimited_time,
+        race_time_sec,
+        min_lap_ms,
+        min_lap_behavior,
+        min_first_crossing_ms,
+        lap_limit,
+    )
+}
+
 /// Convenience: serialize a suggestion payload for the
 /// 'calibration_suggestion' socket event.
 pub fn suggestion_payload(

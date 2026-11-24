@@ -1739,6 +1739,24 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         let _ = sock.emit("enter_and_exit_at_levels", &payload);
     });
 
+    socket.on("suggest_calibration", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let pilotrace_id = data.get("pilotrace_id").and_then(|v| v.as_i64());
+        let node_req = data.get("node").and_then(|v| v.as_i64());
+        let (result, reason) = if let Some(pid) = pilotrace_id {
+            crate::calibration::suggest_for_pilotrun(&state, pid)
+        } else {
+            crate::calibration::suggest_for_seat(&state, node_req.unwrap_or(-1))
+        };
+        let mut payload = crate::calibration::suggestion_payload(&result, reason);
+        payload["pilotrace_id"] = json!(pilotrace_id);
+        payload["node"] = json!(node_req);
+        // response goes only to the requesting socket (Python emit())
+        let _ = sock.emit("calibration_suggestion", &payload);
+    });
+
     socket.on("set_start_thresh_lower_amount", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
         let data = data.0;

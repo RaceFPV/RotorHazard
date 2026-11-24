@@ -128,12 +128,9 @@ impl HardwareInterface {
 
     /// One update pass over all hardware nodes.
     pub fn update(&mut self, state: &SharedState, now: f64) {
-        let (racing, _racing_start) = {
+        let (racing, race_status) = {
             let race = state.race.lock().unwrap();
-            (
-                race.race_status == RACE_STATUS_RACING,
-                race.start_time_monotonic,
-            )
+            (race.race_status == RACE_STATUS_RACING, race.race_status)
         };
 
         for idx in 0..self.nodes.len() {
@@ -146,7 +143,9 @@ impl HardwareInterface {
                 // Full LAP_STATS node (STM32 etc.) — crossing detection
                 // done on-board, reported in the block read
                 match node.read_lap_stats() {
-                    Some(stats) => self.process_lap_stats(state, idx, &node, stats, racing, now),
+                    Some(stats) => {
+                        self.process_lap_stats(state, idx, &node, stats, racing, race_status, now)
+                    }
                     None => self.handle_read_failure(idx, &node),
                 }
             } else {
@@ -175,6 +174,7 @@ impl HardwareInterface {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_lap_stats(
         &mut self,
         state: &SharedState,
@@ -182,6 +182,7 @@ impl HardwareInterface {
         _node: &SerialNode,
         stats: crate::serial::LapStats,
         racing: bool,
+        race_status: i64,
         now: f64,
     ) {
         self.read_fail_streak[idx] = 0;
@@ -222,6 +223,22 @@ impl HardwareInterface {
             m.pass_nadir_rssi = stats.pass_nadir_rssi;
             m.loop_time = stats.loop_time.max(1);
             m.debug_pass_count += 1;
+            // peak/nadir history events feed the calibration engine
+            // (api < 18 nodes report no history; DONE races record none)
+            if _node.api_level >= 18 && race_status != RACE_STATUS_DONE {
+                m.history_add_pn(
+                    now,
+                    stats.pn_peak_rssi,
+                    stats.pn_peak_first_ms,
+                    stats.pn_peak_last_ms,
+                    stats.pn_nadir_rssi,
+                    stats.pn_nadir_first_ms,
+                    stats.pn_nadir_last_ms,
+                );
+            }
+            if race_status == RACE_STATUS_READY {
+                m.prune_history(now);
+            }
         }
     }
 
