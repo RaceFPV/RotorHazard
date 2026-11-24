@@ -1,11 +1,13 @@
-//! Real hardware interface — wires serial nodes into the server\x27s race
+//! Real hardware interface — wires serial nodes into the server's race
 //! state.  Replaces the mock node system when SERIAL_PORTS is configured.
 //!
-//! Supports nodes that implement the full RH LAP_STATS block (STM32
-//! nodes) and falls back to server-side crossing detection for simpler
-//! nodes (e.g. ESP32) that expose RSSI peak/nadir but not the full stats
-//! block.
+//! Supports two node types:
+//! - Full RH LAP_STATS nodes (STM32): the node does crossing detection
+//!   on-board and reports everything in a single block read
+//! - Simple nodes (ESP32 etc.): no LAP_STATS; the server polls RSSI
+//!   peak/nadir and does threshold-based crossing detection itself
 
+use crate::race as race_ops;
 use crate::serial::{self, SerialNode};
 use crate::state::*;
 use std::sync::Arc;
@@ -16,6 +18,9 @@ pub struct HardwareInterface {
     pub lap_stats_supported: Vec<bool>,
     pub last_rssi: Vec<i64>,
     pub last_crossing: Vec<bool>,
+    pub last_peak: Vec<i64>,
+    pub server_crossing_active: Vec<bool>,
+    pub server_crossing_start: Vec<f64>,
 }
 
 impl HardwareInterface {
@@ -26,6 +31,9 @@ impl HardwareInterface {
             lap_stats_supported: Vec::new(),
             last_rssi: Vec::new(),
             last_crossing: Vec::new(),
+            last_peak: Vec::new(),
+            server_crossing_active: Vec::new(),
+            server_crossing_start: Vec::new(),
         }
     }
 
@@ -49,6 +57,9 @@ impl HardwareInterface {
         self.lap_stats_supported = vec![false; n];
         self.last_rssi = vec![0; n];
         self.last_crossing = vec![false; n];
+        self.last_peak = vec![0; n];
+        self.server_crossing_active = vec![false; n];
+        self.server_crossing_start = vec![0.0; n];
     }
 
     pub fn num_nodes(&self) -> usize {
@@ -83,23 +94,25 @@ impl HardwareInterface {
         }
     }
 
-    /// One update pass: poll each node for lap stats (if supported) or
-    /// RSSI peak/nadir changes (server-side crossing detection).
+    /// One update pass over all hardware nodes.
     pub fn update(&mut self, state: &SharedState, now: f64) {
-        let racing_start = {
+        let (racing, _racing_start) = {
             let race = state.race.lock().unwrap();
-            if race.race_status == RACE_STATUS_RACING {
-                Some(race.start_time_monotonic)
-            } else {
-                None
-            }
+            (
+                race.race_status == RACE_STATUS_RACING,
+                race.start_time_monotonic,
+            )
         };
 
-        let node_count = self.nodes.len().min(self.lap_stats_supported.len());
-        for idx in 0..node_count {
-            let node = &self.nodes[idx];
+        for idx in 0..self.nodes.len() {
+            if idx >= self.lap_stats_supported.len() {
+                break;
+            }
+            let node = self.nodes[idx].clone();
 
             if self.lap_stats_supported[idx] {
+                // Full LAP_STATS node (STM32 etc.) — crossing detection
+                // done on-board, reported in the block read
                 if let Some(stats) = node.read_lap_stats() {
                     let was_crossing = self.last_crossing[idx];
                     self.last_rssi[idx] = stats.rssi_val;
@@ -114,44 +127,71 @@ impl HardwareInterface {
                             m.node_nadir_rssi = stats.node_nadir_rssi;
                             m.pass_peak_rssi = stats.pass_peak_rssi;
                             m.pass_nadir_rssi = stats.pass_nadir_rssi;
+                            m.debug_pass_count += 1;
                         }
                     }
 
-                    if was_crossing && !stats.crossing_flag && racing_start.is_some() {
-                        crate::race::register_lap_at(state, idx, now);
+                    if was_crossing && !stats.crossing_flag && racing {
+                        race_ops::register_lap_at(state, idx, now);
                     }
                 }
             } else {
-                // server-side crossing detection via RSSI peak/nadir
-                let was_crossing = self.last_crossing[idx];
-                let prev_rssi = self.last_rssi[idx];
+                // Simple node — server-side crossing detection
+                self.poll_simple_node(state, idx, &node, racing, now);
+            }
+        }
+    }
 
-                let peak = node
-                    .read_block(serial::READ_NODE_RSSI_PEAK, 1)
-                    .and_then(|d| Some(d[0] as i64))
-                    .unwrap_or(prev_rssi);
+    fn poll_simple_node(
+        &mut self,
+        state: &SharedState,
+        idx: usize,
+        node: &SerialNode,
+        racing: bool,
+        now: f64,
+    ) {
+        let was_crossing = self.server_crossing_active[idx];
+        let prev_peak = self.last_peak[idx];
 
-                let enter_at = node.enter_at_level;
-                let exit_at = node.exit_at_level;
-                let crossing = peak > exit_at && peak >= enter_at.saturating_sub(10);
-                let rssi = if crossing { peak } else { enter_at.min(peak) };
+        let peak = node
+            .read_block(serial::READ_NODE_RSSI_PEAK, 1)
+            .map(|d| d[0] as i64)
+            .unwrap_or(prev_peak);
 
-                self.last_rssi[idx] = rssi;
-                self.last_crossing[idx] = crossing;
+        let enter_at = node.enter_at_level;
+        let exit_at = node.exit_at_level;
 
-                {
-                    let mut mock = state.mock.lock().unwrap();
-                    if let Some(m) = mock.get_mut(idx) {
-                        m.current_rssi = rssi;
-                        m.crossing_flag = crossing;
-                        m.node_peak_rssi = peak;
-                        m.pass_peak_rssi = if crossing { peak } else { m.pass_peak_rssi };
-                    }
-                }
+        // crossing state machine:
+        // - start: peak rises above enter_at
+        // - end: peak drops below exit_at
+        if !was_crossing && peak > enter_at {
+            self.server_crossing_active[idx] = true;
+            self.server_crossing_start[idx] = now;
+            self.last_crossing[idx] = true;
+        } else if was_crossing && peak < exit_at {
+            self.server_crossing_active[idx] = false;
+            self.last_crossing[idx] = false;
+            if racing {
+                race_ops::register_lap_at(state, idx, now);
+            }
+        }
 
-                if was_crossing && !crossing && racing_start.is_some() {
-                    crate::race::register_lap_at(state, idx, now);
-                }
+        let rssi = if self.server_crossing_active[idx] {
+            peak
+        } else {
+            peak.min(enter_at)
+        };
+        self.last_rssi[idx] = rssi;
+        self.last_peak[idx] = peak;
+
+        {
+            let mut mock = state.mock.lock().unwrap();
+            if let Some(m) = mock.get_mut(idx) {
+                m.current_rssi = rssi;
+                m.crossing_flag = self.server_crossing_active[idx];
+                m.node_peak_rssi = peak.max(m.node_peak_rssi);
+                m.pass_peak_rssi = if self.server_crossing_active[idx] { peak } else { m.pass_peak_rssi };
+                m.pass_nadir_rssi = if !self.server_crossing_active[idx] { rssi } else { m.pass_nadir_rssi };
             }
         }
     }
