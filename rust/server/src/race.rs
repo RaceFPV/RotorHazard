@@ -441,8 +441,19 @@ pub fn save_laps(state: &SharedState) -> bool {
                     crossings,
                 });
             }
-            let leaderboard = crate::results::calc_leaderboard(
+            let mut leaderboard = crate::results::calc_leaderboard(
                 &pilots_in, &fmt, max_round + 1, Some(heat_id), &displayname, consec);
+            // race points assignment (raceformat.points_method JSON)
+            if let Some(points_method) = conn
+                .query_row(
+                    "SELECT points_method FROM race_format WHERE id = ?1 AND points_method IS NOT NULL",
+                    [format_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            {
+                crate::class_rank::assign_points(&mut leaderboard, &points_method);
+            }
             conn.execute(
                 "UPDATE saved_race_meta SET results = ?1, \"cacheStatus\" = ?2 WHERE id = ?3",
                 rusqlite::params![

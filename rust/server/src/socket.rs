@@ -250,6 +250,24 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
             Some("environmental_data") => {
                 let _ = socket.emit("environmental_data", &crate::sensor::environmental_data());
             }
+            Some("raceclass_rank_method_list") => {
+                let _ = socket.emit("raceclass_rank_method_list", &crate::class_rank::rank_method_list());
+            }
+            Some("race_points_method_list") => {
+                let _ = socket.emit("race_points_method_list", &crate::class_rank::points_method_list());
+            }
+            Some("class_ranking") => {
+                let class_id = load_type
+                    .as_object()
+                    .and_then(|o| o.get("class_id").and_then(|v| v.as_i64()));
+                let payload = class_id.and_then(|cid| {
+                    db::with_db(&state, |conn| crate::class_rank::calc_class_ranking(conn, cid))
+                });
+                let _ = socket.emit("class_ranking", &json!({
+                    "class_id": class_id,
+                    "result": payload,
+                }));
+            }
             Some("upd_cfg_files_list") => {
                 let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
             }
@@ -1542,8 +1560,10 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         let callout = data.get("callout").and_then(|v| v.as_str()).unwrap_or("");
         // spoken form with delay support (doReplace with spoken_flag=True)
         let mut delay_holder = None;
-        let text = crate::actions::replace_tokens(&state, callout, &data, true, &mut delay_holder)
+        let filled = crate::actions::replace_tokens(&state, callout, &data, true, &mut delay_holder)
             .unwrap_or_default();
+        // then the characterized cleanup: known-but-unavailable tokens clear
+        let text = crate::phase3::expand_callout(&state, &filled);
         let _ = sock.emit("callout_text", &json!({"callout": callout, "text": text}));
     });
 

@@ -10,6 +10,7 @@ mod api;
 mod imdtabler;
 mod assets;
 mod calibration;
+mod class_rank;
 mod cluster;
 mod hardware;
 mod db;
