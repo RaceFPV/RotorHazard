@@ -55,8 +55,13 @@ pub fn current_language(data_dir: &str) -> String {
     String::new()
 }
 
+static CONFIG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Persists a config item to config.json (matching serverconfig.set_item).
+/// Writes are serialized: set_config handlers run as concurrent tokio tasks
+/// and a read-modify-write race would clobber one side's value.
 pub fn persist_config_item(data_dir: &str, section: &str, key: &str, value: &Value) {
+    let _guard = CONFIG_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = format!("{}/config.json", data_dir);
     let mut cfg: Value = std::fs::read_to_string(&path)
         .ok()

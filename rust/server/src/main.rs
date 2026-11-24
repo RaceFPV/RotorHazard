@@ -8,6 +8,7 @@
 mod api;
 mod db;
 mod export_import;
+mod mock;
 mod pages;
 mod payloads;
 mod phase3;
@@ -146,6 +147,7 @@ async fn main() {
                 // mock nodes simulate live RSSI by default so the Run
                 // page graphs and auto-crossings work out of the box
                 "MOCK_NODE_SIGNAL": 2,
+                "MOCK_UPDATE_INTERVAL": 0.5,
                 "LAST_MODIFIED_TIME": 0,
             },
             "TIMING": {
@@ -245,6 +247,10 @@ async fn main() {
         admin_password,
         config_items: Arc::new(Mutex::new(std::collections::HashMap::new())),
         mock: Mutex::new((0..num_nodes).map(|_| state::MockNodeState::new()).collect()),
+        mock_provider: Mutex::new((
+            String::new(),
+            crate::mock::MockProvider::NoSignal,
+        )),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
 
@@ -254,9 +260,35 @@ async fn main() {
     state.io.set(io.clone()).expect("io set once");
 
     pages::set_state(state.clone());
+
+    // initialize the mock signal provider from the config file (once)
+    {
+        let setting = db::get_config_string(&state, "GENERAL", "MOCK_NODE_SIGNAL");
+        let mut holder = state.mock_provider.lock().unwrap();
+        *holder = (setting.clone(), crate::mock::provider_from_setting(&setting));
+        tracing::info!("Mock signal {} active", setting);
+    }
     socket::register_handlers(io, state.clone());
 
-    // heartbeat: broadcast node state every 500ms (heartbeat_thread_function)
+    // mock-node update loop at MOCK_UPDATE_INTERVAL (MockInterface.update),
+    // and a separate fixed 0.5s heartbeat broadcast (heartbeat_thread_function)
+    {
+        let mock_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                // env RH_UPDATE_INTERVAL overrides the config setting
+                let interval_secs = std::env::var("RH_UPDATE_INTERVAL")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or_else(|| {
+                        crate::db::get_config_number(&mock_state, "GENERAL", "MOCK_UPDATE_INTERVAL", 0.5)
+                    });
+                let interval = std::time::Duration::from_secs_f64(interval_secs.max(0.05));
+                tokio::time::sleep(interval).await;
+                socket::mock_update_tick(&mock_state);
+            }
+        });
+    }
     {
         let hb_state = state.clone();
         tokio::spawn(async move {
@@ -264,15 +296,6 @@ async fn main() {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-
-                // mock-node signal mode from config.json (GENERAL section)
-                let signal_mode = db::with_db(&hb_state, |conn| {
-                    db::get_option_or_config_int(&hb_state, conn, "GENERAL", "MOCK_NODE_SIGNAL")
-                });
-                if (2..=4).contains(&signal_mode) {
-                    socket::simulate_mock_signals(&hb_state, signal_mode);
-                }
-
                 let payload = db::with_db(&hb_state, |conn| {
                     let profile_id = db::current_profile_id(conn);
                     let freqs = db::profile_frequencies(conn, profile_id);
@@ -284,7 +307,9 @@ async fn main() {
                         "frequency": (0..hb_state.num_nodes)
                             .map(|i| freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "loop_time": vec![1i64; hb_state.num_nodes],
+                        "loop_time": (0..hb_state.num_nodes)
+                            .map(|i| mock.get(i).map(|m| m.loop_time).unwrap_or(1))
+                            .collect::<Vec<_>>(),
                         "crossing_flag": (0..hb_state.num_nodes)
                             .map(|i| mock.get(i).map(|m| m.crossing_flag).unwrap_or(false))
                             .collect::<Vec<_>>(),
@@ -292,7 +317,6 @@ async fn main() {
                 });
                 socket::broadcast(&hb_state, "heartbeat", payload);
 
-                // node_data follows the live mock values
                 let node_payload = {
                     let mock = hb_state.mock.lock().unwrap();
                     json!({

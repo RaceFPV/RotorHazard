@@ -164,34 +164,40 @@ pub fn with_db<T>(state: &SharedState, f: impl FnOnce(&Connection) -> T) -> T {
 }
 
 
-/// Reads an integer config item from config.json (mirroring
-/// serverconfig.get_item_int).  An absent MOCK_NODE_SIGNAL defaults to 2
-/// (simulated RSSI) so mock-node graphs work out of the box.
-pub fn get_option_or_config_int(
-    state: &SharedState,
-    _conn: &Connection,
-    section: &str,
-    key: &str,
-) -> i64 {
+/// Reads a raw config.json value as a string (get_item equivalent).
+pub fn get_config_string(state: &SharedState, section: &str, key: &str) -> String {
     if let Ok(text) = std::fs::read_to_string(format!("{}/config.json", state.data_dir)) {
         if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(v) = cfg.get(section).and_then(|s| s.get(key)) {
+                if let Some(s) = v.as_str() {
+                    return s.to_string();
+                }
                 if let Some(i) = v.as_i64() {
-                    return i;
+                    return i.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Reads a config.json value as f64 with a fallback.
+pub fn get_config_number(state: &SharedState, section: &str, key: &str, fallback: f64) -> f64 {
+    if let Ok(text) = std::fs::read_to_string(format!("{}/config.json", state.data_dir)) {
+        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(v) = cfg.get(section).and_then(|s| s.get(key)) {
+                if let Some(f) = v.as_f64() {
+                    return f;
                 }
                 if let Some(s) = v.as_str() {
-                    if let Ok(i) = s.parse::<i64>() {
-                        return i;
+                    if let Ok(f) = s.parse::<f64>() {
+                        return f;
                     }
                 }
             }
         }
     }
-    match (section, key) {
-        // absent key defaults to simulated RSSI so mock-node graphs work
-        ("GENERAL", "MOCK_NODE_SIGNAL") => 2,
-        _ => 0,
-    }
+    fallback
 }
 
 
@@ -236,14 +242,14 @@ fn next_unused_raceband(existing: &[Value]) -> Option<(&'static str, u8, u16)> {
         .collect();
     crate::util::BAND_CHANNEL_FREQUENCIES
         .iter()
-        .take(8) // Raceband R1..R8
+        .take(8)
         .find(|(_, _, f)| !used.contains(f))
         .map(|(b, c, f)| (*b, *c, *f))
 }
 
 /// Mock mode: give every node a frequency so no seat sits disabled.
-/// Missing entries are filled with unused Raceband channels in order.
-/// Returns true when any entry was filled.
+/// When any seat needs filling the whole profile is set to Raceband R1..R8
+/// (per the mock-rig default); returns true when the profile changed.
 pub fn autofill_mock_frequencies(conn: &Connection, num_nodes: usize) -> bool {
     let profile_id = current_profile_id(conn);
     let (mut b, mut c, mut f) = read_freq_arrays(conn, profile_id);
@@ -254,8 +260,6 @@ pub fn autofill_mock_frequencies(conn: &Connection, num_nodes: usize) -> bool {
     }
     let needs_fill = (0..num_nodes).any(|i| f[i].as_i64().unwrap_or(0) == 0);
     if needs_fill && num_nodes <= 8 {
-        // mock rig: set the whole profile to Raceband R1..R8 so every seat
-        // is active with a clean, predictable assignment
         for i in 0..num_nodes {
             let (band, chan, freq) = crate::util::BAND_CHANNEL_FREQUENCIES[i];
             b[i] = json!(band);

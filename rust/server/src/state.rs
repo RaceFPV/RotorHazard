@@ -71,6 +71,7 @@ pub struct MockNodeState {
     pub node_peak_rssi: i64,
     pub node_nadir_rssi: i64,
     pub debug_pass_count: i64,
+    pub loop_time: i64,
 }
 
 impl MockNodeState {
@@ -84,6 +85,7 @@ impl MockNodeState {
             node_peak_rssi: 100,
             node_nadir_rssi: 20,
             debug_pass_count: 0,
+            loop_time: 1,
         }
     }
 }
@@ -126,6 +128,8 @@ pub struct AppState {
     pub config_items: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
     /// Mock-node simulation state (one entry per node)
     pub mock: Mutex<Vec<crate::state::MockNodeState>>,
+    /// Active mock signal provider (name + state), per MockSignal.py
+    pub mock_provider: Mutex<(String, crate::mock::MockProvider)>,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
 }

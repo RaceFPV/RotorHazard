@@ -200,6 +200,9 @@ pub fn page_context(path: &str, state: &crate::state::SharedState) -> serde_json
 
     match path {
         "/run" | "/current" => json!({ "nodes": nodes }),
+        "/advanced-settings" => json!({
+            "mockSignals": crate::mock::signal_entries(),
+        }),
         "/format" => json!({
             "has_deleted_races": crate::db::with_db(state, |conn| {
                 conn.query_row("SELECT COUNT(*) FROM deleted_race", [], |r| r.get::<_, i64>(0))

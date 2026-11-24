@@ -17,6 +17,27 @@ except ImportError:
     import harness
 
 
+
+def wait_config_value(server, section, key, expected, timeout=6.0):
+    """Polls config.json until it holds the expected value (set_config
+    persists asynchronously relative to other tests).  Skips when the server
+    handle has no data directory (RH_TEST_URL mode)."""
+    if not getattr(server, "data_dir", None):
+        time.sleep(1.0)
+        return
+    deadline = time.monotonic() + timeout
+    path = os.path.join(server.data_dir, "config.json")
+    while time.monotonic() < deadline:
+        try:
+            cfg = json.load(open(path))
+            if str(cfg.get(section, {}).get(key)) == str(expected):
+                return
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.2)
+    raise AssertionError("config {}.{} never became {!r}".format(section, key, expected))
+
+
 class HeatPlanTest(harness.ProtocolTestCase):
     def _build_heat(self, num_pilots=2):
         pilot_ids = []
@@ -133,7 +154,7 @@ class LanguageTest(harness.ProtocolTestCase):
     def test_language_switch_affects_pages(self):
         # switch to German; rendered page titles must translate
         self.client.emit('set_language', {'language': 'de'})
-        time.sleep(0.5)
+        wait_config_value(self.server, 'UI', 'currentLanguage', 'de')
         with urllib.request.urlopen(self.server.base_url + '/', timeout=10) as resp:
             body = resp.read().decode('utf-8', errors='replace')
         self.assertIn('Startseite', body, 'German translation not applied to home page')
@@ -146,7 +167,7 @@ class LanguageTest(harness.ProtocolTestCase):
 
         # switch back to English
         self.client.emit('set_language', {'language': 'EN'})
-        time.sleep(0.5)
+        wait_config_value(self.server, 'UI', 'currentLanguage', 'EN')
         with urllib.request.urlopen(self.server.base_url + '/', timeout=10) as resp:
             body = resp.read().decode('utf-8', errors='replace')
         self.assertIn('Home', body)
@@ -205,9 +226,172 @@ class CalloutTest(harness.ProtocolTestCase):
         self.assertEqual(resp[0]['text'], ' %EVENT_NAME%')
 
 
-if __name__ == '__main__':
-    unittest.main()
 
+
+class MockProviderTest(unittest.TestCase):
+    """Upstream provider architecture: MOCK_NODE_SIGNAL names a signal
+    provider (none / replay / simulated variants); the server switches
+    live without a restart."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = harness.spawn_rust_server()
+        cls.tc = harness.ProtocolTestCase.__new__(harness.ProtocolTestCase)
+        cls.tc.server = cls.server
+        cls.tc.client = harness.Client(cls.server.base_url)
+        cls.tc.observer = harness.Client(cls.server.base_url)
+        cls.tc.client.connect()
+        cls.tc.observer.connect()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tc.client.disconnect()
+        cls.tc.observer.disconnect()
+        cls.server.stop()
+
+    def _collect_rssi(self, seconds=2.5):
+        vals = []
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                args = self.tc.wait_any("heartbeat", timeout=1)
+                vals.extend(args[0]["current_rssi"])
+            except AssertionError:
+                break
+        return vals
+
+    def test_signal_none_freezes_rssi(self):
+        # characterized: NoSignal returns no reading, so nodes keep their
+        # last RSSI (frozen) rather than going to zero.  Wait out the
+        # provider transition (any prior test's readings must flush), then
+        # require a constant stream.
+        self.tc.client.emit("set_config", {
+            "section": "GENERAL", "key": "MOCK_NODE_SIGNAL", "value": "0"})
+        wait_config_value(self.server, "GENERAL", "MOCK_NODE_SIGNAL", "0")
+        time.sleep(1.0)  # let the provider switch take effect on the tick
+
+        def collect_arrays(seconds):
+            # drain the backlog: without this the queue serves stale
+            # heartbeats buffered during earlier waits
+            self.tc.client.drain()
+            self.tc.observer.drain()
+            arrs = []
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    args = self.tc.wait_any("heartbeat", timeout=0.4)
+                    arrs.append(args[0]["current_rssi"])
+                except AssertionError:
+                    break
+            return arrs
+
+        window_a = collect_arrays(1.5)
+        window_b = collect_arrays(1.5)
+        self.assertTrue(window_a and window_b, "no heartbeat readings")
+        # frozen: per-node values identical across both windows (each node
+        # keeps its OWN last reading -- they are not all equal to each other)
+        n = len(window_a[-1])
+        for idx in range(n):
+            vals = [hb[idx] for hb in (window_a + window_b) if len(hb) > idx]
+            self.assertTrue(all(v == vals[0] for v in vals),
+                            "node {} not frozen: {}".format(idx, vals))
+
+    def test_signal_selection_on_advanced_settings(self):
+        import base64
+        req = urllib.request.Request(self.server.base_url + "/advanced-settings")
+        creds = base64.b64encode(b"admin:rotorhazard").decode()
+        # this instance has empty configured credentials; auth disabled
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+        self.assertIn("Simulated - Pass Peak Only", body)
+        self.assertIn("mock_data_[n].csv", body)
+        self.assertIn("Mock Node Update Interval", body)
+
+    def test_replay_csv_signal_registers_laps(self):
+        # write a replay file for node 1: readings every 0.5s of recorded
+        # time; lap_id advances twice with completed crossings
+        lines = []
+        lap_id = 1
+        for i in range(12):
+            read_time = i * 0.5
+            cross = "T" if i % 4 in (1, 2) else "F"
+            if i in (4, 8):
+                lap_id += 1
+            rssi = 120 if cross == "T" else 30
+            lines.append(",".join(str(x) for x in [
+                read_time, lap_id, 0, rssi, 100, 130, 1, cross, 20, 20,
+                rssi, 0, 0, 20, 0, 0]))
+        data_dir = self.server.data_dir
+        with open(os.path.join(data_dir, "mock_data_1.csv"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+        # switch to replay; the server picks it up without a restart
+        self.tc.client.emit("set_config", {
+            "section": "GENERAL", "key": "MOCK_NODE_SIGNAL", "value": "1"})
+        time.sleep(0.5)
+        vals = [v for v in self._collect_rssi(3.0)]
+        replayed = [v for v in vals if v in (30, 120)]
+        self.assertTrue(replayed, "no replayed RSSI values observed")
+
+        # during a race the replayed passes register laps on node 1
+        resp = self.tc.emit_and_wait("load_data", {"load_types": ["heat_data"]},
+                                     "heat_data", drain=True)
+        heat = max((h["id"] for h in resp[0]["heats"]), default=None)
+        if heat is None:
+            self.tc.emit_and_wait("add_heat", None, "heat_data", drain=True)
+            resp = self.tc.emit_and_wait("load_data", {"load_types": ["heat_data"]},
+                                         "heat_data")
+            heat = max(h["id"] for h in resp[0]["heats"])
+        self.tc.emit_and_wait("add_pilot", None, "pilot_data", drain=True)
+        resp = self.tc.emit_and_wait("load_data", {"load_types": ["pilot_data"]},
+                                     "pilot_data", drain=True)
+        pid = max(p["pilot_id"] for p in resp[0]["pilots"])
+        resp = self.tc.emit_and_wait("load_data", {"load_types": ["heat_data"]},
+                                     "heat_data")
+        heat_row = next(h for h in resp[0]["heats"] if h["id"] == heat)
+        self.tc.emit_and_wait("alter_heat",
+                              {"heat": heat, "slot_id": heat_row["slots"][0]["id"],
+                               "pilot": pid}, "heat_data", drain=True)
+        self.tc.emit_and_wait("set_current_heat", {"heat": heat}, "current_heat",
+                              drain=True)
+
+        self.tc.client.drain()
+        self.tc.observer.drain()
+        self.tc.client.emit("stage_race")
+        deadline = time.monotonic() + 45
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("race never started")
+            args = self.tc.wait_any("race_status", timeout=remaining)
+            if args[0].get("race_status") == 1:
+                break
+
+        laps_seen = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not laps_seen:
+            try:
+                args = self.tc.wait_any("current_laps",
+                                        timeout=max(1, deadline - time.monotonic()))
+                node1 = args[0]["current"]["node_index"][0]
+                if node1["laps"]:
+                    laps_seen = True
+            except AssertionError:
+                pass
+        self.assertTrue(laps_seen, "replayed passes did not register laps")
+
+        self.tc.client.emit("stop_race")
+        time.sleep(1)
+        self.tc.client.emit("discard_laps")
+        # back to the default simulated signal; wait for the persist so a
+        # following test cannot race this write
+        self.tc.client.emit("set_config", {
+            "section": "GENERAL", "key": "MOCK_NODE_SIGNAL", "value": "2"})
+        wait_config_value(self.server, "GENERAL", "MOCK_NODE_SIGNAL", "2")
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 class DefaultConfigTest(unittest.TestCase):
     """First-run behavior: the server creates config.json with default

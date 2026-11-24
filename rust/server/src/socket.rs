@@ -1138,6 +1138,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
             let race = state.race.lock().unwrap();
             race.node_laps.clone()
         };
+        let marshal_type = state.mock_provider.lock().unwrap().1.marshal_type();
         let payload = db::with_db(&state, |conn| {
             let profile_id = db::current_profile_id(conn);
             let freqs = db::profile_frequencies(conn, profile_id);
@@ -1170,7 +1171,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
                         "enter_at": enter_at,
                         "exit_at": exit_at,
                         "laps": seat_laps,
-                        "marshal_type": 0,
+                        "marshal_type": marshal_type,
                     }),
                 );
             }
@@ -1796,6 +1797,17 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 value.clone(),
             );
             crate::phase3::persist_config_item(&state.data_dir, section, key, value);
+            tracing::info!("post-write config MOCK_NODE_SIGNAL = {:?}",
+                crate::db::get_config_string(&state, "GENERAL", "MOCK_NODE_SIGNAL"));
+            // switch the mock signal provider immediately rather than waiting
+            // for the next mock tick to re-read the setting
+            if section == "GENERAL" && key == "MOCK_NODE_SIGNAL" {
+                if let Some(v) = value.as_str() {
+                    let mut holder = state.mock_provider.lock().unwrap();
+                    tracing::info!("Mock signal '{}' active", v);
+                    *holder = (v.to_string(), crate::mock::provider_from_setting(v));
+                }
+            }
             tracing::info!("config set: {}.{} = {}", section, key, value);
         }
         // note: set_config does not emit config_update; clients re-request
@@ -2236,98 +2248,81 @@ fn language_list(languages: &Value) -> Value {
 }
 
 
-/// Advances the mock-node RSSI simulation (MockInterface.update, signal
-/// modes 2/3/4): idle RSSI 20-40, crossing RSSI 60-150, 5% chance to start
-/// a crossing, 50% chance to end one.  A completed crossing during a race
-/// registers a lap, exactly like the Python mock.
-pub fn simulate_mock_signals(state: &SharedState, _signal_mode: i64) {
-    // crossing-start probability per tick; Python's rate is 5%.  The env
-    // knob exists purely to accelerate mock-driven tests.
-    let crossing_pct: i64 = std::env::var("RH_MOCK_CROSSING_PCT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5);
-    // snapshot race conditions before touching the mock state
-    let (racing, start_time) = {
-        let race = state.race.lock().unwrap();
-        (
-            race.race_status == RACE_STATUS_RACING,
-            race.start_time_monotonic,
-        )
-    };
+/// One mock-interface update tick: select the provider named by the
+/// MOCK_NODE_SIGNAL setting, read a sample per seat, and apply it to the
+/// node state.  Completed crossings during a running race register laps.
+pub fn mock_update_tick(state: &SharedState) {
+    // the in-memory setting is the truth: set_config switches the provider
+    // instantly; the config file is only read once at startup
+    let setting = state.mock_provider.lock().unwrap().0.clone();
+    tick_debug_count(state, &setting);
 
     let now = monotonic();
+    let racing_start = {
+        let race = state.race.lock().unwrap();
+        if race.race_status == RACE_STATUS_RACING {
+            Some(race.start_time_monotonic)
+        } else {
+            None
+        }
+    };
+
     let mut completed: Vec<usize> = Vec::new();
 
+    // lock order: DB first (snapshot), then provider/mock locks.  Taking a
+    // DB call while holding the mock lock deadlocks against the heartbeat
+    // task, which takes the DB lock before the mock lock.
+    let freq_active: Vec<bool> = db::with_db(state, |conn| {
+        let profile_id = db::current_profile_id(conn);
+        db::profile_frequencies(conn, profile_id)
+            .iter()
+            .map(|(_, _, f)| *f != 0)
+            .collect()
+    });
+
     {
+        let mut holder = state.mock_provider.lock().unwrap();
         let mut mock = state.mock.lock().unwrap();
-        let mut seed = (now * 1000.0) as u64 | 1;
         for (idx, node) in mock.iter_mut().enumerate() {
-            if node.current_rssi == 0 && !node.crossing_flag {
-                // first tick after startup: settle at an idle reading
-                node.current_rssi = mock_rand(&mut seed, 20, 40);
-                continue;
-            }
-            let freq_active = db::with_db(state, |conn| {
-                let profile_id = db::current_profile_id(conn);
-                db::profile_frequencies(conn, profile_id)
-                    .get(idx)
-                    .map(|(_, _, f)| *f)
-                    .unwrap_or(0)
-                    != 0
-            });
+            let freq_active = freq_active.get(idx).copied().unwrap_or(false);
             if !freq_active {
                 node.current_rssi = 0;
                 node.crossing_flag = false;
                 continue;
             }
+            let sample = match holder.1.read(node, idx, now, &state.data_dir) {
+                Some(s) => s,
+                None => continue,
+            };
+            let was_crossing = node.crossing_flag;
+            node.current_rssi = sample.rssi;
+            node.crossing_flag = sample.cross_flag;
+            // replay-style providers signal passes by lap_id increments
+            let lap_id_advanced = sample.lap_id > node.lap_number;
+            node.lap_number = sample.lap_id;
+            node.node_peak_rssi = sample.node_peak_rssi;
+            node.node_nadir_rssi = sample.node_nadir_rssi;
+            node.pass_peak_rssi = sample.pass_peak_rssi;
+            node.pass_nadir_rssi = sample.pass_nadir_rssi;
+            node.loop_time = sample.loop_time;
+            node.debug_pass_count += 1;
 
-            if node.crossing_flag {
-                node.current_rssi = mock_rand(&mut seed, 60, 150);
-                if node.current_rssi > node.pass_peak_rssi {
-                    node.pass_peak_rssi = node.current_rssi;
-                }
-                node.debug_pass_count += 1;
-                if mock_rand_pct(&mut seed) < 50 {
-                    // crossing ends -> lap record point
-                    node.crossing_flag = false;
-                    node.pass_nadir_rssi = 100;
-                    if racing {
-                        completed.push(idx);
-                    }
-                }
-            } else {
-                node.current_rssi = mock_rand(&mut seed, 20, 40);
-                if node.current_rssi < node.pass_nadir_rssi {
-                    node.pass_nadir_rssi = node.current_rssi;
-                }
-                if mock_rand_pct(&mut seed) < crossing_pct {
-                    node.lap_number += 1;
-                    node.crossing_flag = true;
-                    node.pass_peak_rssi = 0;
-                }
+            // a completed crossing (flag drop) or a provider lap_id
+            // advance during a running race registers a lap
+            if racing_start.is_some()
+                && ((was_crossing && !sample.cross_flag) || lap_id_advanced)
+            {
+                completed.push(idx);
             }
         }
     }
 
-    // register laps for completed crossings during a running race
-    if !completed.is_empty() && start_time > 0.0 {
+    if !completed.is_empty() {
         for idx in completed {
             crate::race::register_lap_at(state, idx, now);
         }
     }
 }
-
-fn mock_rand(seed: &mut u64, lo: i64, hi: i64) -> i64 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    lo + ((*seed >> 33) as i64).rem_euclid(hi - lo)
-}
-
-fn mock_rand_pct(seed: &mut u64) -> i64 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    ((*seed >> 33) as i64).rem_euclid(100)
-}
-
 
 /// True when socket actions may proceed: no admin credentials configured
 /// (auth disabled), or the connection carried valid basic auth.
@@ -2361,4 +2356,20 @@ fn parse_basic_auth_ok(
         .unwrap_or_default();
     let (user, pass) = decoded.split_once(':').unwrap_or(("", ""));
     user == state.admin_username && pass == state.admin_password
+}
+
+
+static TICK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn tick_debug_count(state: &SharedState, setting: &str) {
+    let n = TICK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n % 10 == 0 {
+        let holder = state.mock_provider.lock().unwrap();
+        let variant = match &holder.1 {
+            crate::mock::MockProvider::NoSignal => "none",
+            crate::mock::MockProvider::ReplayCsv(_) => "replay",
+            crate::mock::MockProvider::Simulated(_) => "simulated",
+        };
+        tracing::info!("TICKDBG setting={} provider={}", setting, variant);
+    }
 }
