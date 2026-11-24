@@ -56,6 +56,8 @@ impl Drop for ServerHandle {
     }
 }
 
+pub fn free_port_pub() -> u16 { free_port() }
+
 fn free_port() -> u16 {
     for _ in 0..50 {
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) {
@@ -71,8 +73,35 @@ fn free_port() -> u16 {
 /// Spawns the server binary (the one cargo built for this test run) with
 /// mock nodes and an empty database — spawn_server in the Python harness.
 pub fn spawn_server() -> ServerHandle {
+    spawn_server_with_config(&json!({
+        "SECRETS": {"ADMIN_USERNAME": "", "ADMIN_PASSWORD": ""},
+        "GENERAL": {"HTTP_PORT": 0, "DEBUG": false, "MOCK_NODE_SIGNAL": "0"},
+    }))
+}
+
+/// Spawns a server with a custom config (spawn_custom_server in Python).
+/// The HTTP_PORT in the config is overridden with a free port.
+pub fn spawn_server_with_config(config: &Value) -> ServerHandle {
     let bin = env!("CARGO_BIN_EXE_rh-server");
     let port = free_port();
+    let data_dir = std::env::temp_dir().join(format!(
+        "rh_rs_proto_{}_{}",
+        std::process::id(),
+        port
+    ));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut cfg = config.clone();
+    if let Some(g) = cfg.get_mut("GENERAL") {
+        if let Some(obj) = g.as_object_mut() {
+            obj.insert("HTTP_PORT".into(), json!(port));
+        }
+    }
+    std::fs::write(data_dir.join("config.json"), cfg.to_string()).unwrap();
+    build_handle(bin, port, data_dir)
+}
+
+fn build_handle(bin: &str, port: u16, data_dir: std::path::PathBuf) -> ServerHandle {
+    let log_path = data_dir.join("server_test.log");
     let data_dir = std::env::temp_dir().join(format!(
         "rh_rs_proto_{}_{}",
         std::process::id(),
@@ -89,7 +118,6 @@ pub fn spawn_server() -> ServerHandle {
     )
     .unwrap();
 
-    let log_path = data_dir.join("server_test.log");
     let log_file = std::fs::File::create(&log_path).unwrap();
     let child = Command::new(bin)
         .env("RH_DATA_DIR", &data_dir)
@@ -328,6 +356,36 @@ impl SocketClient {
         http_get_json(&format!("{}{}", self.base_url, path)).expect("HTTP GET failed")
     }
 
+    /// Connects with HTTP basic auth on the socket connection request
+    /// (the authenticated-client path of the auth tests).
+    pub fn connect_with_auth(base_url: &str, user: &str, pass: &str) -> SocketClient {
+        let creds = base64_encode(format!("{}:{}", user, pass).as_bytes());
+        let shared = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
+        let ev_shared = shared.clone();
+        let client = rust_socketio::ClientBuilder::new(base_url)
+            .reconnect(false)
+            .opening_header("Authorization", format!("Basic {}", creds))
+            .on_any(move |event, payload, _| {
+                if let rust_socketio::Payload::Text(vals) = payload {
+                    if let Some(v) = vals.into_iter().next() {
+                        let (lock, cvar) = &*ev_shared;
+                        let mut events = lock.lock().unwrap();
+                        events.push((event.to_string(), v));
+                        cvar.notify_all();
+                    }
+                }
+            })
+            .connect()
+            .expect("authed socket connect failed");
+        SocketClient {
+            client,
+            shared,
+            ack_seq: std::sync::atomic::AtomicU64::new(0),
+            ack_results: Arc::new((Mutex::new(std::collections::HashMap::new()), Condvar::new())),
+            base_url: base_url.to_string(),
+        }
+    }
+
     /// Socket.io ack round-trip: emits with an ack callback and waits
     /// for the reply (used by the auth tests).
     pub fn emit_ack(&self, event: &str, data: &Value, timeout: Duration) -> Value {
@@ -388,4 +446,19 @@ pub fn with_server<T>(
 /// Reads the server log tail for diagnostics.
 pub fn server_log(server: &ServerHandle) -> String {
     server.log_tail()
+}
+
+/// Base64 encoding for basic-auth headers.
+pub fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(CHARS[(n >> 18) as usize & 63] as char);
+        out.push(CHARS[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { CHARS[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[n as usize & 63] as char } else { '=' });
+    }
+    out
 }

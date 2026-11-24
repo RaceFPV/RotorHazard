@@ -353,6 +353,7 @@ pub async fn race_detail(
                 "nodes": nodes,
                 "sort": "name",
                 "leaderboard": leaderboard,
+                "results": leaderboard,
                 "class_id": class_id,
                 "format_id": format_id,
                 "start_time": start_time,
