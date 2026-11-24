@@ -21,6 +21,7 @@ mod led;
 mod mock;
 mod vrx;
 mod pages;
+mod pluginrpc;
 mod serial;
 mod payloads;
 mod phase3;

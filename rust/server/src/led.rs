@@ -414,6 +414,9 @@ impl Strip {
     pub fn show(&mut self) {
         match &mut self.backend {
             StripBackend::Ansi { pixels, width, height } => {
+                if pixels.is_empty() {
+                    return; // nothing attached: don't paint the terminal
+                }
                 // ANSI row rendering (ANSI_leds.py show()); one row per line
                 let mut out = String::new();
                 for row in 0..*height {

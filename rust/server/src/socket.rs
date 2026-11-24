@@ -30,6 +30,17 @@ pub fn broadcast(state: &SharedState, event: &'static str, payload: Value) {
     emit_to_all(state.io.get().expect("io initialized"), event, payload);
 }
 
+/// Broadcasts an internal event to the plugin bridge (the socket.io
+/// counterpart of Python's internal Events.trigger — internal events
+/// like raceStart are not otherwise visible to socket clients).
+pub fn emit_plugin_event(state: &SharedState, event: &str, args: &Value) {
+    emit_to_all(
+        state.io.get().expect("io initialized"),
+        "rhapi_event",
+        json!({"event": event, "args": args}),
+    );
+}
+
 pub fn register_handlers(io: SocketIo, state: SharedState) {
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("socket connected: {}", socket.id);
@@ -41,10 +52,9 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
         };
         socket.extensions.insert(authed);
 
-        
-        
-        
-        
+        // plugin-bridge RPC endpoint (out-of-process RHAPI)
+        crate::pluginrpc::register_rpc(&socket, state.clone());
+
         // push initial data trigger: the browser requests its page data in
         // response to load_all (emit_frontend_load, delayed 50ms like Python)
         {
@@ -2300,6 +2310,11 @@ pub fn emit_priority_message(state: &SharedState, message: &str, interrupt: bool
             &json!({"message": message}),
         );
     state.actions_engine.do_actions(
+        state,
+        if interrupt { "messageInterrupt" } else { "messageStandard" },
+        &json!({"message": message}),
+    );
+    crate::socket::emit_plugin_event(
         state,
         if interrupt { "messageInterrupt" } else { "messageStandard" },
         &json!({"message": message}),

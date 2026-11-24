@@ -309,6 +309,7 @@ impl HardwareInterface {
                 "pilot_id": state.race.lock().unwrap().node_pilots.get(idx).copied().flatten(),
             });
             state.actions_engine.do_actions(state, event, &args);
+            crate::socket::emit_plugin_event(state, event, &args);
         }
         self.last_crossing[idx] = cross;
 
