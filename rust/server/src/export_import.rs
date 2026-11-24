@@ -20,7 +20,414 @@ pub const EXPORTER_LABELS: &[&str] = &[
     "JSON (Friendly) / All",
     "JSON (Complete) / All",
     "JSON (Complete) / Results",
+    "CSV (Friendly) / Pilots",
+    "CSV (Friendly) / Heats",
+    "CSV (Friendly) / Classes",
+    "CSV (Friendly) / Formats",
+    "CSV (Friendly) / Results",
+    "CSV (Friendly) / All",
 ];
+
+// -- CSV export (rh_data_export_csv port) --
+
+/// One CSV cell; QUOTE_NONNUMERIC semantics: strings quoted (with ""
+/// escaping), numbers bare, None empty.
+enum CsvCell {
+    S(String),
+    N(i64),
+    F(f64),
+    Empty,
+}
+
+fn csv_cell(v: impl Into<CsvCell>) -> CsvCell {
+    v.into()
+}
+
+impl From<String> for CsvCell {
+    fn from(s: String) -> Self {
+        CsvCell::S(s)
+    }
+}
+impl From<&str> for CsvCell {
+    fn from(s: &str) -> Self {
+        CsvCell::S(s.to_string())
+    }
+}
+impl From<i64> for CsvCell {
+    fn from(n: i64) -> Self {
+        CsvCell::N(n)
+    }
+}
+impl From<Option<String>> for CsvCell {
+    fn from(v: Option<String>) -> Self {
+        match v {
+            Some(s) => CsvCell::S(s),
+            None => CsvCell::Empty,
+        }
+    }
+}
+impl From<Option<i64>> for CsvCell {
+    fn from(v: Option<i64>) -> Self {
+        match v {
+            Some(n) => CsvCell::N(n),
+            None => CsvCell::Empty,
+        }
+    }
+}
+impl From<f64> for CsvCell {
+    fn from(f: f64) -> Self {
+        CsvCell::F(f)
+    }
+}
+
+fn csv_row(cells: &[CsvCell]) -> String {
+    cells
+        .iter()
+        .map(|c| match c {
+            CsvCell::S(s) => format!("\"{}\"", s.replace('"', "\"\"")),
+            CsvCell::N(n) => n.to_string(),
+            CsvCell::F(f) => {
+                if f.fract() == 0.0 && f.abs() < 1e15 {
+                    format!("{}.0", *f as i64)
+                } else {
+                    f.to_string()
+                }
+            }
+            CsvCell::Empty => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn csv_document(sections: Vec<(&str, Vec<Vec<CsvCell>>)>) -> String {
+    // assemble_all layout: [datatype header], rows..., blank line
+    let mut out = String::new();
+    for (name, rows) in sections {
+        out.push_str(&csv_row(&[csv_cell(name)]));
+        out.push('\n');
+        for row in rows {
+            out.push_str(&csv_row(row.as_slice()));
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn csv_pilots(conn: &Connection) -> Vec<Vec<CsvCell>> {
+    let mut rows = vec![vec![
+        csv_cell("Callsign"),
+        csv_cell("Name"),
+        csv_cell("Team"),
+    ]];
+    let mut stmt = conn
+        .prepare("SELECT callsign, name, team FROM pilot ORDER BY id")
+        .unwrap();
+    let mut r = stmt.query([]).unwrap();
+    while let Some(row) = r.next().unwrap() {
+        rows.push(vec![
+            csv_cell(row.get::<_, String>(0).unwrap()),
+            csv_cell(row.get::<_, Option<String>>(1).unwrap()),
+            csv_cell(row.get::<_, Option<String>>(2).unwrap()),
+        ]);
+    }
+    rows
+}
+
+fn csv_heats(conn: &Connection) -> Vec<Vec<CsvCell>> {
+    let mut rows = vec![vec![
+        csv_cell("Name"),
+        csv_cell("Class"),
+        csv_cell("Pilots"),
+    ]];
+    let mut stmt = conn
+        .prepare(
+            "SELECT h.id, COALESCE(h.note, 'Heat ' || h.id), c.name \
+             FROM heat h LEFT JOIN race_class c ON h.class_id = c.id ORDER BY h.id",
+        )
+        .unwrap();
+    let mut r = stmt.query([]).unwrap();
+    while let Some(row) = r.next().unwrap() {
+        let heat_id: i64 = row.get(0).unwrap();
+        let displayname: String = row.get(1).unwrap();
+        let class_name: Option<String> = row.get(2).unwrap();
+        let mut cells = vec![csv_cell(displayname), csv_cell(class_name)];
+        let mut sstmt = conn
+            .prepare("SELECT pilot_id FROM heat_node WHERE heat_id = ?1")
+            .unwrap();
+        let mut srows = sstmt.query([heat_id]).unwrap();
+        while let Some(srow) = srows.next().unwrap() {
+            let pilot_id: Option<i64> = srow.get(0).unwrap();
+            match pilot_id {
+                Some(pid) => {
+                    let callsign = conn
+                        .query_row("SELECT callsign FROM pilot WHERE id = ?1", [pid], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .unwrap_or_default();
+                    cells.push(csv_cell(callsign));
+                }
+                None => cells.push(csv_cell("-")),
+            }
+        }
+        rows.push(cells);
+    }
+    rows
+}
+
+fn csv_classes(conn: &Connection) -> Vec<Vec<CsvCell>> {
+    let mut rows = vec![vec![
+        csv_cell("Name"),
+        csv_cell("Description"),
+        csv_cell("Race Format"),
+    ]];
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.name, c.description, f.name FROM race_class c \
+             LEFT JOIN race_format f ON c.format_id = f.id ORDER BY c.id",
+        )
+        .unwrap();
+    let mut r = stmt.query([]).unwrap();
+    while let Some(row) = r.next().unwrap() {
+        rows.push(vec![
+            csv_cell(row.get::<_, Option<String>>(0).unwrap()),
+            csv_cell(row.get::<_, Option<String>>(1).unwrap()),
+            csv_cell(row.get::<_, Option<String>>(2).unwrap()),
+        ]);
+    }
+    rows
+}
+
+fn csv_formats(conn: &Connection) -> Vec<Vec<CsvCell>> {
+    // label tables match the Python plugin's translations (English defaults)
+    let timer_modes = ["Fixed Time", "No Time Limit"];
+    let tones = ["None", "One", "Each Second"];
+    let win_conditions = [
+        "None",
+        "Most Laps in Fastest Time",
+        "First to X Laps",
+        "Fastest Lap",
+        "Fastest Consecutive Laps",
+        "Most Laps Only",
+        "Most Laps Only with Overtime",
+    ];
+    let start_behaviors = ["Hole Shot", "First Lap", "Staggered Start"];
+    let mut rows = vec![vec![
+        csv_cell("Name"),
+        csv_cell("Race Clock Mode"),
+        csv_cell("Timer Duration (seconds)"),
+        csv_cell("Minimum Start Delay"),
+        csv_cell("Maximum Start Delay"),
+        csv_cell("Staging Tones"),
+        csv_cell("First Crossing"),
+        csv_cell("Win Condition"),
+        csv_cell("Number of Laps to Win"),
+        csv_cell("Team Racing Mode"),
+    ]];
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, race_mode, race_time_sec, start_delay_min_ms, start_delay_max_ms, \
+             staging_delay_tones, start_behavior, win_condition, number_laps_win, team_racing_mode \
+             FROM race_format ORDER BY id",
+        )
+        .unwrap();
+    let mut r = stmt.query([]).unwrap();
+    while let Some(row) = r.next().unwrap() {
+        let unlimited = row.get::<_, i64>(1).unwrap() as usize;
+        let tones_idx = row.get::<_, i64>(5).unwrap() as usize;
+        let start_idx = row.get::<_, i64>(6).unwrap() as usize;
+        let win_idx = row.get::<_, i64>(7).unwrap() as usize;
+        rows.push(vec![
+            csv_cell(row.get::<_, String>(0).unwrap()),
+            csv_cell(
+                timer_modes
+                    .get(unlimited)
+                    .copied()
+                    .unwrap_or("Fixed Time")
+                    .to_string(),
+            ),
+            csv_cell(row.get::<_, i64>(2).unwrap()),
+            csv_cell(row.get::<_, i64>(3).unwrap()),
+            csv_cell(row.get::<_, i64>(4).unwrap()),
+            csv_cell(tones.get(tones_idx).copied().unwrap_or("None").to_string()),
+            csv_cell(
+                start_behaviors
+                    .get(start_idx)
+                    .copied()
+                    .unwrap_or("Hole Shot")
+                    .to_string(),
+            ),
+            csv_cell(
+                win_conditions
+                    .get(win_idx)
+                    .copied()
+                    .unwrap_or("None")
+                    .to_string(),
+            ),
+            csv_cell(row.get::<_, i64>(8).unwrap()),
+            csv_cell(row.get::<_, i64>(9).unwrap()),
+        ]);
+    }
+    rows
+}
+
+/// Results CSV: one section per saved race (newest last), built from the
+/// cached leaderboard in saved_race_meta.
+fn csv_results(conn: &Connection) -> Option<Vec<Vec<CsvCell>>> {
+    let mut races: Vec<(i64, i64, Option<i64>, String)> = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, heat_id, round_id, results FROM saved_race_meta \
+             WHERE results IS NOT NULL ORDER BY id",
+        )
+        .unwrap();
+    let mut r = stmt.query([]).unwrap();
+    while let Some(row) = r.next().unwrap() {
+        races.push((
+            row.get(0).unwrap(),
+            row.get(1).unwrap(),
+            row.get(2).unwrap(),
+            row.get(3).unwrap(),
+        ));
+    }
+    if races.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<Vec<CsvCell>> = Vec::new();
+    for (race_id, heat_id, round_id, results_json) in races {
+        let results: Value = serde_json::from_str(&results_json).unwrap_or(json!({}));
+        let heat_name: String = conn
+            .query_row(
+                "SELECT COALESCE(note, 'Heat ' || id) FROM heat WHERE id = ?1",
+                [heat_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| format!("Heat {}", heat_id));
+        rows.push(vec![csv_cell(format!(
+            "{} Round {}",
+            heat_name,
+            round_id.unwrap_or(0)
+        ))]);
+        rows.push(vec![
+            csv_cell("Seat"),
+            csv_cell("Rank"),
+            csv_cell("Pilot"),
+            csv_cell("Laps"),
+            csv_cell("Total"),
+            csv_cell("Avg."),
+            csv_cell("Fastest"),
+            csv_cell("Consecutive"),
+            csv_cell("Team"),
+        ]);
+        let board = results
+            .get("by_race_time")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for entry in board {
+            let consec = format!(
+                "{}/{}",
+                entry
+                    .get("consecutives_base")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                entry
+                    .get("consecutives")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+            );
+            rows.push(vec![
+                csv_cell(entry.get("node").and_then(|v| v.as_i64()).unwrap_or(0)),
+                csv_cell(
+                    entry
+                        .get("position")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                ),
+                csv_cell(
+                    entry
+                        .get("callsign")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                csv_cell(entry.get("laps").and_then(|v| v.as_i64()).unwrap_or(0)),
+                csv_cell(
+                    entry
+                        .get("total_time")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0),
+                ),
+                csv_cell(
+                    entry
+                        .get("average_lap")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0),
+                ),
+                csv_cell(
+                    entry
+                        .get("fastest_lap")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0),
+                ),
+                csv_cell(consec),
+                csv_cell(
+                    entry
+                        .get("team_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            ]);
+        }
+        rows.push(Vec::new());
+        let _ = race_id;
+    }
+    Some(rows)
+}
+
+/// Assembles a CSV export for the given exporter name
+/// (clean-var-name form: 'CSV__Friendly__Pilots' etc.).
+pub fn assemble_csv(conn: &Connection, exporter_name: &str) -> Option<String> {
+    let name = exporter_name.to_string();
+    if name == clean_var_name("CSV (Friendly) / Pilots") {
+        let rows = csv_pilots(conn);
+        let mut out = String::new();
+        for row in &rows {
+            out.push_str(&csv_row(row.as_slice()));
+            out.push('\n');
+        }
+        return Some(out);
+    }
+    let sections: Vec<(&str, Vec<Vec<CsvCell>>)> = match name.as_str() {
+        n if n == clean_var_name("CSV (Friendly) / Heats") => {
+            vec![("Heats", csv_heats(conn))]
+        }
+        n if n == clean_var_name("CSV (Friendly) / Classes") => {
+            vec![("Classes", csv_classes(conn))]
+        }
+        n if n == clean_var_name("CSV (Friendly) / Formats") => {
+            vec![("Formats", csv_formats(conn))]
+        }
+        n if n == clean_var_name("CSV (Friendly) / Results") => {
+            csv_results(conn).map(|rows| vec![("Results", rows)])?
+        }
+        n if n == clean_var_name("CSV (Friendly) / All") => {
+            let mut sections = vec![
+                ("Pilots", csv_pilots(conn)),
+                ("Heats", csv_heats(conn)),
+                ("Classes", csv_classes(conn)),
+                ("Formats", csv_formats(conn)),
+            ];
+            if let Some(rows) = csv_results(conn) {
+                sections.push(("Results", rows));
+            }
+            sections
+        }
+        _ => return None,
+    };
+    Some(csv_document(sections))
+}
 
 pub const IMPORTER_NAME: &str = "RotorHazard_4_0_JSON__Complete_"; // cleanVarName(label)
 

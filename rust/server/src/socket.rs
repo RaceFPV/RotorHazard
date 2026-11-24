@@ -1555,10 +1555,30 @@ fn register_export_import_handlers(socket: SocketRef, _state: SharedState) {
         let state = s.0.clone();
         let data = data.0;
         let Some(exporter) = data.get("exporter").and_then(|v| v.as_str()) else { return };
+        let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        if exporter.starts_with("CSV__") {
+            // CSV exporters produce plain text (rh_data_export_csv)
+            let result = db::with_db(&state, |conn| {
+                crate::export_import::assemble_csv(conn, exporter)
+            });
+            match result {
+                Some(csv_text) => {
+                    let filename = format!("RotorHazard Export {} {}.csv", stamp, exporter.replace("CSV__", "CSV / "));
+                    let _ = sock.emit("exported_data", &json!({
+                        "filename": filename,
+                        "encoding": "text/csv",
+                        "data": csv_text,
+                    }));
+                }
+                None => {
+                    crate::socket::emit_priority_message(&state, "Data export failed. (See log)", false);
+                }
+            }
+            return;
+        }
         let result = db::with_db(&state, |conn| crate::export_import::assemble(conn, exporter));
         match result {
             Some(payload) => {
-                let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
                 let filename = format!("RotorHazard Export {} {}.json", stamp, exporter);
                 let _ = sock.emit("exported_data", &json!({
                     "filename": filename,
