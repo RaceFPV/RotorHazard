@@ -8,7 +8,8 @@ contribs_raw = open("/tmp/contribs_str.txt").read().strip()
 contribs = contribs_raw.rstrip(",")
 
 # read the script
-path = "/home/racefpv/git/RotorHazard/rust/tools/upstream-sync.sh"
+import os
+path = os.path.join(os.path.dirname(__file__), "upstream-sync.sh")
 src = open(path).read()
 
 # replace the TRUSTED_CONTRIBUTORS default
