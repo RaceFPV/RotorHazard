@@ -1650,6 +1650,8 @@ def on_set_profile(data, emit_vals=True):
         RaceContext.interface.set_all_frequencies(freqs)
         RaceContext.calibration.hardware_set_all_enter_ats(enter_ats)
         RaceContext.calibration.hardware_set_all_exit_ats(exit_ats)
+        if RaceContext.cluster:
+            RaceContext.cluster.resendFrequencies()
 
     else:
         logger.warning('Invalid set_profile value: ' + str(profile_val))
@@ -3017,6 +3019,56 @@ def emit_lap_edited(action, data, node_index, lap_number):
     emit('lap_edited', {'action': action, 'pilot_id': pilot_id,
                         'node_index': node_index, 'lap_number': lap_number})
 
+@SOCKET_IO.on('auto_adjust_laps')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_auto_adjust_laps(data):
+    '''Applies Auto Adjust to a saved pilot run, or to a seat of the current race while running or stopped.'''
+    emit_laps_auto_adjusted('adjusted', data, RaceContext.calibration.auto_adjust_pilotrun,
+                            RaceContext.calibration.auto_adjust_seat)
+
+@SOCKET_IO.on('undo_auto_adjust')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_undo_auto_adjust(data):
+    '''Restores a saved pilot run or a seat of the current race to before its last Auto Adjust.'''
+    emit_laps_auto_adjusted('undone', data, RaceContext.calibration.undo_auto_adjust_pilotrun,
+                            RaceContext.calibration.undo_auto_adjust_seat)
+
+def emit_laps_auto_adjusted(action, data, pilotrun_fn, seat_fn):
+    '''Runs the pilot run or seat function and replies to the requesting client only; 'enter_at' is None when nothing was done.'''
+    pilotrace_id = data.get('pilotrace_id')
+    pilot_id = data.get('pilot_id')
+    node_index = None
+    if pilotrace_id is not None:
+        result, reason = pilotrun_fn(pilotrace_id)
+        pilotrace = RaceContext.rhdata.get_savedPilotRace(pilotrace_id)
+        if pilotrace:
+            node_index = pilotrace.node_index
+            pilot_id = pilotrace.pilot_id
+    else:
+        node_index = get_seat_index_from_data(data)
+        if not isinstance(node_index, int) or node_index < 0 or node_index >= RaceContext.race.num_nodes:
+            logger.warning("Bad parameter in 'emit_laps_auto_adjusted()':  node_index={0}".format(node_index))
+            result, reason = None, calibration.NoSuggestion.NOT_FOUND
+        else:
+            result, reason = seat_fn(node_index)
+            if pilot_id is None:
+                pilot_id = (RaceContext.race.node_pilots or {}).get(node_index)
+    emit('laps_auto_adjusted', {
+        'action': action,
+        'mode': result['mode'] if result else None,
+        'pilotrace_id': pilotrace_id,
+        'node_index': node_index,
+        'pilot_id': pilot_id,
+        'enter_at': result['enter_at'] if result else None,
+        'exit_at': result['exit_at'] if result else None,
+        'lap_count': result['lap_count'] if result else None,
+        'laps_added': result['laps_added'] if result else None,
+        'recovered_laps': result.get('recovered_laps', []) if result else [],
+        'reason': reason,
+    })
+
 @SOCKET_IO.on('simulate_lap')
 @requires_socketio_auth
 @catchLogExcWithDBWrapper
@@ -3417,7 +3469,8 @@ def get_callout_text(data):
 @catchLogExceptionsWrapper
 def imdtabler_update_freqs(data):
     ''' Update IMDTabler page with new frequencies list '''
-    RaceContext.rhui.emit_imdtabler_data(IMDTABLER_JAR_NAME, data['freq_list'].replace(',',' ').split())
+    if Use_imdtabler_jar_flag:  # only invoke the jar if it was found at startup
+        RaceContext.rhui.emit_imdtabler_data(IMDTABLER_JAR_NAME, data['freq_list'].replace(',',' ').split(), nobroadcast=True)
 
 @SOCKET_IO.on('clean_cache')
 @requires_socketio_auth
@@ -3441,13 +3494,15 @@ def on_retry_secondary(data):
 def on_suggest_calibration(data):
     '''Replies to the requester with suggested EnterAt/ExitAt for a saved pilot run, or a seat of the current race.'''
     pilotrace_id = data.get('pilotrace_id')
+    node = data.get('node')
     if pilotrace_id is not None:
         result, reason = RaceContext.calibration.suggest_for_pilotrun(pilotrace_id)
     else:
-        result, reason = RaceContext.calibration.suggest_for_seat(RHUtils.getNumericEntry(data, 'node', -1))
+        node = get_seat_index_from_data(data)
+        result, reason = RaceContext.calibration.suggest_for_seat(RHUtils.getNumericEntry({'node': node}, 'node', -1))
     emit('calibration_suggestion', {
         'pilotrace_id': pilotrace_id,
-        'node': data.get('node'),
+        'node': node,
         'enter_at': result['enter_at'] if result else None,
         'exit_at': result['exit_at'] if result else None,
         'lap_count': result['lap_count'] if result else None,
@@ -4959,7 +5014,7 @@ def rh_program_initialize(reg_endpoints_flag=True):
         # Import IMDTabler
         if os.path.exists(IMDTABLER_JAR_NAME):  # if 'IMDTabler.jar' is available
             try:
-                java_ver = subprocess.check_output('java -version', stderr=subprocess.STDOUT, shell=True).decode("utf-8")
+                java_ver = subprocess.check_output(['java', '-version'], stderr=subprocess.STDOUT).decode("utf-8")
                 logger.debug('Found installed: ' + java_ver.split('\n')[0].strip())
             except:
                 java_ver = None
@@ -4968,8 +5023,8 @@ def rh_program_initialize(reg_endpoints_flag=True):
             if java_ver:
                 try:
                     chk_imdtabler_ver = subprocess.check_output( \
-                        'java -jar ' + IMDTABLER_JAR_NAME + ' -v', \
-                        stderr=subprocess.STDOUT, shell=True).decode("utf-8").rstrip()
+                        ['java', '-jar', IMDTABLER_JAR_NAME, '-v'], \
+                        stderr=subprocess.STDOUT).decode("utf-8").rstrip()
                     global Use_imdtabler_jar_flag
                     Use_imdtabler_jar_flag = True  # indicate IMDTabler.jar available
                     logger.debug('Found installed: ' + chk_imdtabler_ver)

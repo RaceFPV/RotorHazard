@@ -30,6 +30,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+IMDTABLER_MAX_FREQS = 99  # upper bound on frequencies accepted for an IMDTabler query
+
+CONFIG_LOAD_ITEMS = {  # config values a page may fetch via a 'load_data' request
+    'GENERAL': ('SECONDARIES', 'SERIAL_PORTS'),
+    'SENSORS': None,  # None allows the whole section, which holds no secrets
+}
+
+RESERVED_CONFIG_SECTIONS = ('SECRETS',)  # never fetchable, whatever a plugin registers
+
 from FlaskAppObj import APP
 APP.app_context().push()
 
@@ -157,6 +166,7 @@ class RHUI():
         self._quickbuttons = []
         self._markdowns = []
         self._status_values = {}  # current values of status fields, by name; never stored
+        self._config_load_items = dict(CONFIG_LOAD_ITEMS)  # plugins add to this via "register_config_section"
         self._UI_server_messages = {}
 
     # Pilot Attributes
@@ -710,13 +720,30 @@ class RHUI():
         else:
             self._socket.emit('option_update', emit_payload)
 
+    def register_config_section(self, section, items=None):
+        '''Allows a config section to be fetched via a 'load_data' request.
+        :param items: Keys within the section that may be fetched, or None
+        for the whole section.
+        '''
+        if section in RESERVED_CONFIG_SECTIONS:
+            logger.warning('Refusing to register protected config section: {0}'.format(section))
+            return
+        self._config_load_items[section] = tuple(items) if items is not None else None
+
     def emit_config_update(self, settings, **params):
         config_vals = {}
         for section, items in settings.items():
-            if section == 'SENSORS':
-                config_vals['SENSORS'] = self._racecontext.serverconfig.get_section('SENSORS')
+            if section not in self._config_load_items:  # never serve a section such as SECRETS
+                logger.warning("Ignoring 'load_data' request for config section: {0}".format(section))
+                continue
+            allowed_items = self._config_load_items[section]
+            if allowed_items is None:  # whole section is allowed
+                config_vals[section] = self._racecontext.serverconfig.get_section(section)
             else:
                 for item in items:
+                    if item not in allowed_items:
+                        logger.warning("Ignoring 'load_data' request for config item: {0}/{1}".format(section, item))
+                        continue
                     if section not in config_vals:
                         config_vals[section] = {}
 
@@ -2054,19 +2081,35 @@ class RHUI():
         if callouts:
             emit('callouts', json.loads(callouts))
 
-    def emit_imdtabler_page(self, IMDTABLER_JAR_NAME, Use_imdtabler_jar_flag, **_params):
+    @staticmethod
+    def imdtabler_freq_args(fs_list):
+        '''Returns the given frequencies as a list of validated integer strings.'''
+        freq_args = []
+        for val in fs_list:
+            try:
+                freq_val = int(val)  # ignore any value that is not a number
+            except (TypeError, ValueError):
+                continue
+            if freq_val > 0:  # drop any zero or negative entries
+                freq_args.append(str(freq_val))
+        if len(freq_args) > IMDTABLER_MAX_FREQS:  # output size grows with the square of the count
+            logger.info('Limiting IMDTabler query from {0} to {1} frequencies'.format(len(freq_args), IMDTABLER_MAX_FREQS))
+            freq_args = freq_args[:IMDTABLER_MAX_FREQS]
+        return freq_args
+
+    def emit_imdtabler_page(self, IMDTABLER_JAR_NAME, Use_imdtabler_jar_flag, **params):
         '''Emits IMDTabler page, using current profile frequencies.'''
         if Use_imdtabler_jar_flag:
             try:                          # get IMDTabler version string
                 imdtabler_ver = subprocess.check_output( \
-                                    'java -jar ' + IMDTABLER_JAR_NAME + ' -v', shell=True).decode("utf-8").rstrip()
+                                    ['java', '-jar', IMDTABLER_JAR_NAME, '-v']).decode("utf-8").rstrip()
                 profile_freqs = json.loads(self._racecontext.race.profile.frequencies)
                 fi_list = list(OrderedDict.fromkeys(profile_freqs['f'][:self._racecontext.race.num_nodes]))  # remove duplicates
                 fs_list = []
                 for val in fi_list:  # convert list of integers to list of strings
                     if val > 0:      # drop any zero entries
                         fs_list.append(str(val))
-                self.emit_imdtabler_data(IMDTABLER_JAR_NAME, fs_list, imdtabler_ver)
+                self.emit_imdtabler_data(IMDTABLER_JAR_NAME, fs_list, imdtabler_ver, **params)
             except Exception:
                 logger.exception('emit_imdtabler_page exception')
 
@@ -2074,9 +2117,10 @@ class RHUI():
         '''Emits IMDTabler data for given frequencies.'''
         try:
             imdtabler_data = None
+            fs_list = self.imdtabler_freq_args(fs_list)  # only pass through validated frequency values
             if len(fs_list) > 2:  # if 3+ then invoke jar; get response
                 imdtabler_data = subprocess.check_output( \
-                            'java -jar ' + IMDTABLER_JAR_NAME + ' -t ' + ' '.join(fs_list), shell=True).decode("utf-8")
+                            ['java', '-jar', IMDTABLER_JAR_NAME, '-t'] + fs_list).decode("utf-8")
         except Exception:
             imdtabler_data = None
             logger.exception('emit_imdtabler_data exception')
@@ -2102,7 +2146,7 @@ class RHUI():
                     fs_list.append(str(val))
             if len(fs_list) > 2:
                 imd_val = subprocess.check_output(  # invoke jar; get response
-                            'java -jar ' + IMDTABLER_JAR_NAME + ' -r ' + ' '.join(fs_list), shell=True).decode("utf-8").rstrip()
+                            ['java', '-jar', IMDTABLER_JAR_NAME, '-r'] + fs_list).decode("utf-8").rstrip()
         except Exception:
             imd_val = None
             logger.exception('emit_imdtabler_rating exception')

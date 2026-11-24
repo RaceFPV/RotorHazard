@@ -5,7 +5,7 @@ from Database import LapSource
 import util.DatabaseReader as DatabaseReader
 
 API_VERSION_MAJOR = 1
-API_VERSION_MINOR = 12
+API_VERSION_MINOR = 13
 
 import dataclasses
 import json
@@ -117,6 +117,10 @@ class UserInterfaceAPI():
 
     def clear_messages(self):
         self._racecontext.rhui.emit_clear_priority_messages()
+
+    # Config
+    def register_config_section(self, section, items=None):
+        self._racecontext.rhui.register_config_section(section, items)
 
     # Socket
     def socket_listen(self, message, handler, requires_auth=False, client_context=False):
@@ -905,6 +909,14 @@ class DatabaseAPI():
             return None
         return {'enter_at': result['enter_at'], 'exit_at': result['exit_at'], 'lap_count': result['lap_count']}
 
+    @callWithDatabaseWrapper
+    def pilotrun_auto_adjust(self, pilotrace_id):
+        return self._racecontext.calibration.auto_adjust_pilotrun(pilotrace_id)[0]
+
+    @callWithDatabaseWrapper
+    def pilotrun_auto_adjust_undo(self, pilotrace_id):
+        return bool(self._racecontext.calibration.undo_auto_adjust_pilotrun(pilotrace_id)[0])
+
     # Race -> Pilot Run -> Laps
 
     @property
@@ -1309,6 +1321,24 @@ class RaceAPI():
                 'deleted': lap.get('deleted', False),
             } for lap in laps],
         })
+
+    def lap_insert(self, seat_index, lap_time_stamp, source=LapSource.API, peak=None):
+        return self._racecontext.race.insert_lap(seat_index, lap_time_stamp, source, peak_rssi=peak)
+
+    @callWithDatabaseWrapper
+    def seat_suggest_calibration(self, seat_index):
+        result = self._racecontext.calibration.suggest_for_seat(seat_index)[0]
+        if not result:
+            return None
+        return {'enter_at': result['enter_at'], 'exit_at': result['exit_at'], 'lap_count': result['lap_count']}
+
+    @callWithDatabaseWrapper
+    def seat_auto_adjust(self, seat_index):
+        return self._racecontext.calibration.auto_adjust_seat(seat_index)[0]
+
+    @callWithDatabaseWrapper
+    def seat_auto_adjust_undo(self, seat_index):
+        return bool(self._racecontext.calibration.undo_auto_adjust_seat(seat_index)[0])
 
     @property
     def last_race(self):
