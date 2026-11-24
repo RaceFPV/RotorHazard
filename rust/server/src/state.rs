@@ -212,6 +212,8 @@ pub struct AppState {
     /// Active mock signal provider (name + state), per MockSignal.py
     pub mock_provider: Mutex<(String, crate::mock::MockProvider)>,
     pub hardware: Mutex<Option<crate::hardware::HardwareInterface>>,
+    /// LED event manager (led_event_manager.py port)
+    pub led_manager: crate::led::LedManager,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
 }

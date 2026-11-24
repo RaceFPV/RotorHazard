@@ -106,6 +106,7 @@ pub struct CalPass {
     pub ok: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CalibrationSuggestion {
     pub enter_at: i64,
@@ -782,7 +783,7 @@ fn suggest_from(
                 }),
             }
         }
-        let mut wide: Vec<Joined> = joined
+        let wide: Vec<Joined> = joined
             .into_iter()
             .filter(|p| {
                 (p.high - p.low) as f64
@@ -958,7 +959,7 @@ fn suggest_from(
                 base = stamps_of(laps);
                 let steady = |p: &Plateau| -> bool {
                     let ref_stamps = stamps_of(&scan[&p.low]);
-                    ((p.low..=p.high).all(|e| {
+                    (p.low..=p.high).all(|e| {
                         let s = stamps_of(&scan[&e]);
                         s.len() == ref_stamps.len()
                             && s.iter().all(|st| {
@@ -966,7 +967,7 @@ fn suggest_from(
                                     .iter()
                                     .any(|r| (st - r).abs() <= AUTO_CAL_HOLESHOT_MATCH_S * 1000.0)
                             })
-                    }))
+                    })
                 };
                 if gained
                     && cadence != 0.0
@@ -1553,7 +1554,6 @@ pub fn suggest_for_seat(
     state: &crate::state::SharedState,
     seat_index: i64,
 ) -> (Option<CalibrationSuggestion>, Option<NoSuggestion>) {
-    use crate::state::*;
     if seat_index < 0 || seat_index >= state.num_nodes as i64 {
         return (None, Some(NoSuggestion::NotFound));
     }
@@ -1714,8 +1714,6 @@ pub fn find_best_calibration_values(
     state: &crate::state::SharedState,
     seat_index: usize,
 ) -> (i64, i64) {
-    use crate::state::*;
-
     // the node's current levels and frequency
     let (cur_enter, cur_exit, node_freq) = current_levels(state, seat_index);
 
@@ -1883,7 +1881,6 @@ fn current_levels(state: &crate::state::SharedState, seat_index: usize) -> (i64,
 /// Apply best tuning values to all nodes (auto_calibrate in Python):
 /// triggered after a marshal-page lap resave when calibrationMode is on.
 pub fn auto_calibrate(state: &crate::state::SharedState) {
-    use crate::state::*;
     if state.race.lock().unwrap().current_heat.is_none() {
         tracing::debug!("Skipping auto calibration; server in practice mode");
         return;

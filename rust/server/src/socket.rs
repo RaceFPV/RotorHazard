@@ -2035,6 +2035,12 @@ pub fn emit_priority_message(state: &SharedState, message: &str, interrupt: bool
         "priority_message",
         json!({"message": message, "interrupt": interrupt, "caller": Value::Null}),
     );
+    state
+        .led_manager
+        .trigger(
+            if interrupt { "messageInterrupt" } else { "messageStandard" },
+            &json!({"message": message}),
+        );
 }
 
 

@@ -10,6 +10,7 @@
 use crate::race as race_ops;
 use crate::serial::{self, SerialNode};
 use crate::state::*;
+use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 
@@ -198,6 +199,11 @@ impl HardwareInterface {
 
         self.last_rssi[idx] = stats.rssi_val;
         let cross = stats.crossing_flag.unwrap_or(false);
+        if cross != self.last_crossing[idx] {
+            // crossing status changed: LED gate enter/exit events
+            let event = if cross { "crossingEnter" } else { "crossingExit" };
+            state.led_manager.trigger(event, &json!({"node_index": idx}));
+        }
         self.last_crossing[idx] = cross;
 
         // new lap detected: register it (process_updates in
@@ -272,12 +278,14 @@ impl HardwareInterface {
             self.server_crossing_active[idx] = true;
             self.server_crossing_start[idx] = now;
             self.last_crossing[idx] = true;
+            state.led_manager.trigger("crossingEnter", &json!({"node_index": idx}));
         } else if was_crossing && peak < exit_at {
             self.server_crossing_active[idx] = false;
             self.last_crossing[idx] = false;
             if racing {
                 race_ops::register_lap_at(state, idx, now);
             }
+            state.led_manager.trigger("crossingExit", &json!({"node_index": idx}));
         }
 
         let rssi = if self.server_crossing_active[idx] {

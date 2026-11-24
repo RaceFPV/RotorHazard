@@ -11,6 +11,7 @@ mod calibration;
 mod hardware;
 mod db;
 mod export_import;
+mod led;
 mod mock;
 mod pages;
 mod serial;
@@ -23,7 +24,7 @@ mod state;
 mod util;
 
 use axum::extract::State;
-use serde_json::json;
+use serde_json::{json, Value};
 use socketioxide::SocketIo;
 use state::{AppState, ServerInfo, SharedState};
 use std::sync::{Arc, Mutex};
@@ -204,6 +205,18 @@ async fn main() {
     tracing::info!("assets: templates and static are embedded (debug builds read the source tree)");
 
 
+    // LED manager: strip config + saved effect assignments (config.json LED)
+    let led_config: Value = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or(json!({}));
+    let led_manager = crate::led::LedManager::new(&led_config);
+    led_manager.apply_assignments(
+        led_config
+            .get("LED")
+            .and_then(|l| l.get("ledEffects")),
+    );
+
     let state: SharedState = Arc::new(AppState {
         db: Arc::new(Mutex::new(conn)),
         race: Arc::new(Mutex::new(state::RaceState::new(num_nodes))),
@@ -225,6 +238,7 @@ async fn main() {
             crate::mock::MockProvider::NoSignal,
         )),
         hardware: Mutex::new(None),
+        led_manager,
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
 
@@ -269,6 +283,9 @@ async fn main() {
             }
         });
     }
+
+    // startup LED effect (init_LED_effects wiring)
+    state.led_manager.trigger("startup", &json!({}));
 
     pages::set_state(state.clone());
 

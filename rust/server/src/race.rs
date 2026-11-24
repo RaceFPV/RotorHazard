@@ -72,6 +72,15 @@ pub fn stage_race(state: &SharedState) {
     }
 
     emit_race_status(state);
+    // LED staging effect with the staging-tone timing (stagingTrigger args)
+    state.led_manager.trigger(
+        "raceStage",
+        &json!({
+            "pi_staging_at_s": monotonic() + tones as f64,
+            "pi_starts_at_s": monotonic() + tones as f64 + delay_ms as f64 / 1000.0,
+            "staging_tones": tones,
+        }),
+    );
 
     let state = state.clone();
     // staging tones ring at 1-second intervals, then a blocking wait to start
@@ -98,6 +107,8 @@ pub fn stage_race(state: &SharedState) {
             }
         }
         emit_race_status(&state);
+        state.led_manager.trigger("raceStart", &json!({}));
+        state.led_manager.trigger_idle(RACE_STATUS_RACING);
     });
 
 }
@@ -139,6 +150,7 @@ pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
         payloads::build_current_laps(conn, &race)
     });
     broadcast(&state, "current_laps", laps_payload);
+    state.led_manager.trigger("raceLapRecorded", &json!({"node_index": node_index}));
 }
 
 /// Stops the race (registers no more laps) and moves to DONE.
@@ -151,6 +163,8 @@ pub fn stop_race(state: &SharedState) {
         }
     }
     emit_race_status(state);
+    state.led_manager.trigger("raceStop", &json!({}));
+    state.led_manager.trigger_idle(RACE_STATUS_DONE);
 }
 
 /// Saves the current race to the database and returns to READY.
@@ -360,6 +374,8 @@ pub fn save_laps(state: &SharedState) -> bool {
         emit_race_status(state);
         // race list broadcast lives in socket.rs to reuse its builder
         crate::socket::broadcast_race_list(state);
+        state.led_manager.trigger("lapsClear", &json!({}));
+        state.led_manager.trigger_idle(RACE_STATUS_READY);
     }
     saved
 }
@@ -372,6 +388,8 @@ pub fn discard_laps(state: &SharedState) {
         race.race_status = RACE_STATUS_READY;
     }
     emit_race_status(state);
+    state.led_manager.trigger("lapsClear", &json!({}));
+    state.led_manager.trigger_idle(RACE_STATUS_READY);
 }
 
 /// 'YYYY-MM-DD HH:MM:SS.mmm' of the current instant, matching
