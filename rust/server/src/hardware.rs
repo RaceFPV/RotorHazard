@@ -39,7 +39,7 @@ impl HardwareInterface {
         }
     }
 
-    pub fn discover(&mut self) {
+    pub fn discover(&mut self, cache_path: Option<&std::path::Path>) {
         let port_paths: Vec<String> = self
             .port_names
             .iter()
@@ -51,7 +51,7 @@ impl HardwareInterface {
                 }
             })
             .collect();
-        self.nodes = serial::discover_nodes(&port_paths)
+        self.nodes = serial::discover_nodes(&port_paths, cache_path)
             .into_iter()
             .map(Arc::new)
             .collect();

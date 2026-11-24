@@ -172,7 +172,8 @@ async fn main() {
     } else {
         tracing::info!("Discovering serial nodes on: {:?}", serial_ports);
         let mut hw = crate::hardware::HardwareInterface::new(&serial_ports);
-        hw.discover();
+        hw.discover(Some(&std::path::Path::new(&data_dir)
+            .join(crate::serial::baud_cache_file_name())));
         let found = hw.num_nodes();
         tracing::info!("Found {} serial node(s)", found);
         if found > 0 { Some(hw) } else { None }

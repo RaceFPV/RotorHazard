@@ -433,15 +433,63 @@ fn probe_api_level(node: &SerialNode) -> Option<u16> {
     }
 }
 
+// -- baud-rate cache (Rust-specific convenience; lives in the data dir
+// alongside, not inside, the Python-compatible config.json) --
+
+pub fn baud_cache_file_name() -> &'static str {
+    "serial_bauds.json"
+}
+
+pub fn load_baud_cache(path: &std::path::Path) -> std::collections::HashMap<String, u32> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_baud_cache(path: &std::path::Path, map: &std::collections::HashMap<String, u32>) {
+    if let Ok(text) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Normalizes a configured port name to the cache key ("/dev/ttyAMA0"
+/// and "ttyAMA0" map to the same entry).
+fn port_cache_key(port: &str) -> String {
+    port.trim_start_matches("/dev/").to_string()
+}
+
 /// Discovers RH serial nodes on the given port paths, mirroring
 /// serial_node.py discover(): tries each baud rate, validates the
 /// revision-code verification byte, and expands multi-node processors
 /// into per-slot nodes.
-pub fn discover_nodes(port_paths: &[String]) -> Vec<SerialNode> {
+///
+/// When `cache_path` is given, the last successful baud per port is
+/// persisted there and tried first on the next discovery, falling back
+/// to the standard SERIAL_BAUD_RATES order on failure.
+pub fn discover_nodes(
+    port_paths: &[String],
+    cache_path: Option<&std::path::Path>,
+) -> Vec<SerialNode> {
+    let mut baud_cache: std::collections::HashMap<String, u32> = cache_path
+        .map(load_baud_cache)
+        .unwrap_or_default();
+    let mut cache_dirty = false;
     let mut nodes = Vec::new();
     for port_path in port_paths {
+        // preferred baud first (last successful), then the standard order
+        let mut baud_order: Vec<u32> = Vec::with_capacity(SERIAL_BAUD_RATES.len() + 1);
+        let preferred = baud_cache.get(&port_cache_key(port_path)).copied();
+        if let Some(b) = preferred {
+            baud_order.push(b);
+        }
+        for b in SERIAL_BAUD_RATES {
+            if Some(b) != preferred {
+                baud_order.push(b);
+            }
+        }
         let mut node_opt: Option<SerialNode> = None;
-        'bauds: for baud in SERIAL_BAUD_RATES {
+        'bauds: for baud in baud_order {
             for attempt in 0..4u32 {
                 let sp = match open_port(port_path, baud) {
                     Some(sp) => sp,
@@ -466,7 +514,7 @@ pub fn discover_nodes(port_paths: &[String]) -> Vec<SerialNode> {
                     serial: Arc::new(Mutex::new(sp)),
                 };
                 {
-                    let mut ser = node.serial.lock().unwrap();
+                    let ser = node.serial.lock().unwrap();
                     let _ = ser.clear(serialport::ClearBuffer::Input);
                 }
                 let api_level = match probe_api_level(&node) {
@@ -514,6 +562,8 @@ pub fn discover_nodes(port_paths: &[String]) -> Vec<SerialNode> {
                         "Serial node (with zero modules) found at {} (baud {}, API {}, fw {})",
                         port_path, baud, api_level, base.firmware_version
                     );
+                    baud_cache.insert(port_cache_key(port_path), baud);
+                    cache_dirty = true;
                     break 'bauds; // nothing to race on; do not add
                 }
 
@@ -544,6 +594,8 @@ pub fn discover_nodes(port_paths: &[String]) -> Vec<SerialNode> {
                 }
                 node_opt = Some(base.clone());
                 drop(base);
+                baud_cache.insert(port_cache_key(port_path), baud);
+                cache_dirty = true;
                 break 'bauds;
             }
         }
@@ -551,5 +603,120 @@ pub fn discover_nodes(port_paths: &[String]) -> Vec<SerialNode> {
             warn!("Unable to fetch revision code for serial node at \"{}\"", port_path);
         }
     }
+    if cache_dirty {
+        if let Some(p) = cache_path {
+            save_baud_cache(p, &baud_cache);
+        }
+    }
     nodes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(payload: &[u8]) -> Vec<u8> {
+        // payload + valid checksum, as the node would send it
+        let mut v = payload.to_vec();
+        v.push(calculate_checksum(payload));
+        v
+    }
+
+    #[test]
+    fn checksum_roundtrip() {
+        let data = [0x25u8, 0x24];
+        assert_eq!(calculate_checksum(&data), 0x49);
+        let mut blk = block(&data);
+        assert!(validate_checksum(&blk));
+        blk[1] ^= 0xFF; // corrupt payload
+        assert!(!validate_checksum(&blk));
+    }
+
+    #[test]
+    fn checksum_overflow_wraps_like_python() {
+        // sum of many 0xFF bytes must wrap mod 256 (matches Python sum() & 0xFF)
+        let data = [0xFFu8; 300];
+        assert_eq!(calculate_checksum(&data), (300u64 * 255 & 0xFF) as u8);
+    }
+
+    #[test]
+    fn revision_code_verification() {
+        // api_level 36 with 0x25 verification byte (real NuclearHazard reply)
+        let node_data = [0x25u8, 0x24];
+        let rev_val = unpack_16(&node_data);
+        assert_eq!(rev_val >> 8, 0x25);
+        assert_eq!(rev_val & 0xFF, 36);
+        // bad verification byte must be rejected
+        assert_ne!((0x24u16 << 8 | 0x24) >> 8, 0x25);
+    }
+
+    #[test]
+    fn decode_lap_stats_api36_with_peak() {
+        // 17-byte payload (api>=32: PASS_STATS + EXTREMUMS concatenated;
+        // offsets follow the api>=21 table with 2-byte ms_val):
+        // lap_id=1, ms=0x0102, rssi=200, nodePeak=220, passPeak=210,
+        // loopTime=0x0010, flags=PEAK|CROSSING, passNadir=90,
+        // nodeNadir=50, peakRssi=230, peakFirst=0x00FA,
+        // nadirRssi=40, nadirFirst=0x0064
+        let d: Vec<u8> = vec![1, 0x01, 0x02, 200, 220, 210, 0x00, 0x10,
+            LAPSTATS_FLAG_CROSSING | LAPSTATS_FLAG_PEAK, 90, 50, 230, 0x00, 0xFA, 40, 0x00, 0x64];
+        assert_eq!(d.len(), 17);
+        let stats = decode_lap_stats(36, &d).expect("decodes");
+        assert_eq!(stats.lap_id, 1);
+        assert_eq!(stats.ms_val, 0x0102);
+        assert_eq!(stats.rssi_val, 200);
+        assert_eq!(stats.node_peak_rssi, 220);
+        assert_eq!(stats.pass_peak_rssi, 210);
+        assert_eq!(stats.loop_time, 0x10);
+        assert_eq!(stats.crossing_flag, Some(true));
+        assert_eq!(stats.pass_nadir_rssi, 90);
+        assert_eq!(stats.node_nadir_rssi, 50);
+        assert_eq!(stats.pn_peak_rssi, 230);
+        assert_eq!(stats.pn_peak_first_ms, 0xFA);
+        assert_eq!(stats.pn_nadir_rssi, 0); // PEAK flag set: nadir history not reported
+    }
+
+    #[test]
+    fn decode_lap_stats_rejects_invalid_rssi() {
+        // rssi byte 0 -> Python rejects the reading (fields stay default)
+        let d = vec![0u8; 16];
+        let stats = decode_lap_stats(36, &d).expect("decodes");
+        assert_eq!(stats.rssi_val, 0);
+        assert_eq!(stats.node_peak_rssi, 0);
+        assert_eq!(stats.crossing_flag, None);
+    }
+
+    #[test]
+    fn decode_lap_stats_legacy_api12_uses_old_offsets() {
+        // api<13 offsets: lap_id=0, ms u32@1, rssi=5, nodePeak=7,
+        // passPeak=9, loopTime=11, flags=15, passNadir=16, nodeNadir=18,
+        // peak=20, peakFirst=22, nadir=24, nadirFirst=26 (28 bytes)
+        let mut d = vec![0u8; 28];
+        d[0] = 3;
+        d[1..5].copy_from_slice(&[0, 0, 0, 10]); // ms_val u32
+        d[5] = 150; // rssi
+        d[7] = 170; // nodePeak
+        d[9] = 160; // passPeak
+        d[11] = 0x00; d[12] = 0x14; // loopTime u16 = 20
+        d[15] = LAPSTATS_FLAG_CROSSING; // flags
+        d[16] = 80; // passNadir
+        d[18] = 40; // nodeNadir
+        let stats = decode_lap_stats(12, &d).expect("decodes");
+        assert_eq!(stats.lap_id, 3);
+        assert_eq!(stats.ms_val, 10);
+        assert_eq!(stats.rssi_val, 150);
+        assert_eq!(stats.node_peak_rssi, 170);
+        assert_eq!(stats.pass_peak_rssi, 160);
+        assert_eq!(stats.loop_time, 20);
+        assert_eq!(stats.crossing_flag, Some(true));
+        assert_eq!(stats.pass_nadir_rssi, 80);
+        // node nadir is only reported on API >= 13 (matches Python)
+        assert_eq!(stats.node_nadir_rssi, 0);
+    }
+
+    #[test]
+    fn port_cache_key_normalizes() {
+        assert_eq!(port_cache_key("/dev/ttyAMA0"), "ttyAMA0");
+        assert_eq!(port_cache_key("ttyAMA0"), "ttyAMA0");
+    }
 }
