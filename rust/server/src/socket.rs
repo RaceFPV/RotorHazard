@@ -2282,10 +2282,23 @@ pub fn mock_update_tick(state: &SharedState) {
             .collect()
     });
 
+    // real hardware covers the leading node indices; the mock system
+    // must not fight it for those seats
+    let hw_node_count = state
+        .hardware
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|hw| hw.num_nodes())
+        .unwrap_or(0);
+
     {
         let mut holder = state.mock_provider.lock().unwrap();
         let mut mock = state.mock.lock().unwrap();
         for (idx, node) in mock.iter_mut().enumerate() {
+            if idx < hw_node_count {
+                continue; // driven by the hardware update loop
+            }
             let freq_active = freq_active.get(idx).copied().unwrap_or(false);
             if !freq_active {
                 node.current_rssi = 0;

@@ -218,6 +218,27 @@ pub fn read_freq_arrays(conn: &Connection, profile_id: i64) -> (Vec<Value>, Vec<
     (get("b"), get("c"), get("f"))
 }
 
+/// Sets one node's frequency in the given profile, deriving band/channel
+/// from the frequency table (null for unknown frequencies).
+pub fn set_node_frequency_at(conn: &Connection, profile_id: i64, node_index: usize, freq: i64) {
+    let (mut b, mut c, mut f) = read_freq_arrays(conn, profile_id);
+    while b.len() <= node_index { b.push(json!(null)); }
+    while c.len() <= node_index { c.push(json!(null)); }
+    while f.len() <= node_index { f.push(json!(0)); }
+    f[node_index] = json!(freq);
+    match crate::util::band_channel_for(freq as u16) {
+        Some((band, chan)) => {
+            b[node_index] = json!(band);
+            c[node_index] = json!(chan as i64);
+        }
+        None => {
+            b[node_index] = json!(null);
+            c[node_index] = json!(null);
+        }
+    }
+    write_freq_arrays(conn, profile_id, &b, &c, &f);
+}
+
 /// Writes a profile frequency table.
 pub fn write_freq_arrays(
     conn: &Connection,

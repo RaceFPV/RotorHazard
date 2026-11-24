@@ -19,6 +19,7 @@ pub struct HardwareInterface {
     pub last_rssi: Vec<i64>,
     pub last_crossing: Vec<bool>,
     pub last_peak: Vec<i64>,
+    pub last_lap_id: Vec<i32>,
     pub server_crossing_active: Vec<bool>,
     pub server_crossing_start: Vec<f64>,
 }
@@ -32,6 +33,7 @@ impl HardwareInterface {
             last_rssi: Vec::new(),
             last_crossing: Vec::new(),
             last_peak: Vec::new(),
+            last_lap_id: Vec::new(),
             server_crossing_active: Vec::new(),
             server_crossing_start: Vec::new(),
         }
@@ -54,10 +56,13 @@ impl HardwareInterface {
             .map(Arc::new)
             .collect();
         let n = self.nodes.len();
-        self.lap_stats_supported = vec![false; n];
+        // nodes with API level >= 13 do on-board crossing detection and
+        // report full lap stats; older nodes need server-side detection
+        self.lap_stats_supported = self.nodes.iter().map(|nd| nd.api_level >= 13).collect();
         self.last_rssi = vec![0; n];
         self.last_crossing = vec![false; n];
         self.last_peak = vec![0; n];
+        self.last_lap_id = vec![-1; n];
         self.server_crossing_active = vec![false; n];
         self.server_crossing_start = vec![0.0; n];
     }
@@ -114,25 +119,35 @@ impl HardwareInterface {
                 // Full LAP_STATS node (STM32 etc.) — crossing detection
                 // done on-board, reported in the block read
                 if let Some(stats) = node.read_lap_stats() {
-                    let was_crossing = self.last_crossing[idx];
                     self.last_rssi[idx] = stats.rssi_val;
-                    self.last_crossing[idx] = stats.crossing_flag;
+                    let cross = stats.crossing_flag.unwrap_or(false);
+                    self.last_crossing[idx] = cross;
+
+                    // new lap detected: register it (process_updates in
+                    // BaseHardwareInterface.py); the first read only
+                    // syncs the lap counter, it does not record a pass
+                    if stats.lap_id != self.last_lap_id[idx] {
+                        let prev_lap_id = self.last_lap_id[idx];
+                        self.last_lap_id[idx] = stats.lap_id;
+                        if prev_lap_id != -1 && racing {
+                            // lap timestamp is node-relative: now minus ms_val
+                            let lap_time = now - (stats.ms_val as f64 / 1000.0);
+                            race_ops::register_lap_at(state, idx, lap_time.max(0.0));
+                        }
+                    }
 
                     {
                         let mut mock = state.mock.lock().unwrap();
                         if let Some(m) = mock.get_mut(idx) {
                             m.current_rssi = stats.rssi_val;
-                            m.crossing_flag = stats.crossing_flag;
+                            m.crossing_flag = cross;
                             m.node_peak_rssi = stats.node_peak_rssi;
                             m.node_nadir_rssi = stats.node_nadir_rssi;
                             m.pass_peak_rssi = stats.pass_peak_rssi;
                             m.pass_nadir_rssi = stats.pass_nadir_rssi;
+                            m.loop_time = stats.loop_time.max(1);
                             m.debug_pass_count += 1;
                         }
-                    }
-
-                    if was_crossing && !stats.crossing_flag && racing {
-                        race_ops::register_lap_at(state, idx, now);
                     }
                 }
             } else {

@@ -151,15 +151,47 @@ async fn main() {
     crate::phase3::set_languages(crate::assets::load_languages());
 
     let conn = db::open_or_init(&data_dir).expect("failed to open/init database");
-    let num_nodes: usize = std::env::var("RH_NODES")
+
+    // serial ports come from the config file (GENERAL.SERIAL_PORTS)
+    let serial_ports: Vec<String> = std::fs::read_to_string(&config_path)
         .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-        .max(8); // mock-node count, mirroring the Python test configuration
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|cfg| {
+            cfg.get("GENERAL")
+                .and_then(|g| g.get("SERIAL_PORTS"))
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+
+    // single discovery pass: real hardware replaces the mock system
+    let hardware_opt = if serial_ports.is_empty() {
+        None
+    } else {
+        tracing::info!("Discovering serial nodes on: {:?}", serial_ports);
+        let mut hw = crate::hardware::HardwareInterface::new(&serial_ports);
+        hw.discover();
+        let found = hw.num_nodes();
+        tracing::info!("Found {} serial node(s)", found);
+        if found > 0 { Some(hw) } else { None }
+    };
+
+    // node count: serial hardware count if found, else RH_NODES (min 8)
+    let num_nodes: usize = match &hardware_opt {
+        Some(hw) => hw.num_nodes(),
+        None => std::env::var("RH_NODES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+            .max(8),
+    };
 
     // mock mode: give every node a frequency so no seat sits disabled.
     // Missing entries are filled with unused Raceband channels in order.
-    if db::autofill_mock_frequencies(&conn, num_nodes) {
+    // (skipped when real hardware drives the node count)
+    if hardware_opt.is_none() && db::autofill_mock_frequencies(&conn, num_nodes) {
         tracing::info!("Auto-assigned frequencies to disabled mock nodes");
     }
 
@@ -199,34 +231,41 @@ async fn main() {
         .build_layer();
     state.io.set(io.clone()).expect("io set once");
 
-    // discover real serial nodes when SERIAL_PORTS is configured
-    {
-        let ports: Vec<String> = {
-            if let Ok(text) = std::fs::read_to_string(&config_path) {
-                if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&text) {
-                    cfg.get("GENERAL")
-                        .and_then(|g| g.get("SERIAL_PORTS"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
+    // install the discovered hardware interface
+    if let Some(hw) = hardware_opt {
+        // sync frequencies between the database profile and the nodes:
+        // DB wins when set, otherwise adopt the node's own frequency
+        let db_freqs = db::with_db(&state, |conn| {
+            let pid = db::current_profile_id(conn);
+            db::profile_frequencies(conn, pid)
+        });
+        {
+            for (i, node) in hw.nodes.iter().enumerate() {
+                let dbf = db_freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0);
+                if dbf != 0 && dbf != node.frequency as i64 {
+                    hw.set_frequency(i, dbf as u16);
+                } else if dbf == 0 && node.frequency != 0 {
+                    db::with_db(&state, |conn| {
+                        let pid = db::current_profile_id(conn);
+                        db::set_node_frequency_at(conn, pid, i, node.frequency as i64)
+                    });
                 }
-            } else {
-                Vec::new()
             }
-        };
-        if !ports.is_empty() {
-            tracing::info!("Discovering serial nodes on: {:?}", ports);
-            let mut hw = crate::hardware::HardwareInterface::new(&ports);
-            hw.discover();
-            tracing::info!("Found {} serial node(s)", hw.num_nodes());
-            *state.hardware.lock().unwrap() = Some(hw);
         }
+        *state.hardware.lock().unwrap() = Some(hw);
+
+        // hardware update loop: poll lap stats / RSSI from real nodes at
+        // 50 Hz (RHInterface.update loop)
+        let hw_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                let now = state::monotonic();
+                if let Some(hw) = hw_state.hardware.lock().unwrap().as_mut() {
+                    hw.update(&hw_state, now);
+                }
+            }
+        });
     }
 
     pages::set_state(state.clone());
