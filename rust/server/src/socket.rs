@@ -1058,6 +1058,10 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
                 &format!("Race times adjusted for: Heat {} Round {} / {}", heat_id, round_id, callsign),
                 false,
             );
+            // run adaptive calibration (Python: Evt.LAPS_RESAVE path)
+            if crate::db::get_config_number(&state, "TIMING", "calibrationMode", 0.0) != 0.0 {
+                crate::calibration::auto_calibrate(&state);
+            }
         } else {
             tracing::warn!("resave_laps: unable to resave pilotrace_id={}", pilotrace_id);
         }
@@ -2286,13 +2290,16 @@ pub fn mock_update_tick(state: &SharedState) {
     // instantly; the config file is only read once at startup
 
     let now = monotonic();
-    let racing_start = {
+    let (racing_start, race_status) = {
         let race = state.race.lock().unwrap();
-        if race.race_status == RACE_STATUS_RACING {
-            Some(race.start_time_monotonic)
-        } else {
-            None
-        }
+        (
+            if race.race_status == RACE_STATUS_RACING {
+                Some(race.start_time_monotonic)
+            } else {
+                None
+            },
+            race.race_status,
+        )
     };
 
     let mut completed: Vec<usize> = Vec::new();
@@ -2347,6 +2354,23 @@ pub fn mock_update_tick(state: &SharedState) {
             node.pass_nadir_rssi = sample.pass_nadir_rssi;
             node.loop_time = sample.loop_time;
             node.debug_pass_count += 1;
+            // record the reading's peak/nadir history events
+            // (process_history: none recorded once the race is DONE)
+            if sample.history_flag && race_status != RACE_STATUS_DONE {
+                let readtime = sample.read_time.unwrap_or(now);
+                node.history_add_pn(
+                    readtime,
+                    sample.peak_rssi,
+                    sample.peak_first_time.max(0) as u16,
+                    sample.peak_last_time.max(0) as u16,
+                    sample.nadir_rssi,
+                    sample.nadir_first_time.max(0) as u16,
+                    sample.nadir_last_time.max(0) as u16,
+                );
+            }
+            if race_status == RACE_STATUS_READY {
+                node.prune_history(now);
+            }
 
             // a completed crossing (flag drop) or a provider lap_id
             // advance during a running race registers a lap

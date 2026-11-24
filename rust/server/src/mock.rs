@@ -20,6 +20,16 @@ pub struct SignalSample {
     pub node_nadir_rssi: i64,
     pub loop_time: i64,
     pub history_flag: bool,
+    /// peak and nadir since the previous reading, recorded as RSSI
+    /// history; times are ms before this reading (MockSignal.py)
+    pub peak_rssi: i64,
+    pub peak_first_time: i64,
+    pub peak_last_time: i64,
+    pub nadir_rssi: i64,
+    pub nadir_first_time: i64,
+    pub nadir_last_time: i64,
+    /// monotonic time of the reading, when not the time it is read
+    pub read_time: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +95,13 @@ pub fn parse_csv_line(line: &str) -> Option<ReplayRecord> {
         node_nadir_rssi: num(9)?,
         loop_time: num(6)?,
         history_flag: true,
+        peak_rssi: num(10)?,
+        peak_first_time: num(11)?,
+        peak_last_time: num(12)?,
+        nadir_rssi: num(13)?,
+        nadir_first_time: num(14)?,
+        nadir_last_time: num(15)?,
+        read_time: None,
     };
     let read_time = cols[0].trim().parse::<f64>().ok();
     Some(ReplayRecord {
@@ -248,6 +265,8 @@ impl MockProvider {
                     if due > now {
                         break;
                     }
+                    let mut fields = fields;
+                    fields.read_time = Some(due);
                     last_sample = Some(fields.clone());
                     samples.push(fields);
                     replay.pos += 1;
@@ -280,6 +299,13 @@ fn simulated_read(state: &mut SimState, seed: &mut u64, crossing_pct: i64,
             node_nadir_rssi: 20,
             loop_time: 1,
             history_flag: true,
+            peak_rssi: new_rssi,
+            peak_first_time: 0,
+            peak_last_time: 0,
+            nadir_rssi: new_rssi,
+            nadir_first_time: 0,
+            nadir_last_time: 0,
+            read_time: None,
         };
         if mock_rand_pct(seed) < 50 {
             state.is_crossing = false;
@@ -303,6 +329,13 @@ fn simulated_read(state: &mut SimState, seed: &mut u64, crossing_pct: i64,
             node_nadir_rssi: 20,
             loop_time: 1,
             history_flag: true,
+            peak_rssi: new_rssi,
+            peak_first_time: 0,
+            peak_last_time: 0,
+            nadir_rssi: new_rssi,
+            nadir_first_time: 0,
+            nadir_last_time: 0,
+            read_time: None,
         };
         if mock_rand_pct(seed) < crossing_pct {
             state.lap_number += 1;

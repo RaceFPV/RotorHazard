@@ -6,7 +6,7 @@
 //! the Python server.  Differential tests in tests/ compare this port
 //! against Python-generated expected outputs.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub const AUTO_CAL_MIN_SPAN: f64 = 15.0;
@@ -1705,6 +1705,246 @@ fn suggest_common(
         min_first_crossing_ms,
         lap_limit,
     )
+}
+
+/// Search race history for the best tuning values for a seat
+/// (find_best_calibration_values in Python): same heat/node, then same
+/// class/pilot/node, then pilot/node, then node — all requiring laps.
+pub fn find_best_calibration_values(
+    state: &crate::state::SharedState,
+    seat_index: usize,
+) -> (i64, i64) {
+    use crate::state::*;
+
+    // the node's current levels and frequency
+    let (cur_enter, cur_exit, node_freq) = current_levels(state, seat_index);
+
+    crate::db::with_db(state, |conn| {
+        let Some(current_heat) = state.race.lock().unwrap().current_heat else {
+            // practice mode: no auto calibration
+            return (cur_enter, cur_exit);
+        };
+        let heat_class: Option<i64> = conn
+            .query_row("SELECT class_id FROM heat WHERE id = ?1", [current_heat], |r| r.get(0))
+            .ok()
+            .flatten();
+        let pilot: Option<i64> = conn
+            .query_row(
+                "SELECT pilot_id FROM heat_node WHERE heat_id = ?1 AND node_index = ?2",
+                rusqlite::params![current_heat, seat_index as i64],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+
+        // disabled node: no calibration
+        if pilot.is_none() || node_freq == 0 {
+            tracing::debug!("Node {} calibration: skipping disabled node", seat_index + 1);
+            return (cur_enter, cur_exit);
+        }
+
+        let races: Vec<(i64, i64, Option<i64>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, heat_id, class_id FROM saved_race_meta ORDER BY id DESC")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let pilot_races: Vec<(i64, i64, i64, Option<i64>, i64, i64, i64)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, race_id, node_index, pilot_id, frequency, enter_at, exit_at \
+                     FROM saved_pilot_race ORDER BY id DESC",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                })
+                .unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let lap_pilotrace_ids: std::collections::HashSet<i64> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT pilotrace_id FROM saved_race_lap WHERE deleted = 0",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        // same heat, same node
+        for race in &races {
+            if race.1 == current_heat {
+                for pr in &pilot_races {
+                    if pr.1 == race.0
+                        && pr.2 == seat_index as i64
+                        && pr.4 == node_freq
+                        && lap_pilotrace_ids.contains(&pr.0)
+                    {
+                        return (pr.5, pr.6);
+                    }
+                }
+                break;
+            }
+        }
+
+        // same class, same pilot, same node
+        for race in &races {
+            if race.2 == heat_class {
+                for pr in &pilot_races {
+                    if pr.1 == race.0
+                        && pr.2 == seat_index as i64
+                        && pr.3 == pilot
+                        && pr.4 == node_freq
+                        && lap_pilotrace_ids.contains(&pr.0)
+                    {
+                        return (pr.5, pr.6);
+                    }
+                }
+                break;
+            }
+        }
+
+        // same pilot, same node
+        for pr in &pilot_races {
+            if pr.2 == seat_index as i64 && pr.3 == pilot && pr.4 == node_freq
+                && lap_pilotrace_ids.contains(&pr.0)
+            {
+                return (pr.5, pr.6);
+            }
+        }
+
+        // same node
+        for pr in &pilot_races {
+            if pr.2 == seat_index as i64 && pr.4 == node_freq
+                && lap_pilotrace_ids.contains(&pr.0)
+            {
+                return (pr.5, pr.6);
+            }
+        }
+
+        // fallback: no change
+        tracing::debug!("Node {} calibration: no calibration hints found, no change", seat_index + 1);
+        (cur_enter, cur_exit)
+    })
+}
+
+/// The seat's current enter/exit levels and frequency (hardware cache for
+/// real nodes, profile arrays for mock seats).
+fn current_levels(state: &crate::state::SharedState, seat_index: usize) -> (i64, i64, i64) {
+    let hw_nodes = state
+        .hardware
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|hw| hw.num_nodes())
+        .unwrap_or(0);
+    if seat_index < hw_nodes {
+        let hw = state.hardware.lock().unwrap();
+        let hw = hw.as_ref().unwrap();
+        let freq = hw.nodes.get(seat_index).map(|n| n.frequency as i64).unwrap_or(0);
+        return (
+            hw.cur_enter_at.get(seat_index).copied().unwrap_or(0),
+            hw.cur_exit_at.get(seat_index).copied().unwrap_or(0),
+            freq,
+        );
+    }
+    crate::db::with_db(state, |conn| {
+        let pid = crate::db::current_profile_id(conn);
+        let enter: Option<String> = conn
+            .query_row("SELECT enter_ats FROM profiles WHERE id = ?1", [pid], |r| r.get(0))
+            .ok();
+        let exit: Option<String> = conn
+            .query_row("SELECT exit_ats FROM profiles WHERE id = ?1", [pid], |r| r.get(0))
+            .ok();
+        let get_at = |json_str: Option<String>, key: &str| -> i64 {
+            json_str
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.get(key).cloned())
+                .and_then(|v| v.get("v").cloned())
+                .and_then(|v| v.as_array().cloned())
+                .and_then(|arr| arr.get(seat_index).cloned())
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+        };
+        let freqs = crate::db::profile_frequencies(conn, pid);
+        (
+            get_at(enter, "v"),
+            get_at(exit, "v"),
+            freqs.get(seat_index).map(|(_, _, f)| *f).unwrap_or(0),
+        )
+    })
+}
+
+/// Apply best tuning values to all nodes (auto_calibrate in Python):
+/// triggered after a marshal-page lap resave when calibrationMode is on.
+pub fn auto_calibrate(state: &crate::state::SharedState) {
+    use crate::state::*;
+    if state.race.lock().unwrap().current_heat.is_none() {
+        tracing::debug!("Skipping auto calibration; server in practice mode");
+        return;
+    }
+    for seat_index in 0..state.num_nodes {
+        let (enter, exit_at) = find_best_calibration_values(state, seat_index);
+        let (cur_enter, cur_exit, _) = current_levels(state, seat_index);
+        if cur_enter != enter {
+            set_level_db_and_hardware(state, seat_index, true, enter);
+        }
+        if cur_exit != exit_at {
+            set_level_db_and_hardware(state, seat_index, false, exit_at);
+        }
+    }
+    tracing::info!("Updated calibration with best discovered values");
+    let payload = crate::db::with_db(state, |conn| crate::payloads::build_enter_exit_levels(conn));
+    crate::socket::broadcast(state, "enter_and_exit_at_levels", payload);
+}
+
+/// Writes a level to the profile DB and the hardware (the shared body of
+/// the set_enter_at_level / set_exit_at_level handlers).
+pub fn set_level_db_and_hardware(
+    state: &crate::state::SharedState,
+    seat_index: usize,
+    is_enter: bool,
+    level: i64,
+) {
+    crate::db::with_db(state, |conn| {
+        let pid = crate::db::current_profile_id(conn);
+        let column = if is_enter { "enter_ats" } else { "exit_ats" };
+        let existing: Option<String> = conn
+            .query_row(
+                &format!("SELECT {} FROM profiles WHERE id = ?1", column),
+                [pid],
+                |r| r.get(0),
+            )
+            .ok();
+        let mut arr = existing
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or(json!({"v": []}));
+        let v = arr
+            .as_object_mut()
+            .unwrap()
+            .entry("v")
+            .or_insert(json!([]));
+        while v.as_array().unwrap().len() <= seat_index {
+            v.as_array_mut().unwrap().push(Value::Null);
+        }
+        v.as_array_mut().unwrap()[seat_index] = json!(level);
+        let _ = conn.execute(
+            &format!("UPDATE profiles SET {} = ?1 WHERE id = ?2", column),
+            rusqlite::params![arr.to_string(), pid],
+        );
+    });
+    if is_enter {
+        if let Some(hw) = state.hardware.lock().unwrap().as_mut() {
+            hw.set_enter_at_level(seat_index, level);
+        }
+    } else if let Some(hw) = state.hardware.lock().unwrap().as_mut() {
+        hw.set_exit_at_level(seat_index, level);
+    }
 }
 
 /// Convenience: serialize a suggestion payload for the
