@@ -72,6 +72,7 @@ pub fn stage_race(state: &SharedState) {
     }
 
     emit_race_status(state);
+    state.actions_engine.do_actions(state, "raceStage", &json!({}));
     state.vrx_manager.do_race_stage(&json!({}));
     // LED staging effect with the staging-tone timing (stagingTrigger args)
     state.led_manager.trigger(
@@ -121,6 +122,7 @@ pub fn stage_race(state: &SharedState) {
         state.led_manager.trigger("raceStart", &json!({}));
         state.led_manager.trigger_idle(RACE_STATUS_RACING);
         state.vrx_manager.do_race_start(&json!({}));
+        state.actions_engine.do_actions(&state, "raceStart", &json!({}));
         if let Some(cluster) = state.cluster.get() {
             cluster.do_cluster_race_start();
             cluster.emit("stage_race", json!({}));
@@ -228,6 +230,12 @@ pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
     broadcast(&state, "current_laps", laps_payload);
     state.led_manager.trigger("raceLapRecorded", &json!({"node_index": node_index}));
     state.vrx_manager.do_race_lap_recorded(&json!({"node_index": node_index}));
+    let args = json!({
+        "node_index": node_index,
+        "pilot_id": state.race.lock().unwrap().node_pilots.get(node_index).copied().flatten(),
+        "heat_id": state.race.lock().unwrap().current_heat,
+    });
+    state.actions_engine.do_actions(state, "raceLapRecorded", &args);
 }
 
 /// Stops the race (registers no more laps) and moves to DONE.
@@ -243,6 +251,7 @@ pub fn stop_race(state: &SharedState) {
     state.led_manager.trigger("raceStop", &json!({}));
     state.led_manager.trigger_idle(RACE_STATUS_DONE);
     state.vrx_manager.do_race_stop(&json!({}));
+    state.actions_engine.do_actions(state, "raceStop", &json!({}));
     if let Some(cluster) = state.cluster.get() {
         cluster.do_cluster_race_stop();
         cluster.emit("stop_race", json!({}));
@@ -475,6 +484,7 @@ pub fn discard_laps(state: &SharedState) {
     state.led_manager.trigger("lapsClear", &json!({}));
     state.led_manager.trigger_idle(RACE_STATUS_READY);
     state.vrx_manager.do_laps_clear(&json!({}));
+    state.actions_engine.do_actions(state, "lapsClear", &json!({}));
 }
 
 /// Current epoch time in milliseconds.

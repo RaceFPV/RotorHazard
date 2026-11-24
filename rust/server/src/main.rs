@@ -5,6 +5,7 @@
 //! data as the Python server.  Behavior is gated by the protocol
 //! characterization suite in src/tests/protocol/.
 
+mod actions;
 mod api;
 mod assets;
 mod calibration;
@@ -245,6 +246,7 @@ async fn main() {
         led_manager,
         vrx_manager: crate::vrx::VRxControlManager::new(),
         cluster: std::sync::OnceLock::new(),
+        actions_engine: crate::actions::ActionEngine::new(),
         restart_required: std::sync::atomic::AtomicBool::new(false),
         cluster_joined: std::sync::atomic::AtomicBool::new(false),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
@@ -320,6 +322,9 @@ async fn main() {
     if let Some(cluster) = crate::cluster::ClusterNodeSet::new(state.clone(), &led_config) {
         let _ = state.cluster.set(cluster);
     }
+
+    // event actions (EventActions.loadActions)
+    state.actions_engine.load(&data_dir);
 
     pages::set_state(state.clone());
 

@@ -1991,6 +1991,8 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 crate::db::get_config_string(&state, "GENERAL", "MOCK_NODE_SIGNAL"));
             // switch the mock signal provider immediately rather than waiting
             // for the next mock tick to re-read the setting
+            // CONFIG_SET reloads the action list (EventActions hook)
+            state.actions_engine.load(&state.data_dir);
             if section == "GENERAL" && key == "MOCK_NODE_SIGNAL" {
                 if let Some(v) = value.as_str() {
                     let mut holder = state.mock_provider.lock().unwrap();
@@ -2205,6 +2207,11 @@ pub fn emit_priority_message(state: &SharedState, message: &str, interrupt: bool
             if interrupt { "messageInterrupt" } else { "messageStandard" },
             &json!({"message": message}),
         );
+    state.actions_engine.do_actions(
+        state,
+        if interrupt { "messageInterrupt" } else { "messageStandard" },
+        &json!({"message": message}),
+    );
 }
 
 

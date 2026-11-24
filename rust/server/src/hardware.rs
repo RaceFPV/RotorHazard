@@ -304,6 +304,11 @@ impl HardwareInterface {
             // crossing status changed: LED gate enter/exit events
             let event = if cross { "crossingEnter" } else { "crossingExit" };
             state.led_manager.trigger(event, &json!({"node_index": idx}));
+            let args = json!({
+                "node_index": idx,
+                "pilot_id": state.race.lock().unwrap().node_pilots.get(idx).copied().flatten(),
+            });
+            state.actions_engine.do_actions(state, event, &args);
         }
         self.last_crossing[idx] = cross;
 

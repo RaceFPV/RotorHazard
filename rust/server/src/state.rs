@@ -307,6 +307,8 @@ pub struct AppState {
     pub vrx_manager: crate::vrx::VRxControlManager,
     /// Cluster node set (ClusterNodeSet.py port); built after AppState
     pub cluster: std::sync::OnceLock<crate::cluster::ClusterNodeSet>,
+    /// Event actions engine (EventActions.py + rh_actions_builtin port)
+    pub actions_engine: crate::actions::ActionEngine,
     /// Set when a change requires a server restart (node fw update)
     pub restart_required: std::sync::atomic::AtomicBool,
     /// True when this timer has joined a primary as a secondary
