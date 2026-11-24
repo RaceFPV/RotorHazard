@@ -20,3 +20,6 @@ serialport = "4"
 rust_socketio = "0.6"
 base64 = "0.22"
 minijinja = { version = "2", features = ["urlencode", "json"] }
+
+[dev-dependencies]
+ureq = "3.5.2"
