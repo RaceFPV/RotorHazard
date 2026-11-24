@@ -8,6 +8,7 @@
 mod api;
 mod assets;
 mod calibration;
+mod cluster;
 mod hardware;
 mod db;
 mod export_import;
@@ -241,6 +242,8 @@ async fn main() {
         hardware: Mutex::new(None),
         led_manager,
         vrx_manager: crate::vrx::VRxControlManager::new(),
+        cluster: std::sync::OnceLock::new(),
+        cluster_joined: std::sync::atomic::AtomicBool::new(false),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
 
@@ -289,6 +292,11 @@ async fn main() {
     // startup LED effect (init_LED_effects wiring)
     state.led_manager.trigger("startup", &json!({}));
     state.vrx_manager.do_startup(&json!({}));
+
+    // cluster: start connections to configured secondary timers
+    if let Some(cluster) = crate::cluster::ClusterNodeSet::new(state.clone(), &led_config) {
+        let _ = state.cluster.set(cluster);
+    }
 
     pages::set_state(state.clone());
 

@@ -16,6 +16,7 @@ pub const DEVICE_TIMEOUT: f64 = 30.0;
 
 #[allow(dead_code)]
 pub struct VRxDeviceMethod;
+#[allow(dead_code)]
 impl VRxDeviceMethod {
     pub const ALL: i64 = 0; // receive all events
     pub const PILOT: i64 = 1; // receive events for the assigned pilot
@@ -23,6 +24,7 @@ impl VRxDeviceMethod {
 }
 
 /// Per-device seat/pilot mapping (VRxDeviceMap).
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct VRxDeviceMap {
     pub method: i64,
@@ -31,6 +33,7 @@ pub struct VRxDeviceMap {
 }
 
 /// One VRx device (goggle/receiver) known to a controller.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct VRxDevice {
     pub id: String,
@@ -46,6 +49,7 @@ pub struct VRxDevice {
     pub extended_properties: Value,
 }
 
+#[allow(dead_code)]
 impl VRxDevice {
     /// Device status dict (VRxDeviceStatus).
     pub fn get_status(&self, now: f64) -> Value {
@@ -81,6 +85,7 @@ impl VRxDevice {
 
 /// Controller base (VRxController): a named collection of devices with
 /// overridable event hooks.
+#[allow(dead_code)] // hooks are completed by plugin controllers
 pub trait VRxController: Send + Sync {
     fn name(&self) -> &str;
     fn label(&self) -> &str;
@@ -133,6 +138,7 @@ pub struct VRxControlManager {
     enabled: Mutex<bool>,
 }
 
+#[allow(dead_code)] // full surface activates when controllers register
 impl VRxControlManager {
     pub fn new() -> Self {
         // Evt.VRX_INITIALIZE would register plugin controllers here; the

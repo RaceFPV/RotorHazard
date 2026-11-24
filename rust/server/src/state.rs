@@ -26,6 +26,7 @@ pub struct RaceState {
     pub current_heat: Option<i64>,
     pub format_id: i64,
     pub start_time_monotonic: f64, // 0.0 when not started
+    pub start_time_epoch_ms: f64,  // epoch ms when the race started (0 before)
     pub start_time_formatted: String,
     pub end_time_monotonic: f64,   // 0.0 when not stopped
     pub node_laps: Vec<Vec<Lap>>,
@@ -41,6 +42,7 @@ impl RaceState {
             current_heat: None,
             format_id: 1,
             start_time_monotonic: 0.0,
+            start_time_epoch_ms: 0.0,
             start_time_formatted: String::new(),
             end_time_monotonic: 0.0,
             node_laps: vec![Vec::new(); num_nodes],
@@ -55,6 +57,7 @@ impl RaceState {
             laps.clear();
         }
         self.start_time_monotonic = 0.0;
+        self.start_time_epoch_ms = 0.0;
         self.start_time_formatted = String::new();
         self.end_time_monotonic = 0.0;
     }
@@ -216,8 +219,15 @@ pub struct AppState {
     pub led_manager: crate::led::LedManager,
     /// VRx Control manager (VRxControl.py port; controllers come from plugins)
     pub vrx_manager: crate::vrx::VRxControlManager,
+    /// Cluster node set (ClusterNodeSet.py port); built after AppState
+    pub cluster: std::sync::OnceLock<crate::cluster::ClusterNodeSet>,
+    /// True when this timer has joined a primary as a secondary
+    pub cluster_joined: std::sync::atomic::AtomicBool,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
 }
 
 pub type SharedState = Arc<AppState>;
+
+/// The release version string reported to clients and cluster peers.
+pub const RELEASE_VERSION: &str = "4.6.0-dev.1-rust";

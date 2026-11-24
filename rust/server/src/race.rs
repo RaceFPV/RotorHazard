@@ -94,6 +94,7 @@ pub fn stage_race(state: &SharedState) {
             return; // race was cancelled or reset while staging
         }
         race.start_time_monotonic = monotonic();
+        race.start_time_epoch_ms = epoch_millis_now();
         race.start_time_formatted = now_formatted_str();
         race.race_status = RACE_STATUS_RACING;
         for laps in &mut race.node_laps {
@@ -111,6 +112,11 @@ pub fn stage_race(state: &SharedState) {
         state.led_manager.trigger("raceStart", &json!({}));
         state.led_manager.trigger_idle(RACE_STATUS_RACING);
         state.vrx_manager.do_race_start(&json!({}));
+        if let Some(cluster) = state.cluster.get() {
+            cluster.do_cluster_race_start();
+            cluster.emit("stage_race", json!({}));
+            cluster.emit_event_trigger("raceStart", &json!({}));
+        }
     });
 
 }
@@ -169,6 +175,11 @@ pub fn stop_race(state: &SharedState) {
     state.led_manager.trigger("raceStop", &json!({}));
     state.led_manager.trigger_idle(RACE_STATUS_DONE);
     state.vrx_manager.do_race_stop(&json!({}));
+    if let Some(cluster) = state.cluster.get() {
+        cluster.do_cluster_race_stop();
+        cluster.emit("stop_race", json!({}));
+        cluster.emit_event_trigger("raceStop", &json!({}));
+    }
 }
 
 /// Saves the current race to the database and returns to READY.
@@ -396,6 +407,14 @@ pub fn discard_laps(state: &SharedState) {
     state.led_manager.trigger("lapsClear", &json!({}));
     state.led_manager.trigger_idle(RACE_STATUS_READY);
     state.vrx_manager.do_laps_clear(&json!({}));
+}
+
+/// Current epoch time in milliseconds.
+fn epoch_millis_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
 }
 
 /// 'YYYY-MM-DD HH:MM:SS.mmm' of the current instant, matching

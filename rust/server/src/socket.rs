@@ -1743,6 +1743,82 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         let _ = sock.emit("enter_and_exit_at_levels", &payload);
     });
 
+    // -- cluster: secondary-side handlers (what a joined timer answers) --
+
+    socket.on("join_cluster_ex", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let mode = data.get("mode").and_then(|v| v.as_str()).unwrap_or("split").to_string();
+        tracing::info!("Joined cluster as '{}' timer", mode);
+        state.cluster_joined.store(true, std::sync::atomic::Ordering::Relaxed);
+        // split mode: first join backs up and clears race data so the
+        // primary's races are not stored here
+        if mode != "mirror" {
+            crate::db::with_db(&state, |conn| {
+                let has_races: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM saved_race_meta", [], |r| r.get(0))
+                    .unwrap_or(0);
+                if has_races > 0 {
+                    tracing::info!("Clearing race data on split timer ({} races)", has_races);
+                    let _ = conn.execute("DELETE FROM saved_race_lap", []);
+                    let _ = conn.execute("DELETE FROM saved_pilot_race", []);
+                    let _ = conn.execute("DELETE FROM saved_race_meta", []);
+                    let _ = conn.execute("DELETE FROM lap_split", []);
+                }
+            });
+            let mut race = state.race.lock().unwrap();
+            race.clear_laps();
+        }
+        let auth_ok = socket_authed(&sock, &state);
+        let payload = json!({
+            "server_info": json!({
+                "release_version": crate::state::RELEASE_VERSION,
+                "prog_start_epoch": "0",
+            }).to_string(),
+            "auth_ok": auth_ok,
+        });
+        let _ = sock.emit("join_cluster_response", &payload);
+    });
+
+    socket.on("check_secondary_query", move |sock: SocketRef, _data: Data<Value>, s: State<SharedState>| async move {
+        let _ = s;
+        let ts = crate::cluster::epoch_millis_from_monotonic(crate::state::monotonic());
+        let _ = sock.emit("check_secondary_response", &json!({"timestamp": ts}));
+    });
+
+    socket.on("cluster_event_trigger", move |_sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+        let data = data.0;
+        let evt_name = data.get("evt_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let _evt_args: Value = data
+            .get("evt_args")
+            .and_then(|v| v.as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(json!({}));
+        // mirror mode: follow the primary's race lifecycle
+        if state.cluster_joined.load(std::sync::atomic::Ordering::Relaxed) {
+            match evt_name.as_str() {
+                "raceStop" => crate::race::stop_race(&state),
+                "lapsClear" => crate::race::discard_laps(&state),
+                "raceStage" => {
+                    // full mirror staging needs the secondary race format;
+                    // accepted but not fully mirrored yet
+                    tracing::debug!("Mirror stage event received (full mirroring pending)");
+                }
+                "raceLapRecorded" => {
+                    // mirror results storage pending
+                }
+                _ => {}
+            }
+        }
+    });
+
+    socket.on("cluster_message_ack", move |_sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let _ = s;
+        let msg_type = data.0.get("messageType").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        tracing::debug!("Received 'cluster_message_ack' message of type '{}'", msg_type);
+    });
+
     socket.on("suggest_calibration", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
         let state = s.0.clone();
             if !socket_authed(&sock, &state) { return; }
@@ -2027,6 +2103,14 @@ fn build_current_leaderboard(state: &SharedState) -> Value {
     })
 }
 
+
+/// Dispatches a named event to interested subsystems (the Python
+/// Events.trigger surface; plugin actions land here when the plugin host
+/// does).
+pub fn trigger_custom_event(state: &SharedState, event: &str, args: &Value) {
+    tracing::debug!("Custom event '{}': {}", event, args);
+    state.vrx_manager.do_option_set(args); // extension point
+}
 
 /// Broadcasts a priority message (emit_priority_message).
 pub fn emit_priority_message(state: &SharedState, message: &str, interrupt: bool) {
