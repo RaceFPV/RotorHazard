@@ -1,8 +1,21 @@
-# RotorHazard server — Rust implementation
+# RustHazard
 
-A Rust rewrite of the RotorHazard race-timing server. Wire-compatible
-with the Python server: same database schema, config.json, Socket.IO
-protocol, and serial-node firmware protocol.
+A Rust rewrite of the RotorHazard drone racing server.
+
+Wire-compatible with the original Python implementation: same database
+schema, config.json, Socket.IO protocol, and serial-node firmware
+protocol.
+
+Derived from [RotorHazard](https://github.com/RotorHazard/RotorHazard).
+The Python source in `src/server/` and `src/interface/` is kept as the
+reference specification — the sync pipeline tracks upstream changes to
+it and ports behavioral differences to Rust.
+
+## Why RustHazard
+
+The name is a pun: RotorHazard → RustHazard. Both rotors and rust are
+hazards. The RotorHazard name and branding remain the property of
+Hazard Creative LLC — this project uses its own name.
 
 ## Status
 
