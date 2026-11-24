@@ -214,6 +214,8 @@ pub struct AppState {
     pub hardware: Mutex<Option<crate::hardware::HardwareInterface>>,
     /// LED event manager (led_event_manager.py port)
     pub led_manager: crate::led::LedManager,
+    /// VRx Control manager (VRxControl.py port; controllers come from plugins)
+    pub vrx_manager: crate::vrx::VRxControlManager,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
 }

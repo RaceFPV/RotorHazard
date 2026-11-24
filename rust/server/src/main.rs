@@ -13,6 +13,7 @@ mod db;
 mod export_import;
 mod led;
 mod mock;
+mod vrx;
 mod pages;
 mod serial;
 mod payloads;
@@ -239,6 +240,7 @@ async fn main() {
         )),
         hardware: Mutex::new(None),
         led_manager,
+        vrx_manager: crate::vrx::VRxControlManager::new(),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
 
@@ -286,6 +288,7 @@ async fn main() {
 
     // startup LED effect (init_LED_effects wiring)
     state.led_manager.trigger("startup", &json!({}));
+    state.vrx_manager.do_startup(&json!({}));
 
     pages::set_state(state.clone());
 

@@ -72,6 +72,7 @@ pub fn stage_race(state: &SharedState) {
     }
 
     emit_race_status(state);
+    state.vrx_manager.do_race_stage(&json!({}));
     // LED staging effect with the staging-tone timing (stagingTrigger args)
     state.led_manager.trigger(
         "raceStage",
@@ -109,6 +110,7 @@ pub fn stage_race(state: &SharedState) {
         emit_race_status(&state);
         state.led_manager.trigger("raceStart", &json!({}));
         state.led_manager.trigger_idle(RACE_STATUS_RACING);
+        state.vrx_manager.do_race_start(&json!({}));
     });
 
 }
@@ -151,6 +153,7 @@ pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
     });
     broadcast(&state, "current_laps", laps_payload);
     state.led_manager.trigger("raceLapRecorded", &json!({"node_index": node_index}));
+    state.vrx_manager.do_race_lap_recorded(&json!({"node_index": node_index}));
 }
 
 /// Stops the race (registers no more laps) and moves to DONE.
@@ -165,6 +168,7 @@ pub fn stop_race(state: &SharedState) {
     emit_race_status(state);
     state.led_manager.trigger("raceStop", &json!({}));
     state.led_manager.trigger_idle(RACE_STATUS_DONE);
+    state.vrx_manager.do_race_stop(&json!({}));
 }
 
 /// Saves the current race to the database and returns to READY.
@@ -376,6 +380,7 @@ pub fn save_laps(state: &SharedState) -> bool {
         crate::socket::broadcast_race_list(state);
         state.led_manager.trigger("lapsClear", &json!({}));
         state.led_manager.trigger_idle(RACE_STATUS_READY);
+        state.vrx_manager.do_laps_clear(&json!({}));
     }
     saved
 }
@@ -390,6 +395,7 @@ pub fn discard_laps(state: &SharedState) {
     emit_race_status(state);
     state.led_manager.trigger("lapsClear", &json!({}));
     state.led_manager.trigger_idle(RACE_STATUS_READY);
+    state.vrx_manager.do_laps_clear(&json!({}));
 }
 
 /// 'YYYY-MM-DD HH:MM:SS.mmm' of the current instant, matching
