@@ -13,6 +13,10 @@ use tracing::warn;
 
 pub const BOOT_BAUD: u32 = 57600;
 pub const FLASH_BASE: u32 = 0x0800_0000;
+/// Sanity cap for parsed images (largest common target is 1 MiB; the
+/// flasher refuses images beyond this rather than allocating megabytes
+/// for stray records like option bytes).
+const MAX_IMAGE_LEN: usize = 2 * 1024 * 1024;
 
 const ACK: u8 = 0x79;
 const NACK: u8 = 0x1F;
@@ -289,6 +293,11 @@ fn parse_intel_hex(text: &str) -> Result<Vec<u8>, String> {
         match rectype {
             0x00 => {
                 let base = (upper << 16) | offset;
+                if base < FLASH_BASE || (base - FLASH_BASE) as usize > MAX_IMAGE_LEN {
+                    // not flash-resident data (e.g. option bytes); skip it
+                    // rather than allocating hundreds of MB for a stray record
+                    continue;
+                }
                 let target_start = (base - FLASH_BASE) as usize;
                 if out.len() < target_start + count {
                     out.resize(target_start + count, 0xFF);
@@ -375,10 +384,20 @@ mod tests {
 
     #[test]
     fn intel_hex_single_record() {
-        // : LL AAAA TT data CC -> 04 bytes at offset 0x0000
-        let hex = ":04000000DEADBEEF22\n:00000001FF";
+        // : LL AAAA TT data CC -> 04 bytes at flash offset 0
+        // (real .hex files carry the extended-address record)
+        let hex = ":020000040800F2\n:04000000DEADBEEF22\n:00000001FF";
         let image = parse_intel_hex(hex).unwrap();
         assert_eq!(image, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn intel_hex_skips_non_flash_records() {
+        // data below the flash base (e.g. option bytes at 0x1FFFF800) is
+        // skipped instead of wrapping into a huge allocation
+        let hex = ":020000041FFBEC\n:020000000102E1\n:020000040800F2\n:0100000005F8\n:00000001FF";
+        let image = parse_intel_hex(hex).unwrap();
+        assert_eq!(image, vec![0x05]);
     }
 
     #[test]
@@ -394,7 +413,8 @@ mod tests {
 
     #[test]
     fn intel_hex_rejects_bad_digits() {
-        assert!(parse_intel_hex(":04000000ZZZZBBBBCC").is_err());
+        // (the ELA record must come first; bare records are skipped)
+        assert!(parse_intel_hex(":020000040800F2\n:04000000ZZZZBBBBCC").is_err());
         assert!(parse_intel_hex(":0400").is_err());
     }
 
