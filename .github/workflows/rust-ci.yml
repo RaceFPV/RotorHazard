@@ -42,7 +42,7 @@ jobs:
         run: cargo build --release --manifest-path rust/server/Cargo.toml
 
       - name: Unit tests
-        run: cargo test --release --manifest-path rust/server/Cargo.toml --lib --bins
+        run: cargo test --release --manifest-path rust/server/Cargo.toml --bins
 
       - name: Protocol integration tests
         run: cargo test --release --manifest-path rust/server/Cargo.toml --test protocol_core --test protocol_more --test protocol_autoadjust
