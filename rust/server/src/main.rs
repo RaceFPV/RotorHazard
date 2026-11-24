@@ -11,6 +11,7 @@ mod db;
 mod export_import;
 mod mock;
 mod pages;
+mod serial;
 mod payloads;
 mod phase3;
 mod results;
