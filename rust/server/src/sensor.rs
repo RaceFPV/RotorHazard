@@ -10,6 +10,13 @@ pub(crate) struct SensorReading {
     values: Vec<(&'static str, f64, &'static str)>,
 }
 
+/// Discovery cache: sensor presence doesn't change at runtime, so
+/// discover once and reuse (also keeps the log quiet).
+fn cached_discover() -> &'static Vec<SensorReading> {
+    static CACHE: std::sync::OnceLock<Vec<SensorReading>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(discover)
+}
+
 /// Discovers available sensors (linux_sensor.discover): core temperature
 /// when thermal_zone0 exists, battery when power_supply/battery is present.
 #[allow(dead_code)] // discover() is used by tests and future sensor UI
@@ -61,7 +68,7 @@ fn read_f64(path: &str, divisor: f64) -> Option<f64> {
 /// Builds the environmental_data payload (emit_environmental_data):
 /// [{name: {reading: {value, units}}}, ...]
 pub fn environmental_data() -> Value {
-    let sensors = discover();
+    let sensors = cached_discover();
     let payload: Vec<Value> = sensors
         .iter()
         .map(|s| {
