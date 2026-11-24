@@ -33,7 +33,7 @@ fn test_auth_rejects_unauthenticated_and_accepts_authenticated() {
     // NOTE: the unauthenticated add_pilot rejection is verified in the
     // Python suite; the Rust server's add_pilot handler has the same
     // socket_authed check but the behavior is under investigation
-    let api = unauth.http_get_json("/api/pilot/all");
+    let _api = unauth.http_get_json("/api/pilot/all");
     unauth.disconnect();
 
     // authenticated client (basic auth on the connection) succeeds

@@ -27,7 +27,7 @@ fn undo_auto_adjusted(client: &SocketClient, body: Value) -> Value {
 
 #[test]
 fn test_auto_adjust_seat_rejected_when_not_racing() {
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();
@@ -41,7 +41,7 @@ fn test_auto_adjust_seat_rejected_when_not_racing() {
 
 #[test]
 fn test_undo_auto_adjust_nothing_to_undo() {
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();
@@ -60,7 +60,7 @@ fn test_undo_auto_adjust_nothing_to_undo() {
 
 #[test]
 fn test_auto_adjust_pilotrun_unknown_id() {
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();
@@ -81,7 +81,7 @@ fn test_auto_adjust_pilotrun_unknown_id() {
 
 #[test]
 fn test_auto_adjust_bad_seat_index() {
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();
@@ -95,7 +95,7 @@ fn test_auto_adjust_bad_seat_index() {
 fn test_auto_adjust_seat_with_no_history() {
     // a stopped race with no RSSI history yields a suggestion failure with a
     // known reason (no_history), not a crash or a bogus success
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();
@@ -140,7 +140,7 @@ fn test_auto_adjust_seat_with_no_history() {
 
 #[test]
 fn test_set_profile_updates_current_profile() {
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();
@@ -180,7 +180,7 @@ fn test_set_profile_updates_current_profile() {
 
 #[test]
 fn test_set_profile_emits_frequency_data() {
-    let mut server = spawn_default();
+    let server = spawn_default();
     let mut client = SocketClient::connect(&server.base_url);
     std::thread::sleep(Duration::from_millis(300));
     client.drain();

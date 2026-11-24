@@ -1,13 +1,8 @@
-//! Protocol test harness — the Rust port of src/tests/protocol/harness.py.
-//!
-//! Spawns the freshly-built server binary (via CARGO_BIN_EXE), connects a
-//! socket.io client, and provides the broadcast-collection / emit-wait /
-//! ack helpers the Python harness offers.  Tests live in sibling files
-//! (protocol_core.rs, ...) and characterize the server purely over
-//! HTTP + Socket.IO, exactly like the Python suite.
+//! Shared test harness (compiled per test binary; not every binary
+//! uses every item).
+#![allow(dead_code)]
 
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};

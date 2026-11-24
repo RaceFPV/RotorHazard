@@ -11,6 +11,7 @@ use std::time::Duration;
 const T: Duration = Duration::from_secs(15);
 const LONG: Duration = Duration::from_secs(45);
 
+#[allow(dead_code)]
 fn wait_race_status(client: &SocketClient, target: i64, timeout: Duration, allow_ready: bool) -> Value {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -136,14 +137,17 @@ fn test_add_alter_delete_class() {
             &json!({"name": format!("TestClass {}", test_token())}),
             "class_data", "id", "classes", prev_max, T);
 
+        // one token per assertion pair: the token embeds the epoch second and
+        // must not be re-evaluated across the request and the assertion
+        let alter_name = format!("TestClassAltered {}", test_token());
         let resp = client.emit_and_wait("alter_race_class", &json!({
             "class_id": new_class,
-            "class_name": format!("TestClassAltered {}", test_token()),
+            "class_name": alter_name,
             "class_description": "renamed",
         }), "class_data", T);
         let classes = resp["classes"].as_array().unwrap();
         let cls = classes.iter().find(|c| c["id"] == new_class).expect("class present");
-        assert_eq!(cls["name"], format!("TestClassAltered {}", test_token()));
+        assert_eq!(cls["name"], alter_name);
 
         client.emit("delete_class", &json!({"class": new_class}));
         let resp = client.wait_for("class_data", T);
