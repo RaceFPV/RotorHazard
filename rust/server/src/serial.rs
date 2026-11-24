@@ -12,6 +12,8 @@ pub const READ_FREQUENCY: u8 = 0x03;
 pub const READ_LAP_STATS: u8 = 0x05;
 pub const READ_RHFEAT_FLAGS: u8 = 0x11;
 pub const READ_REVISION_CODE: u8 = 0x22;
+pub const READ_NODE_RSSI_PEAK: u8 = 0x23;
+pub const READ_NODE_RSSI_NADIR: u8 = 0x24;
 pub const READ_ENTER_AT_LEVEL: u8 = 0x31;
 pub const READ_EXIT_AT_LEVEL: u8 = 0x32;
 pub const READ_TIME_MILLIS: u8 = 0x33;
@@ -38,7 +40,8 @@ pub const SERIAL_BAUD_RATES: [u32; 2] = [921600, 115200];
 // -- checksum helpers (RHInterface.py) --
 
 pub fn calculate_checksum(data: &[u8]) -> u8 {
-    data.iter().sum::<u8>()
+    // sum in a wider type to avoid u8 overflow (matches Python sum() & 0xFF)
+    (data.iter().map(|&x| x as u64).sum::<u64>() & 0xFF) as u8
 }
 
 pub fn validate_checksum(data: &[u8]) -> bool {

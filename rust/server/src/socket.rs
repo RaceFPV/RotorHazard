@@ -1614,6 +1614,10 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 });
             }
         }
+        // write to real hardware if present
+        if let Some(hw) = state.hardware.lock().unwrap().as_ref() {
+            hw.set_frequency(node as usize, freq as u16);
+        }
         tracing::info!("Frequency set: Node {} band={:?} ch={:?} freq={}", node + 1, band, chan, freq);
         let payload = db::with_db(&state, payloads::build_frequency_data);
         broadcast(&state, "frequency_data", payload);

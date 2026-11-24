@@ -7,6 +7,7 @@
 
 mod api;
 mod assets;
+mod hardware;
 mod db;
 mod export_import;
 mod mock;
@@ -189,6 +190,7 @@ async fn main() {
             String::new(),
             crate::mock::MockProvider::NoSignal,
         )),
+        hardware: Mutex::new(None),
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
     });
 
@@ -196,6 +198,36 @@ async fn main() {
         .with_state(state.clone())
         .build_layer();
     state.io.set(io.clone()).expect("io set once");
+
+    // discover real serial nodes when SERIAL_PORTS is configured
+    {
+        let ports: Vec<String> = {
+            if let Ok(text) = std::fs::read_to_string(&config_path) {
+                if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&text) {
+                    cfg.get("GENERAL")
+                        .and_then(|g| g.get("SERIAL_PORTS"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+        if !ports.is_empty() {
+            tracing::info!("Discovering serial nodes on: {:?}", ports);
+            let mut hw = crate::hardware::HardwareInterface::new(&ports);
+            hw.discover();
+            tracing::info!("Found {} serial node(s)", hw.num_nodes());
+            *state.hardware.lock().unwrap() = Some(hw);
+        }
+    }
 
     pages::set_state(state.clone());
 

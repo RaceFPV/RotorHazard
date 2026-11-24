@@ -130,6 +130,7 @@ pub struct AppState {
     pub mock: Mutex<Vec<crate::state::MockNodeState>>,
     /// Active mock signal provider (name + state), per MockSignal.py
     pub mock_provider: Mutex<(String, crate::mock::MockProvider)>,
+    pub hardware: Mutex<Option<crate::hardware::HardwareInterface>>,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
 }
