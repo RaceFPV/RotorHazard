@@ -152,6 +152,19 @@ pub fn effect_delay(ms: u64, term: &Terminator) -> Result<(), ()> {
 
 pub type EffectFn = fn(&mut Strip, &Value, &Terminator) -> ();
 
+/// Runs an effect body off the calling thread: spawn_blocking inside a
+/// Tokio runtime, a plain thread otherwise (tests, early startup).
+fn spawn_effect_task(f: impl FnOnce() + Send + 'static) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn_blocking(f);
+        }
+        Err(_) => {
+            std::thread::spawn(f);
+        }
+    }
+}
+
 struct EffectDef {
     #[allow(dead_code)]
     label: &'static str,
@@ -488,6 +501,193 @@ fn larson_scanner(strip: &mut Strip, args: &Value, t: &Terminator) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strip(n: usize) -> Strip {
+        Strip::new(n, 1)
+    }
+
+    #[test]
+    fn color_packing() {
+        assert_eq!(color(255, 0, 0), 0x00ff_0000);
+        assert_eq!(color(0, 255, 0), 0x0000_ff00);
+        assert_eq!(color(0, 0, 255), 0x0000_00ff);
+        assert_eq!(color(1, 2, 3), 0x010203);
+        assert_eq!(ColorVal::WHITE, 0x00ff_ffff);
+        assert_eq!(ColorVal::NONE, 0);
+    }
+
+    #[test]
+    fn dim_fades_and_floor_zeroes() {
+        assert_eq!(dim(ColorVal::WHITE, 1.0), ColorVal::WHITE);
+        assert_eq!(dim(ColorVal::WHITE, 0.5), color(127, 127, 127)); // 127.5 truncates
+        // components of 1 or less become zero (Python: 0 if r <= 1)
+        assert_eq!(dim(color(1, 2, 1), 0.5), color(0, 1, 0));
+        assert_eq!(dim(ColorVal::NONE, 0.5), 0);
+    }
+
+    #[test]
+    fn color_wheel_boundaries_match_python() {
+        // pos<85: red->green ramp; 85..170 green->blue; 170..255 blue->red
+        assert_eq!(color_wheel(0), color(0, 255, 0));
+        assert_eq!(color_wheel(84), color(252, 3, 0));
+        assert_eq!(color_wheel(85), color(255, 0, 0));
+        assert_eq!(color_wheel(169), color(3, 0, 252));
+        assert_eq!(color_wheel(170), color(0, 0, 255));
+        assert_eq!(color_wheel(255), color(0, 255, 0));
+    }
+
+    #[test]
+    fn led_on_solid_and_patterns() {
+        let mut s = strip(8);
+        led_on(&mut s, ColorVal::RED, &Value::Null, 0);
+        for i in 0..8 {
+            assert_eq!(s.get_pixel_color(i), ColorVal::RED);
+        }
+        // pattern [1,2]: one on, two off, repeating; offset shifts the phase
+        let mut s = strip(6);
+        led_on(&mut s, ColorVal::GREEN, &pattern(&[1, 2]), 0);
+        let expected = [ColorVal::GREEN, 0, 0, ColorVal::GREEN, 0, 0];
+        for i in 0..6 {
+            assert_eq!(s.get_pixel_color(i), expected[i]);
+        }
+        let mut s = strip(6);
+        led_on(&mut s, ColorVal::GREEN, &pattern(&[1, 2]), 1);
+        // (i+1)%3 < 1 -> i = 2, 5
+        let expected = [0, 0, ColorVal::GREEN, 0, 0, ColorVal::GREEN];
+        for i in 0..6 {
+            assert_eq!(s.get_pixel_color(i), expected[i]);
+        }
+        led_off(&mut s);
+        for i in 0..6 {
+            assert_eq!(s.get_pixel_color(i), 0);
+        }
+    }
+
+    #[test]
+    fn show_color_and_clear_effects() {
+        let mut s = strip(4);
+        show_color(&mut s, &json!({"color": ColorVal::BLUE, "pattern": [2, 2]}), &Terminator::default());
+        // (i+0)%4 < 2: pixels 0,1 lit; 2,3 off
+        assert_eq!(s.get_pixel_color(0), ColorVal::BLUE);
+        assert_eq!(s.get_pixel_color(1), ColorVal::BLUE);
+        assert_eq!(s.get_pixel_color(2), 0);
+        assert_eq!(s.get_pixel_color(3), 0);
+        // no color arg defaults to white, solid
+        show_color(&mut s, &json!({}), &Terminator::default());
+        assert_eq!(s.get_pixel_color(3), ColorVal::WHITE);
+        clear(&mut s, &json!({}), &Terminator::default());
+        assert_eq!(s.get_pixel_color(3), 0);
+    }
+
+    #[test]
+    fn color_wipe_fills_strip_then_stops() {
+        let mut s = strip(5);
+        // speedDelay scaled per pixel; terminator never trips
+        color_wipe(&mut s, &json!({"color": ColorVal::ORANGE, "speedDelay": 0}), &Terminator::default());
+        for i in 0..5 {
+            assert_eq!(s.get_pixel_color(i), ColorVal::ORANGE);
+        }
+    }
+
+    #[test]
+    fn terminated_effect_stops_early() {
+        let mut s = strip(100);
+        let term = Terminator::default();
+        term.set_terminate();
+        // a rainbow cycle with a pre-terminated flag exits immediately
+        rainbow_cycle(&mut s, &json!({"wait_ms": 0}), &term);
+        // chase with termination also returns promptly without panicking
+        chase(&mut s, &json!({"speedDelay": 0, "iterations": 1000}), &term);
+    }
+
+    #[test]
+    fn chase_pattern_offsets_advance() {
+        let mut s = strip(6);
+        chase(
+            &mut s,
+            &json!({"color": ColorVal::RED, "pattern": [1, 2], "speedDelay": 0, "iterations": 1}),
+            &Terminator::default(),
+        );
+        // after the final iteration (offset 2) the pattern phase is offset by 2:
+        // (i+2)%3 < 1 -> pixels 1 and 4 are lit
+        assert_eq!(s.get_pixel_color(1), ColorVal::RED);
+        assert_eq!(s.get_pixel_color(4), ColorVal::RED);
+        assert_eq!(s.get_pixel_color(0), 0);
+    }
+
+    #[test]
+    fn empty_strip_effects_are_noops() {
+        let mut s = strip(0);
+        let t = Terminator::default();
+        rainbow(&mut s, &json!({}), &t);
+        rainbow_cycle(&mut s, &json!({}), &t);
+        color_wipe(&mut s, &json!({}), &t);
+        sparkle(&mut s, &json!({}), &t);
+        meteor(&mut s, &json!({}), &t);
+        larson_scanner(&mut s, &json!({}), &t);
+    }
+
+    #[test]
+    fn manager_registers_defaults_and_resolves() {
+        let mgr = LedManager::new(&json!({"LED": {"LED_COUNT": 8, "LED_ROWS": 1}}));
+        // defaults are applied at server startup (init_LED_effects)
+        mgr.apply_assignments(None);
+        // Python default assignments (init_LED_effects)
+        assert_eq!(mgr.get_event_effect("raceStage").as_deref(), Some("stripColor2_1"));
+        assert_eq!(mgr.get_event_effect("raceStart").as_deref(), Some("stripColorSolid"));
+        assert_eq!(mgr.get_event_effect("raceFinish").as_deref(), Some("stripColor4_4"));
+        assert_eq!(mgr.get_event_effect("raceStop").as_deref(), Some("stripColorSolid"));
+        assert_eq!(mgr.get_event_effect("lapsClear").as_deref(), Some("clear"));
+        assert_eq!(mgr.get_event_effect("crossingEnter").as_deref(), Some("stripSparkle"));
+        assert_eq!(mgr.get_event_effect("crossingExit").as_deref(), Some("none"));
+        assert_eq!(mgr.get_event_effect("startup").as_deref(), Some("rainbowCycle"));
+        assert_eq!(mgr.get_event_effect("manualColor").as_deref(), Some("stripColor"));
+        // unknown event has no binding
+        assert!(mgr.get_event_effect("noSuchEvent").is_none());
+    }
+
+    #[test]
+    fn manager_saved_assignments_override_defaults() {
+        let mgr = LedManager::new(&json!({"LED": {"LED_COUNT": 4}}));
+        mgr.apply_assignments(Some(&json!({"raceStart": "stripBlink"})));
+        assert_eq!(mgr.get_event_effect("raceStart").as_deref(), Some("stripBlink"));
+        // defaults still hold for unassigned events
+        assert_eq!(mgr.get_event_effect("raceStop").as_deref(), Some("stripColorSolid"));
+        // unknown effect names are rejected
+        assert!(!mgr.set_event_effect("raceStart", "notAnEffect"));
+        assert!(mgr.set_event_effect("raceStart", "stripWipe"));
+        assert_eq!(mgr.get_event_effect("raceStart").as_deref(), Some("stripWipe"));
+    }
+
+    #[test]
+    fn manager_trigger_runs_effect_and_stops_previous() {
+        let mgr = LedManager::new(&json!({"LED": {"LED_COUNT": 8}}));
+        mgr.apply_assignments(None);
+        // rainbowCycle runs until terminated; triggering another effect must
+        // stop it rather than run two at once
+        mgr.trigger("startup", &json!({}));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        mgr.trigger("raceStart", &json!({}));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // no panic and the strip reflects the later effect (solid white)
+        let s = mgr.strip.lock().unwrap();
+        assert_eq!(s.get_pixel_color(0), ColorVal::WHITE);
+    }
+
+    #[test]
+    fn strip_creation_sizes() {
+        // rows < 1 -> single row of count pixels
+        let s = Strip::new(8, 0);
+        assert_eq!(s.num_pixels(), 8);
+        // rows split the count
+        let s = Strip::new(16, 2);
+        assert_eq!(s.num_pixels(), 16);
+    }
+}
+
 // -- manager --
 
 pub const IDLE_READY: &str = "ledIdleReady";
@@ -627,7 +827,7 @@ impl LedManager {
         let strip = self.strip.clone();
         let handler = def.handler;
         self.running.lock().unwrap().replace(term.clone());
-        tokio::task::spawn_blocking(move || {
+        spawn_effect_task(move || {
             let mut strip_guard = strip.lock().unwrap();
             handler(&mut strip_guard, &merged, &term);
         });

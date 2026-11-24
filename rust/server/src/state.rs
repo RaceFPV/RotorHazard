@@ -182,6 +182,91 @@ pub fn monotonic() -> f64 {
     start.elapsed().as_secs_f64()
 }
 
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn node() -> MockNodeState {
+        MockNodeState::new()
+    }
+
+    #[test]
+    fn add_entry_extends_when_last_two_equal() {
+        let mut n = node();
+        n.history_add_entry(50, 1.0);
+        n.history_add_entry(50, 2.0);
+        // third equal value extends the second entry's time instead of appending
+        n.history_add_entry(50, 3.0);
+        assert_eq!(n.history_values, vec![50, 50]);
+        assert_eq!(n.history_times, vec![1.0, 3.0]);
+        // a different value appends normally
+        n.history_add_entry(60, 4.0);
+        assert_eq!(n.history_values, vec![50, 50, 60]);
+    }
+
+    #[test]
+    fn add_pn_peak_and_nadir_both_ordering() {
+        let mut n = node();
+        // times are ms SINCE the event: peak ended 200ms ago (started 300ms
+        // ago), nadir started 100ms ago -> peakLast > nadirFirst -> peak first
+        n.history_add_pn(10.0, 200, 300, 200, 40, 100, 50);
+        // peak: 10-0.3=9.7, 10-0.2=9.8; nadir: 10-0.1=9.9, 10-0.05=9.95
+        assert_eq!(n.history_values, vec![200, 200, 40, 40]);
+        assert_eq!(n.history_times, vec![9.7, 9.8, 9.9, 9.95]);
+    }
+
+    #[test]
+    fn add_pn_nadir_first_when_nadir_happened_first() {
+        let mut n = node();
+        // nadir happened before the peak: nadirLast(250) vs peakLast(50):
+        // peakLast(50) > nadirFirst(300)? no -> nadir processed first
+        n.history_add_pn(10.0, 200, 100, 50, 40, 300, 250);
+        // nadir: 10-0.3=9.7, 10-0.25=9.75; peak: 10-0.1=9.9, 10-0.05=9.95
+        assert_eq!(n.history_values, vec![40, 40, 200, 200]);
+        assert_eq!(n.history_times, vec![9.7, 9.75, 9.9, 9.95]);
+    }
+
+    #[test]
+    fn add_pn_peak_only_and_nadir_only() {
+        let mut n = node();
+        n.history_add_pn(5.0, 200, 100, 50, 0, 0, 0);
+        assert_eq!(n.history_values, vec![200, 200]);
+        let mut n = node();
+        n.history_add_pn(5.0, 0, 0, 0, 30, 100, 50);
+        assert_eq!(n.history_values, vec![30, 30]);
+        // equal first/last times produce a single entry
+        let mut n = node();
+        n.history_add_pn(5.0, 200, 100, 100, 0, 0, 0);
+        assert_eq!(n.history_values, vec![200]);
+        assert_eq!(n.history_times, vec![4.9]);
+    }
+
+    #[test]
+    fn add_pn_zero_rssi_records_nothing() {
+        let mut n = node();
+        n.history_add_pn(5.0, 0, 0, 0, 0, 0, 0);
+        assert!(n.history_values.is_empty());
+    }
+
+    #[test]
+    fn prune_history_drops_old_entries() {
+        let mut n = node();
+        n.history_add_entry(10, 0.0);
+        n.history_add_entry(20, 30.0);
+        n.history_add_entry(30, 59.5);
+        n.history_add_entry(40, 59.9);
+        // now = 60: cutoff = 0; entries strictly below 0 are pruned
+        n.prune_history(60.0);
+        assert_eq!(n.history_values, vec![10, 20, 30, 40]);
+        // now = 70: cutoff 10; the 0.0 entry goes
+        n.prune_history(70.0);
+        assert_eq!(n.history_values, vec![20, 30, 40]);
+        // now = 100: cutoff 40; the 30.0 entry goes too
+        n.prune_history(100.0);
+        assert_eq!(n.history_values, vec![30, 40]);
+    }
+}
+
 pub fn now_epoch_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

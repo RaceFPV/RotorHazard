@@ -120,33 +120,39 @@ impl Averager {
     }
 }
 
-/// Running median (util/RunningMedian.py).
-#[derive(Default)]
+/// Running median over an insertion-order ring (util/RunningMedian.py).
+/// The even-count median is the midpoint of the two middle values, as in
+/// the Python `median()` helper.
 struct RunningMedian {
-    vals: Vec<i64>,
+    ring: std::collections::VecDeque<i64>,
 }
 
-#[allow(dead_code)]
 impl RunningMedian {
     fn new(_size: usize) -> Self {
-        RunningMedian { vals: Vec::new() }
+        RunningMedian {
+            ring: std::collections::VecDeque::new(),
+        }
     }
     fn insert(&mut self, val: i64) {
-        if self.vals.len() >= TIMEDIFF_MEDIAN_SIZE {
-            self.vals.remove(0);
+        if self.ring.len() >= TIMEDIFF_MEDIAN_SIZE {
+            self.ring.pop_front();
         }
-        self.vals.push(val);
-        self.vals.sort_unstable();
+        self.ring.push_back(val);
     }
-    fn median(&self) -> i64 {
-        if self.vals.is_empty() {
-            0
+    fn median(&self) -> f64 {
+        let mut sorted: Vec<i64> = self.ring.iter().copied().collect();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        if len == 0 {
+            0.0
+        } else if len % 2 == 1 {
+            sorted[len / 2] as f64
         } else {
-            self.vals[self.vals.len() / 2]
+            (sorted[len / 2] + sorted[len / 2 - 1]) as f64 / 2.0
         }
     }
     fn is_empty(&self) -> bool {
-        self.vals.is_empty()
+        self.ring.is_empty()
     }
 }
 
@@ -182,7 +188,7 @@ struct SecState {
     total_up_secs: u64,
     total_down_secs: u64,
     time_diff_median: RunningMedian,
-    time_diff_median_ms: i64,
+    time_diff_median_ms: f64,
     prog_start_epoch: i64,
     running: bool,
     joined: bool,
@@ -290,7 +296,7 @@ impl SecondaryNode {
                 total_up_secs: 0,
                 total_down_secs: 0,
                 time_diff_median: RunningMedian::new(TIMEDIFF_MEDIAN_SIZE),
-                time_diff_median_ms: 0,
+                time_diff_median_ms: 0.0,
                 prog_start_epoch: 0,
                 running: false,
                 joined: false,
@@ -364,7 +370,7 @@ impl SecondaryNode {
             st.total_up_secs = 0;
             st.total_down_secs = 0;
             st.time_diff_median = RunningMedian::new(TIMEDIFF_MEDIAN_SIZE);
-            st.time_diff_median_ms = 0;
+            st.time_diff_median_ms = 0.0;
             st.prog_start_epoch = 0;
             st.running = true;
         }
@@ -700,7 +706,7 @@ impl SecondaryNode {
                     new_prg_start = true;
                     info!("New 'prog_start_epoch' value for secondary {}; resetting 'timeDiff' median", self.id + 1);
                     st.time_diff_median = RunningMedian::new(TIMEDIFF_MEDIAN_SIZE);
-                    st.time_diff_median_ms = 0;
+                    st.time_diff_median_ms = 0.0;
                 }
             }
         }
@@ -767,7 +773,7 @@ impl SecondaryNode {
 
         let split_ts_epoch_ms = payload.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
         let time_diff = self.state.lock().unwrap().time_diff_median_ms;
-        let split_ts_epoch_ms = split_ts_epoch_ms - time_diff;
+        let split_ts_epoch_ms = split_ts_epoch_ms - time_diff as i64;
 
         if self.is_action_mode() {
             // action mode: rate-limited event trigger
@@ -1001,7 +1007,7 @@ impl SecondaryNode {
     fn total_up_secs(&self) -> u64 {
         self.state.lock().unwrap().total_up_secs
     }
-    fn time_diff_median_ms(&self) -> i64 {
+    fn time_diff_median_ms(&self) -> f64 {
         self.state.lock().unwrap().time_diff_median_ms
     }
     fn add_up_time(&self, secs: u64) {
@@ -1053,6 +1059,125 @@ pub fn base64_encode(data: &[u8]) -> String {
 /// The primary-side manager (ClusterNodeSet).
 pub struct ClusterNodeSet {
     pub secondaries: Vec<Arc<SecondaryNode>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_matches_standard_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        // auth header style
+        assert_eq!(base64_encode(b"admin:pass"), "YWRtaW46cGFzcw==");
+    }
+
+    #[test]
+    fn password_masking_roundtrip() {
+        let secondaries = json!([
+            {"address": "a", "password": "secret1"},
+            {"address": "b", "password": ""},
+            {"address": "c"},
+        ]);
+        let masked = mask_secondary_passwords(&secondaries);
+        assert_eq!(masked[0]["password"], SECONDARY_PASSWORD_MASK);
+        assert_eq!(masked[1]["password"], ""); // empty passwords are not masked
+        assert!(masked[2].get("password").is_none());
+        // restore puts the real password back, matching by address
+        let mut restored = masked;
+        restore_secondary_passwords(&mut restored, &secondaries);
+        assert_eq!(restored[0]["password"], "secret1");
+        // matching falls back to position when the address changed
+        let mut changed = json!([
+            {"address": "new-address", "password": SECONDARY_PASSWORD_MASK},
+        ]);
+        restore_secondary_passwords(&mut changed, &secondaries);
+        assert_eq!(changed[0]["password"], "secret1");
+    }
+
+    #[test]
+    fn averager_tracks_min_max_last() {
+        let mut avg = Averager::new(LATENCY_AVG_SIZE);
+        assert_eq!(avg.avg(), 0.0);
+        for v in [100i64, 50, 200, 150] {
+            avg.add(v);
+        }
+        assert_eq!(avg.min, 50);
+        assert_eq!(avg.max, 200);
+        assert_eq!(avg.last, 150);
+        assert_eq!(avg.avg(), 125.0);
+        assert_eq!(avg.int_avg(), 125);
+        // fill to capacity, then confirm ring behavior: the oldest drops
+        for v in 0..LATENCY_AVG_SIZE as i64 {
+            avg.add(v);
+        }
+        assert_eq!(avg.len(), LATENCY_AVG_SIZE);
+        assert_eq!(avg.min, 0); // the original 50 dropped off long ago
+        avg.add(-5);
+        assert_eq!(avg.min, -5);
+        assert_eq!(avg.max, 29);
+    }
+
+    #[test]
+    fn running_median_matches_python_semantics() {
+        let mut med = RunningMedian::new(TIMEDIFF_MEDIAN_SIZE);
+        assert_eq!(med.median(), 0.0);
+        assert!(med.is_empty());
+        for v in [5i64, 1, 9] {
+            med.insert(v);
+        }
+        assert_eq!(med.median(), 5.0); // sorted [1,5,9], odd count
+        med.insert(3);
+        assert_eq!(med.median(), 4.0); // sorted [1,3,5,9]: midpoint of 3,5
+        // (window is 30 deep; nothing drops yet)
+        // fill past capacity and confirm the ring drops the OLDEST value,
+        // not the smallest
+        let mut med2 = RunningMedian::new(TIMEDIFF_MEDIAN_SIZE);
+        for v in 0..TIMEDIFF_MEDIAN_SIZE as i64 {
+            med2.insert(v);
+        }
+        assert_eq!(med2.median(), 14.5); // sorted 0..29, midpoint 14,15
+        med2.insert(1000); // drops 0
+        med2.insert(-1000); // drops 1
+        // sorted [-1000, 2..29 (28 values), 1000]: midpoint of 15,16
+        assert_eq!(med2.median(), 15.5);
+    }
+
+    #[test]
+    fn split_time_formatting() {
+        assert_eq!(format_split_time(0.0), "00:00.000");
+        assert_eq!(format_split_time(1.5), "00:01.500");
+        assert_eq!(format_split_time(65.25), "01:05.250");
+        assert_eq!(format_split_time(600.0), "10:00.000");
+    }
+
+    #[test]
+    fn epoch_conversion_is_recent() {
+        // the monotonic->epoch conversion must land near the current epoch
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let converted = epoch_millis_from_monotonic(crate::state::monotonic());
+        assert!((converted - now_epoch).abs() < 5000, "conversion drifted: {} vs {}", converted, now_epoch);
+        // 10 seconds in the past converts to ~10s earlier
+        let past = epoch_millis_from_monotonic(crate::state::monotonic() - 10.0);
+        assert!((now_epoch - past) >= 9500 && (now_epoch - past) <= 10500);
+    }
+
+    #[test]
+    fn payload_text_extracts_first_value() {
+        let v = payload_to_value(rust_socketio::Payload::Text(vec![json!({"node": 1})]));
+        assert_eq!(v["node"], 1);
+        let empty = payload_to_value(rust_socketio::Payload::Text(vec![]));
+        assert!(empty.is_null());
+    }
 }
 
 #[allow(dead_code)] // settings-UI/retry/status handlers land with the UI pass
@@ -1166,7 +1291,7 @@ impl ClusterNodeSet {
             secondary.clear_prev_pass_tstamps();
             if secondary.last_contact_time() > 0.0 {
                 let td = secondary.time_diff_median_ms();
-                if td.abs() > TIMEDIFF_WARNING_THRESH_MS {
+                if td.abs() > TIMEDIFF_WARNING_THRESH_MS as f64 {
                     info!("Secondary {} clock not synchronized with primary, timeDiff={}ms", secondary.id + 1, td);
                 } else {
                     debug!("Secondary {} clock synchronized OK with primary, timeDiff={}ms", secondary.id + 1, td);

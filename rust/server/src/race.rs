@@ -101,6 +101,15 @@ pub fn stage_race(state: &SharedState) {
             laps.clear();
         }
         drop(race);
+        // clear race history on every node (RHRace race-start tasks:
+        // history accumulates only for the current race)
+        {
+            let mut mock = state.mock.lock().unwrap();
+            for m in mock.iter_mut() {
+                m.history_values.clear();
+                m.history_times.clear();
+            }
+        }
         // clear any stuck crossing flags on real hardware (Python sends
         // FORCE_END_CROSSING when a race starts)
         if let Some(hw) = state.hardware.lock().unwrap().as_ref() {

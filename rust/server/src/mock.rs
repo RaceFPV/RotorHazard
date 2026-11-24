@@ -361,3 +361,131 @@ pub fn mock_rand_pct(seed: &mut u64) -> i64 {
         .wrapping_add(1442695040888963407);
     ((*seed >> 33) as i64).rem_euclid(100)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_csv_line_full_format() {
+        // the hardware-interface log format incl. peak/nadir history columns
+        let line = "12.5,3,1400,87,100,95,1000,T,80,20,91,60,55,25,80,75";
+        let rec = parse_csv_line(line).expect("parses");
+        let s = &rec.sample;
+        assert_eq!(rec.read_time, Some(12.5));
+        assert_eq!(s.lap_id, 3);
+        assert_eq!(s.rssi, 87);
+        assert!(s.cross_flag);
+        assert_eq!(s.node_peak_rssi, 100);
+        assert_eq!(s.pass_peak_rssi, 95);
+        assert_eq!(s.loop_time, 1000);
+        assert_eq!(s.pass_nadir_rssi, 80);
+        assert_eq!(s.node_nadir_rssi, 20);
+        assert_eq!(s.peak_rssi, 91);
+        assert_eq!(s.peak_first_time, 60);
+        assert_eq!(s.peak_last_time, 55);
+        assert_eq!(s.nadir_rssi, 25);
+        assert_eq!(s.nadir_first_time, 80);
+        assert_eq!(s.nadir_last_time, 75);
+        assert!(s.history_flag);
+        // malformed lines are rejected
+        assert!(parse_csv_line("bad,line").is_none());
+        assert!(parse_csv_line("1,2,3,nope,5,6,7,F,8,9,10,11,12,13,14,15").is_none());
+        // missing read time still parses (untimed replay)
+        let rec = parse_csv_line(",3,1400,87,100,95,1000,T,80,20,91,60,55,25,80,75").unwrap();
+        assert_eq!(rec.read_time, None);
+    }
+
+    #[test]
+    fn provider_selection_from_setting() {
+        // numbered settings and names both resolve; unknown falls back to none
+        assert!(matches!(provider_from_setting("0"), MockProvider::NoSignal));
+        assert!(matches!(provider_from_setting("junk"), MockProvider::NoSignal));
+        match provider_from_setting("2") {
+            MockProvider::Simulated(sim) => {
+                assert!(!sim.pass_peak_only);
+                assert!(sim.history_flag);
+            }
+            _ => panic!("setting 2 must be simulated"),
+        }
+        match provider_from_setting("3") {
+            MockProvider::Simulated(sim) => {
+                assert!(sim.pass_peak_only);
+                assert!(!sim.history_flag); // pass-peak-only: no history
+            }
+            _ => panic!("setting 3 must be simulated pass-peak-only"),
+        }
+        match provider_from_setting("4") {
+            MockProvider::Simulated(sim) => {
+                assert!(sim.pass_peak_only);
+                assert!(sim.history_flag);
+            }
+            _ => panic!("setting 4 must be simulated pass-peak-only+history"),
+        }
+    }
+
+    #[test]
+    fn marshal_types_match_python() {
+        assert_eq!(MockProvider::NoSignal.marshal_type(), 0); // FULL_RSSI
+        assert_eq!(MockProvider::ReplayCsv(Vec::new()).marshal_type(), 0);
+        let sim_full = MockProvider::Simulated(SimulatedState {
+            pass_peak_only: false,
+            history_flag: true,
+            state: std::collections::HashMap::new(),
+        });
+        assert_eq!(sim_full.marshal_type(), 0);
+        let sim_hybrid = MockProvider::Simulated(SimulatedState {
+            pass_peak_only: true,
+            history_flag: true,
+            state: std::collections::HashMap::new(),
+        });
+        assert_eq!(sim_hybrid.marshal_type(), 1); // HYBRID_PASS_PEAK_RSSI
+        let sim_ppo = MockProvider::Simulated(SimulatedState {
+            pass_peak_only: true,
+            history_flag: false,
+            state: std::collections::HashMap::new(),
+        });
+        assert_eq!(sim_ppo.marshal_type(), 2); // PASS_PEAK_ONLY
+    }
+
+    #[test]
+    fn simulated_read_generates_history_and_lap_advances() {
+        let mut sim = SimulatedState {
+            pass_peak_only: false,
+            history_flag: true,
+            state: std::collections::HashMap::new(),
+        };
+        let mut state = SimState {
+            lap_number: 0,
+            is_crossing: false,
+            pass_peak_rssi: 0,
+            pass_nadir_rssi: 100,
+        };
+        let mut seed = 12345u64;
+        let mut saw_pass_start = false;
+        for _ in 0..2000 {
+            let s = simulated_read(&mut state, &mut seed, 5, true);
+            // history events ride every reading (peak == current rssi)
+            if s.history_flag {
+                assert_eq!(s.peak_rssi, s.rssi);
+                assert_eq!(s.nadir_rssi, s.rssi);
+            }
+            if s.cross_flag {
+                saw_pass_start = true;
+                assert!(s.rssi >= 60 && s.rssi < 150);
+            } else {
+                assert!(s.rssi >= 20 && s.rssi < 40);
+            }
+        }
+        assert!(saw_pass_start, "crossings must occur within 2000 readings");
+        assert!(state.lap_number > 0, "laps must advance within 2000 readings");
+        // pass-peak-only provider: no history flag
+        let s = simulated_read(&mut state, &mut seed, 5, false);
+        assert!(!s.history_flag);
+    }
+
+    #[test]
+    fn load_replay_missing_file_is_none() {
+        assert!(load_replay("/nonexistent/mock_data_1.csv").is_none());
+    }
+}
