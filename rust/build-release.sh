@@ -52,3 +52,21 @@ echo "== packing =="
 tar -czf "dist/rh-server-rust-${VERSION_TAG}.tar.gz" -C dist "rh-server-rust-${VERSION_TAG}"
 echo "Bundle: dist/rh-server-rust-${VERSION_TAG}.tar.gz"
 du -sh "$OUT" "dist/rh-server-rust-${VERSION_TAG}.tar.gz"
+
+# Cross-compiled aarch64 (Pi) bundle when the target toolchain is
+# installed (rustup target add aarch64-unknown-linux-gnu + a GNU linker).
+# Otherwise build natively on the Pi with this same script.
+if rustup target list --installed 2>/dev/null | grep -q '^aarch64-unknown-linux-gnu$'; then
+    echo "== building aarch64 (Raspberry Pi) binary =="
+    cargo build --release --manifest-path rust/server/Cargo.toml --target aarch64-unknown-linux-gnu
+    PI_OUT="dist/rh-server-rust-${VERSION_TAG}-aarch64"
+    rm -rf "$PI_OUT"
+    mkdir -p "$PI_OUT"
+    cp rust/target/aarch64-unknown-linux-gnu/release/rh-server "$PI_OUT/"
+    cp "$OUT/run.sh" "$OUT/README.txt" "$PI_OUT/"
+    cp LICENSE "$PI_OUT/" 2>/dev/null || true
+    tar -czf "dist/rh-server-rust-${VERSION_TAG}-aarch64.tar.gz" -C dist "rh-server-rust-${VERSION_TAG}-aarch64"
+    echo "Bundle: dist/rh-server-rust-${VERSION_TAG}-aarch64.tar.gz"
+else
+    echo "(aarch64 target not installed; skipping Pi bundle)"
+fi

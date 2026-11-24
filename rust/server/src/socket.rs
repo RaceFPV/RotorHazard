@@ -1808,12 +1808,12 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 "raceStop" => crate::race::stop_race(&state),
                 "lapsClear" => crate::race::discard_laps(&state),
                 "raceStage" => {
-                    // full mirror staging needs the secondary race format;
-                    // accepted but not fully mirrored yet
-                    tracing::debug!("Mirror stage event received (full mirroring pending)");
+                    // mirror staging: start at the primary's instant,
+                    // corrected by the secondary's clock offset
+                    crate::race::stage_race_external(&state, &_evt_args);
                 }
                 "raceLapRecorded" => {
-                    // mirror results storage pending
+                    // mirror results storage pending (results cache)
                 }
                 _ => {}
             }

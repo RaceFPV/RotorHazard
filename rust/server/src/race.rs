@@ -130,6 +130,65 @@ pub fn stage_race(state: &SharedState) {
 
 }
 
+/// Stages a race commanded by a cluster primary in mirror mode: the
+/// start fires at the primary's start instant, corrected by the
+/// secondary's clock offset (race.stage with secondary_format in
+/// Python).
+pub fn stage_race_external(state: &SharedState, args: &serde_json::Value) {
+    let start_epoch_ms = args
+        .get("start_time_epoch_ms")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    if start_epoch_ms <= 0.0 {
+        return; // no start instant known; ignore
+    }
+    let correction_ms = args.get("correction_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let target_epoch_ms = start_epoch_ms - correction_ms;
+    let now_epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0);
+    // delay until the primary's start instant arrives locally
+    let delay_ms = (target_epoch_ms - now_epoch_ms).max(0.0);
+
+    {
+        let mut race = state.race.lock().unwrap();
+        if race.race_status != RACE_STATUS_READY {
+            return;
+        }
+        race.race_status = RACE_STATUS_STAGING;
+    }
+    emit_race_status(state);
+
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+        let mut race = state.race.lock().unwrap();
+        if race.race_status != RACE_STATUS_STAGING {
+            return;
+        }
+        race.start_time_monotonic = monotonic();
+        race.start_time_epoch_ms = epoch_millis_now();
+        race.start_time_formatted = now_formatted_str();
+        race.race_status = RACE_STATUS_RACING;
+        for laps in &mut race.node_laps {
+            laps.clear();
+        }
+        drop(race);
+        {
+            let mut mock = state.mock.lock().unwrap();
+            for m in mock.iter_mut() {
+                m.history_values.clear();
+                m.history_times.clear();
+            }
+        }
+        emit_race_status(&state);
+        state.led_manager.trigger("raceStart", &json!({}));
+        state.led_manager.trigger_idle(RACE_STATUS_RACING);
+        state.vrx_manager.do_race_start(&json!({}));
+    });
+}
+
 /// Simulates a lap crossing on the given node (mock-node debug path).
 pub fn simulate_lap(state: &SharedState, node_index: usize) {
     register_lap_at(state, node_index, monotonic());
