@@ -156,6 +156,107 @@ impl HardwareInterface {
         }
     }
 
+    /// Scans /dev for newly-attached serial nodes and adds them at
+    /// runtime (check_serial_ports_appeared in server.py).  Candidate
+    /// ports are ttyUSB*/ttyACM* devices not already managed; `exclude`
+    /// filters configured/other-service ports.
+    pub fn hotplug_scan(&mut self, state: &SharedState, exclude: &[String]) {
+        let dir = match std::fs::read_dir("/dev") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let managed: std::collections::HashSet<String> = self
+            .port_names
+            .iter()
+            .chain(self.nodes.iter().map(|n| &n.port))
+            .map(|p| p.trim_start_matches("/dev/").to_string())
+            .collect();
+        let mut candidates: Vec<String> = Vec::new();
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !(name.starts_with("ttyUSB") || name.starts_with("ttyACM")) {
+                continue;
+            }
+            if managed.contains(&name) || exclude.iter().any(|e| e.contains(&name)) {
+                continue;
+            }
+            candidates.push(name);
+        }
+        if candidates.is_empty() {
+            return;
+        }
+        let race_status = state.race.lock().unwrap().race_status;
+        if race_status == RACE_STATUS_RACING || race_status == RACE_STATUS_STAGING {
+            return; // no discovery while a race is live (Python parity)
+        }
+        let port_paths: Vec<String> = candidates
+            .iter()
+            .map(|c| format!("/dev/{}", c))
+            .collect();
+        tracing::info!("New serial port(s) detected: {:?}", port_paths);
+        let found = serial::discover_nodes(&port_paths, None);
+        for node in found {
+            let idx = self.nodes.len();
+            tracing::info!("Hot-plugged serial node {} at {} (API {}, fw {})",
+                idx + 1, node.port, node.api_level, node.firmware_version);
+            self.lap_stats_supported.push(node.api_level >= 13);
+            self.last_rssi.push(0);
+            self.last_crossing.push(false);
+            self.last_peak.push(0);
+            self.last_lap_id.push(-1);
+            self.server_crossing_active.push(false);
+            self.server_crossing_start.push(0.0);
+            self.cur_enter_at.push(node.enter_at_level);
+            self.cur_exit_at.push(node.exit_at_level);
+            self.read_fail_streak.push(0);
+            self.lap_check_pending.push(false);
+            self.port_names.push(node.port.clone());
+            let arc = Arc::new(node);
+            // adopt the DB profile's frequency for the new seat
+            let dbf = crate::db::with_db(state, |conn| {
+                let pid = crate::db::current_profile_id(conn);
+                crate::db::profile_frequencies(conn, pid)
+                    .get(idx)
+                    .map(|(_, _, f)| *f)
+                    .unwrap_or(0)
+            });
+            if dbf != 0 && dbf != arc.frequency as i64 {
+                arc.write_frequency(dbf as u16);
+            }
+            self.nodes.push(arc);
+        }
+        if self.nodes.len() > self.lap_stats_supported.len() {
+            // keep the vectors consistent even on partial discovery
+            self.pad_state_vectors();
+        }
+        // grow the mock-seat state so the UI/heartbeat cover the new seats
+        {
+            let mut mock = state.mock.lock().unwrap();
+            while mock.len() < self.nodes.len() {
+                mock.push(MockNodeState::new());
+            }
+        }
+        // grow the seat count so the UI shows the new seats
+        state.set_node_count(self.nodes.len());
+        crate::socket::broadcast(state, "node_data", crate::payloads::build_node_data(&state.race.lock().unwrap()));
+    }
+
+    fn pad_state_vectors(&mut self) {
+        let n = self.nodes.len();
+        let pad = |v: &mut Vec<i64>| while v.len() < n { v.push(0) };
+        pad(&mut self.last_rssi);
+        pad(&mut self.last_peak);
+        while self.last_crossing.len() < n { self.last_crossing.push(false); }
+        while self.lap_stats_supported.len() < n { self.lap_stats_supported.push(false); }
+        while self.last_lap_id.len() < n { self.last_lap_id.push(-1); }
+        while self.server_crossing_active.len() < n { self.server_crossing_active.push(false); }
+        while self.server_crossing_start.len() < n { self.server_crossing_start.push(0.0); }
+        while self.cur_enter_at.len() < n { self.cur_enter_at.push(0); }
+        while self.cur_exit_at.len() < n { self.cur_exit_at.push(0); }
+        while self.read_fail_streak.len() < n { self.read_fail_streak.push(0); }
+        while self.lap_check_pending.len() < n { self.lap_check_pending.push(false); }
+    }
+
     /// Records a failed read pass and reopens the port + restores node
     /// settings after a sustained failure (_check_restore_node_settings).
     fn handle_read_failure(&mut self, idx: usize, node: &SerialNode) {

@@ -257,14 +257,14 @@ pub fn save_laps(state: &SharedState) -> bool {
                             .map(|x| x.as_i64().unwrap_or(90))
                             .collect::<Vec<_>>()
                     })
-                    .unwrap_or_else(|| vec![90; state.num_nodes])
+                    .unwrap_or_else(|| vec![90; state.node_count()])
             };
 
             // snapshot the RSSI history and marshal type for calibration
             // suggestions on saved runs (Python saves node.history_*)
             let history_snap: Vec<(Vec<i64>, Vec<f64>)> = {
                 let mock = state.mock.lock().unwrap();
-                (0..state.num_nodes)
+                (0..state.node_count())
                     .map(|i| {
                         mock.get(i)
                             .map(|m| (m.history_values.clone(), m.history_times.clone()))
@@ -277,7 +277,7 @@ pub fn save_laps(state: &SharedState) -> bool {
                 holder.1.marshal_type()
             };
 
-            for node_index in 0..state.num_nodes {
+            for node_index in 0..state.node_count() {
                 let freq = freqs.get(node_index).map(|(_, _, f)| *f).unwrap_or(0);
                 if freq == 0 {
                     continue; // disabled node: no pilot race
@@ -344,7 +344,7 @@ pub fn save_laps(state: &SharedState) -> bool {
             let fmt = crate::results::FormatInfo::from_conn(conn, format_id);
             let consec = db::get_option_int(conn, "consecutivesCount", 3);
             let mut pilots_in = Vec::new();
-            for node_index in 0..state.num_nodes {
+            for node_index in 0..state.node_count() {
                 let pilot_id = pilots_snap[node_index];
                 if pilot_id.is_none() {
                     continue;

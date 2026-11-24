@@ -546,7 +546,7 @@ pub fn run_import(state: &SharedState, source: &str, args: &Value) -> bool {
                              VALUES (?1, ?2, NULL, NULL, NULL, '{}', NULL, 0, 0, 0, 1, NULL, NULL)",
                             rusqlite::params![id, displayname],
                         );
-                        for node_index in 0..state.num_nodes as i64 {
+                        for node_index in 0..state.node_count() as i64 {
                             let _ = conn.execute(
                                 "INSERT INTO heat_node (id, heat_id, node_index, pilot_id, color, method, seed_rank, seed_id)
                                  VALUES (?1, ?2, ?3, NULL, NULL, 0, NULL, NULL)",

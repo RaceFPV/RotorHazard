@@ -25,7 +25,7 @@ fn api_response(status: StatusCode, body: Value) -> Response {
 pub async fn status(State(state): State<SharedState>) -> impl IntoResponse {
     let (race_status, current_heat, num_nodes) = {
         let race = state.race.lock().unwrap();
-        (race.race_status, race.current_heat, state.num_nodes)
+        (race.race_status, race.current_heat, state.node_count())
     };
     let (profile, format) = db::with_db(&state, |conn| {
         (

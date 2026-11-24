@@ -22,6 +22,7 @@ mod payloads;
 mod phase3;
 mod results;
 mod race;
+mod sensor;
 mod socket;
 mod state;
 mod util;
@@ -223,7 +224,7 @@ async fn main() {
     let state: SharedState = Arc::new(AppState {
         db: Arc::new(Mutex::new(conn)),
         race: Arc::new(Mutex::new(state::RaceState::new(num_nodes))),
-        num_nodes,
+        num_nodes: std::sync::atomic::AtomicUsize::new(num_nodes),
         io: std::sync::OnceLock::new(),
         info: ServerInfo {
             release_version: "4.6.0-dev.1-rust".to_string(),
@@ -295,6 +296,26 @@ async fn main() {
     state.led_manager.trigger("startup", &json!({}));
     state.vrx_manager.do_startup(&json!({}));
 
+    // serial-port hot-plug scan (check_serial_ports_appeared): every 5s
+    // outside a race, detect newly-attached ttyUSB/ttyACM nodes
+    {
+        let hp_state = state.clone();
+        let led_cfg_port = led_config
+            .get("LED")
+            .and_then(|l| l.get("SERIAL_CTRLR_PORT"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if let Some(hw) = hp_state.hardware.lock().unwrap().as_mut() {
+                    hw.hotplug_scan(&hp_state, &[led_cfg_port.clone()]);
+                }
+            }
+        });
+    }
+
     // cluster: start connections to configured secondary timers
     if let Some(cluster) = crate::cluster::ClusterNodeSet::new(state.clone(), &led_config) {
         let _ = state.cluster.set(cluster);
@@ -335,6 +356,7 @@ async fn main() {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut hb_tick: u64 = 0;
             loop {
                 interval.tick().await;
                 let payload = db::with_db(&hb_state, |conn| {
@@ -342,38 +364,54 @@ async fn main() {
                     let freqs = db::profile_frequencies(conn, profile_id);
                     let mock = hb_state.mock.lock().unwrap();
                     json!({
-                        "current_rssi": (0..hb_state.num_nodes)
+                        "current_rssi": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.current_rssi).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "frequency": (0..hb_state.num_nodes)
+                        "frequency": (0..hb_state.node_count())
                             .map(|i| freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "loop_time": (0..hb_state.num_nodes)
+                        "loop_time": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.loop_time).unwrap_or(1))
                             .collect::<Vec<_>>(),
-                        "crossing_flag": (0..hb_state.num_nodes)
+                        "crossing_flag": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.crossing_flag).unwrap_or(false))
                             .collect::<Vec<_>>(),
                     })
                 });
                 socket::broadcast(&hb_state, "heartbeat", payload);
 
+                // periodic environmental-data and cluster-status broadcasts
+                // (heartbeat_thread_function in server.py)
+                hb_tick += 1;
+                if hb_tick % 8 == 0 {
+                    socket::broadcast(&hb_state, "environmental_data",
+                        crate::sensor::environmental_data());
+                }
+                if hb_tick % 4 == 2 {
+                    if let Some(cluster) = hb_state.cluster.get() {
+                        if cluster.has_secondaries() {
+                            socket::broadcast(&hb_state, "cluster_status",
+                                cluster.get_cluster_status_info());
+                        }
+                    }
+                }
+
                 let node_payload = {
                     let mock = hb_state.mock.lock().unwrap();
                     json!({
-                        "node_peak_rssi": (0..hb_state.num_nodes)
+                        "node_peak_rssi": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.node_peak_rssi).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "node_nadir_rssi": (0..hb_state.num_nodes)
+                        "node_nadir_rssi": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.node_nadir_rssi).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "pass_peak_rssi": (0..hb_state.num_nodes)
+                        "pass_peak_rssi": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.pass_peak_rssi).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "pass_nadir_rssi": (0..hb_state.num_nodes)
+                        "pass_nadir_rssi": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.pass_nadir_rssi).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "debug_pass_count": (0..hb_state.num_nodes)
+                        "debug_pass_count": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.debug_pass_count).unwrap_or(0))
                             .collect::<Vec<_>>(),
                     })
@@ -488,7 +526,7 @@ async fn render_page(
         .find(|(p, _)| *p == path)
         .map(|(_, t)| *t)
         .unwrap_or("home.html");
-    pages::render(template, state.num_nodes, pages::page_context(&path, &state))
+    pages::render(template, state.node_count(), pages::page_context(&path, &state))
 }
 
 async fn api_docs() -> impl axum::response::IntoResponse {

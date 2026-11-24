@@ -230,6 +230,7 @@ pub struct Strip {
     spi: Option<std::fs::File>,
     brightness: u8,
     order: String,
+    #[allow(dead_code)] // kept for diagnostics
     spi_device: String,
 }
 

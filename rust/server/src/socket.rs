@@ -226,22 +226,29 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 });
                 let _ = socket.emit("node_tuning", &payload);
             }
-            Some("environmental_data") => {
-                let _ = socket.emit("environmental_data", &json!([]));
-            }
             Some("led_effects") => {
-                let _ = socket.emit("led_effects", &json!({"enabled": false, "effects": {}}));
+                let _ = socket.emit("led_effects", &json!({"enabled": true, "effects": {}}));
             }
             Some("led_effect_setup") => {
-                let _ = socket.emit("led_effect_setup_data", &json!({"enabled": false}));
+                let _ = socket.emit("led_effect_setup_data", &json!({"enabled": true}));
             }
             Some("cluster_status") => {
-                let _ = socket.emit("cluster_status", &json!({}));
+                let payload = state
+                    .cluster
+                    .get()
+                    .map(|c| c.get_cluster_status_info())
+                    .unwrap_or(json!({"secondaries": []}));
+                let _ = socket.emit("cluster_status", &payload);
             }
             Some("vrx_list") => {
                 let _ = socket.emit("vrx_list", &json!({
-                    "enabled": false, "controllers": Value::Null, "devices": Value::Null,
+                    "enabled": state.vrx_manager.is_enabled(),
+                    "controllers": state.vrx_manager.get_controller_status(),
+                    "devices": state.vrx_manager.get_all_device_status(),
                 }));
+            }
+            Some("environmental_data") => {
+                let _ = socket.emit("environmental_data", &crate::sensor::environmental_data());
             }
             Some("upd_cfg_files_list") => {
                 let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
@@ -483,7 +490,7 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
             )
             .unwrap();
             // one slot per node
-            for node_index in 0..state.num_nodes as i64 {
+            for node_index in 0..state.node_count() as i64 {
                 conn.execute(
                     "INSERT INTO heat_node (id, heat_id, node_index, pilot_id, color, method, seed_rank, seed_id)
                      VALUES (?1, ?2, ?3, NULL, NULL, 0, NULL, NULL)",
@@ -549,7 +556,7 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
         // if current heat altered, refresh live node pilots
         // (lock order: DB first, then race -- never hold race across db calls)
         {
-            let pilots = db::with_db(&state, |conn| heat_node_pilots(conn, heat_id, state.num_nodes));
+            let pilots = db::with_db(&state, |conn| heat_node_pilots(conn, heat_id, state.node_count()));
             let mut race = state.race.lock().unwrap();
             if race.current_heat == Some(heat_id) {
                 race.node_pilots = pilots;
@@ -675,7 +682,7 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
             if !socket_authed(&sock, &state) { return; }
         let data = data.0;
         let Some(heat_id) = data.get("heat").and_then(|v| v.as_i64()) else { return };
-        let pilots = db::with_db(&state, |conn| heat_node_pilots(conn, heat_id, state.num_nodes));
+        let pilots = db::with_db(&state, |conn| heat_node_pilots(conn, heat_id, state.node_count()));
         {
             let mut race = state.race.lock().unwrap();
             race.current_heat = Some(heat_id);
@@ -858,7 +865,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         let state = s.0.clone();
         let data = data.0;
         if let Some(node) = data.get("node").and_then(|v| v.as_i64()) {
-            if node >= 0 && (node as usize) < state.num_nodes {
+            if node >= 0 && (node as usize) < state.node_count() {
                 race_ops::simulate_lap(&state, node as usize);
             }
         }
@@ -1634,11 +1641,11 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         let preset = data.get("preset").and_then(|v| v.as_str()).unwrap_or("RB");
         db::with_db(&state, |conn| {
             let profile_id = db::current_profile_id(conn);
-            let mut nb = vec![Value::Null; state.num_nodes];
-            let mut nc = vec![Value::Null; state.num_nodes];
-            let mut nf = vec![json!(0); state.num_nodes];
+            let mut nb = vec![Value::Null; state.node_count()];
+            let mut nc = vec![Value::Null; state.node_count()];
+            let mut nf = vec![json!(0); state.node_count()];
             for (i, (b, c, f)) in crate::util::preset_frequencies(preset).into_iter().enumerate() {
-                if i < state.num_nodes {
+                if i < state.node_count() {
                     nb[i] = json!(b);
                     nc[i] = json!(c);
                     nf[i] = json!(f);
@@ -1809,6 +1816,18 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                     // mirror results storage pending
                 }
                 _ => {}
+            }
+        }
+    });
+
+    socket.on("retry_secondary", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let secondary_id = data.0.get("secondary_id").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if secondary_id >= 0 {
+            if let Some(cluster) = state.cluster.get() {
+                cluster.retry_secondary(&state, secondary_id as usize);
+                let _ = sock.emit("cluster_status", &cluster.get_cluster_status_info());
             }
         }
     });
@@ -2094,7 +2113,7 @@ fn build_current_leaderboard(state: &SharedState) -> Value {
         let profile_id = db::current_profile_id(conn);
         let freqs = db::profile_frequencies(conn, profile_id);
         let mut pilots_in = Vec::new();
-        for node_index in 0..state.num_nodes {
+        for node_index in 0..state.node_count() {
             let freq = freqs.get(node_index).map(|(_, _, f)| *f).unwrap_or(0);
             if freq == 0 {
                 continue;
@@ -2383,7 +2402,7 @@ pub fn broadcast_race_list(state: &SharedState) {
 
 /// Switches the current heat even mid-race-state restrictions (set_heat force).
 fn set_heat_force(state: &SharedState, heat_id: i64) -> Result<(), ()> {
-    let pilots = db::with_db(state, |conn| heat_node_pilots(conn, heat_id, state.num_nodes));
+    let pilots = db::with_db(state, |conn| heat_node_pilots(conn, heat_id, state.node_count()));
     {
         let mut race = state.race.lock().unwrap();
         race.current_heat = Some(heat_id);

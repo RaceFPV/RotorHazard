@@ -1554,7 +1554,7 @@ pub fn suggest_for_seat(
     state: &crate::state::SharedState,
     seat_index: i64,
 ) -> (Option<CalibrationSuggestion>, Option<NoSuggestion>) {
-    if seat_index < 0 || seat_index >= state.num_nodes as i64 {
+    if seat_index < 0 || seat_index >= state.node_count() as i64 {
         return (None, Some(NoSuggestion::NotFound));
     }
     // pass-peak-only interfaces record no RSSI trace
@@ -1885,7 +1885,7 @@ pub fn auto_calibrate(state: &crate::state::SharedState) {
         tracing::debug!("Skipping auto calibration; server in practice mode");
         return;
     }
-    for seat_index in 0..state.num_nodes {
+    for seat_index in 0..state.node_count() {
         let (enter, exit_at) = find_best_calibration_values(state, seat_index);
         let (cur_enter, cur_exit, _) = current_levels(state, seat_index);
         if cur_enter != enter {

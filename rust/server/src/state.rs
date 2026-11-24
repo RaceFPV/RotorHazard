@@ -285,7 +285,8 @@ pub struct ServerInfo {
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub race: Arc<Mutex<RaceState>>,
-    pub num_nodes: usize,
+    /// Number of seats; grows when nodes hot-plug at runtime
+    pub num_nodes: std::sync::atomic::AtomicUsize,
     /// SocketIo handle; set once after the layer is built with state
     pub io: std::sync::OnceLock<SocketIo>,
     pub info: ServerInfo,
@@ -312,6 +313,18 @@ pub struct AppState {
     pub cluster_joined: std::sync::atomic::AtomicBool,
     /// Instance token emitted in load_all; clients reload when it changes
     pub server_instance_token: f64,
+}
+
+impl AppState {
+    /// Current seat count (num_nodes is runtime-growable).
+    pub fn node_count(&self) -> usize {
+        self.num_nodes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[allow(dead_code)] // hot-plug updates via set_node_count on add
+    pub fn set_node_count(&self, n: usize) {
+        self.num_nodes.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 pub type SharedState = Arc<AppState>;
