@@ -1,94 +1,125 @@
-![RotorHazard Logo](/src/server/static/image/RotorHazard%20Logo.svg)
+# RustHazard
 
-# RotorHazard
-**FPV Race Timing and Event Management**
+A Rust drone racing server.
 
-RotorHazard is an open-source timing and event management system for FPV drone racing. It tracks the video signals broadcast by race drones to trigger lap times, and processes them with a central server (usually a Raspberry Pi). The server's front-end web interface provides race organizer management, pilot/spectator information, and race results. Supports up to 16 simultaneous racers.
+Wire-compatible with the original Python implementation: same database
+schema, config.json, Socket.IO protocol, and serial-node firmware
+protocol.
 
-> [!TIP]
->Join a community to discuss RotorHazard: [Discord](https://discord.gg/ANKd2pzBKH) | [Facebook](https://www.facebook.com/groups/rotorhazard)
->
-> Sponsor RtorHazard's development:[GitHub](https://github.com/sponsors/HazardCreative) | [Patreon](https://www.patreon.com/rotorhazard)
+Derived from [RotorHazard](https://github.com/RotorHazard/RotorHazard) — the Python original.
+The Python source in `src/server/` and `src/interface/` is kept as the
+reference specification — the sync pipeline tracks upstream changes to
+it and ports behavioral differences to Rust.
 
+## Why RustHazard
 
-## Features
-* Self-contained on local hardware, no internet connection needed
-* Server synchronized with user interface for accurate start/end signals; compensates for poor network connectivity
-* Connect other systems and extend functionality via [plugins](doc/Plugins.md)
-* Server runs on any device supporting Python
+The name is a pun: RotorHazard → RustHazard. Both rotors and rust are
+hazards.
 
-### Timing
-* Verified accuracy by independent 3rd party testing
-* **Never miss a lap**; Recover laps with full accuracy by reviewing race history (marshaling)
-* Accurately tracks analog and digital (HD) video transmitters
-* Simple visual system calibration before or after a race has completed
-* Learns which calibration values work for each pilot and automatically applies them to new races (adaptive calibration)
-* Advanced signal filtering allows accurate reading both indoors and outdoors, even in difficult multipathing environments
+## Status
 
-### Event Management
-* Run events with hundreds of pilots and race heats
-* Manage pilots, heats, classes, and race formats before or after races are run
-* Supports common event/race formats and ranking structures; extensible by plugin
-* Statistics broken out by event, class, heat, and round
-* Generates overlay displays and results pages for use with live streaming software such as OBS
-* LED and audio support indicate race staging, starts, lap times, and other events
-* Send live updates of lap times and split times to external systems such as pilot OSD
+- Single-binary server: embedded templates/static, SQLite database,
+  Socket.IO + JSON API, admin auth, calibration, LED effects, cluster
+  (secondary-timer) support, Linux sensors.
+- Hardware: serial RH nodes (STM32/ESP32), runtime USB hot-plug, node
+  firmware updates (AN3155 bootloader), mock nodes with simulated RSSI.
+- The Python plugin ecosystem is not yet hosted; bundled LED strip
+  effects, Linux sensors, and cluster/VRx frameworks are ported natively.
 
-<br />
+## Building
 
-## Getting Started
+```
+cargo build --release --manifest-path rust/server/Cargo.toml
+```
 
-RotorHazard consists of three primary components: Timing hardware, server, and frontend interface. **Most users will begin with RotorHazard by building or buying timing hardware and then installing the server software on it.**
+Release bundles (including an aarch64/Pi bundle when the cross target is
+installed — `rustup target add aarch64-unknown-linux-gnu`):
 
-> [!IMPORTANT]
-> Live documentation may contain information that does not apply to the current release. For documentation relating to the *current stable version only*, follow the [Documentation](https://github.com/RotorHazard/RotorHazard/releases/latest#documentation) link on the [latest-release page](https://github.com/RotorHazard/RotorHazard/releases/latest).
+```
+./rust/build-release.sh [version-tag]
+```
 
-### Timing Hardware
+Or build natively on the Pi with the same script.
 
-RotorHazard makes use of a collection of RX5808 video receiver modules. Receivers are tuned to active FPV race channels and monitor their signal strength. A small but dedicated processor (Arduino or STM32) is used to monitor the modules and communicate with the server. Timer builds generally include hardware to run the server as well, making a self-contained unit.
+## Running
 
-- Choose a style from the available [Build Resources](resources/README.md). Build styles include circuit boards, BOM, and 3D-printable cases.
-- [Delta5 Race Timer](https://github.com/scottgchin/delta5_race_timer) hardware is still supported and runs with full accuracy. Replace the Delta5 server software using the current RotorHazard server [setup instructions](doc/Software%20Setup.md), ensuring that you complete a [re-flash of the Arduinos](doc/Software%20Setup.md#rotorhazard-node-code).
+```
+cd rust/target/release        # or an extracted dist bundle
+./rh-server                   # data dir auto-resolved (see below)
+```
 
-### Server
+Environment:
 
-The RotorHazard server aggregates timing signals, handles event structure, calculates results, provides the management interface, and communicates with external timers and systems. It can be run on most systems where Python can be installed, but the recommended and best supported installation is to a **Raspberry Pi**.
+| Variable | Purpose |
+|---|---|
+| `RH_DATA_DIR` | data directory (config.json + database.db) |
+| `RH_PORT` | override HTTP port |
+| `RH_NODES` | mock node count when no hardware is present (min 8) |
 
-> [!NOTE]
-> The [RotorHazard Install Manager](https://github.com/RotorHazard/RH_Install-Manager) can greatly simplify installation. Once you have installed the operating system to your SD card, download and run the Install Manager.
+Data-dir resolution order: `RH_DATA_DIR` → `./data` → `~/rh-data` →
+serial-discovery default, matching the Python install layout. An
+existing Python `data/` directory works as-is (same database schema and
+config.json keys); unknown config keys are ignored.
 
-> [!IMPORTANT]
-> The 'main' branch in the GitHub repository will usually contain the latest development code, which may not be stable. To install or upgrade to the latest stable release, please visit the [latest-release page](https://github.com/RotorHazard/RotorHazard/releases/latest).
+## Upgrading from the Python server
 
-### Frontend (Event Management) Interface
+1. Stop the Python server.
+2. Point the Rust server at the existing data directory:
+   `RH_DATA_DIR=/home/pi/rh-data ./rh-server` (or copy `data/` next to
+   the binary).
+3. The database migrates in place (SQLite, same schema); a config.json
+   with `SERIAL_PORTS` enables hardware nodes:
 
-The frontend interface is used for event management and viewing results. The server can be accessed by any device (laptop, phone, tablet) with a modern web browser (Firefox, Chrome, Safari) on any operating system (Windows, MacOS, Android, iOS).
+```json
+{
+  "SECRETS": { "ADMIN_USERNAME": "", "ADMIN_PASSWORD": "" },
+  "GENERAL": { "SERIAL_PORTS": ["ttyAMA0"] }
+}
+```
 
-- Once the server is running, connect to the server's address using standard IP-based networking.
-- All event management is done through the interface.
-- No dedicated software or app is necessary to access the interface.
+## systemd service (Raspberry Pi)
 
-<br />
+```ini
+[Unit]
+Description=RustHazard Server
+After=network.target
 
-## Additional Resources
+[Service]
+Type=simple
+User=pi
+Environment=RH_DATA_DIR=/home/pi/rh-data
+ExecStart=/home/pi/rh-rust/rh-server
+Restart=on-failure
+RestartSec=5
 
-RotorHazard's features and functionality can be greatly extended beyond the core system.
+[Install]
+WantedBy=multi-user.target
+```
 
-### Plugins
+The serial device must be accessible to the service user — for the
+primary UART add a udev rule:
 
-Plugins allow 3rd parties to develop code which runs on the RotorHazard server.
-- "Community Plugins" may be found within RotorHazard's interface. From here, plugins are easily downloaded, installed, and upgraded.
-- See [Plugins](doc/Plugins.md) for information on manual installation.
-- Individual plugins may have specific setup requirements. Read each plugin's documentation before use.
+```
+KERNEL=="ttyAMA0", GROUP="dialout", MODE="0660"
+```
 
-### Wiki
+and remove `console=serial0,115200` from `/boot/firmware/cmdline.txt`
+plus disable `serial-getty@ttyAMA0` so the login console does not own
+the port.
 
-Many additional resources are available from the [Wiki](https://github.com/RotorHazard/RotorHazard/wiki), including extended tutorials, build tools, SD card images, and video content. Browsing these resources is strongly recommended for new users.
+## Docker
 
-<br />
+`rust/Dockerfile` builds a container image (data mounted at /data).
 
-## Feedback
+## Test suites
 
-To report bugs or request features, please [post a GitHub issue](https://github.com/RotorHazard/RotorHazard/issues). When reporting issues, use the "Download Logs" button and include the generated '.zip' file.
+- `cargo test` (rust/server): 50+ unit tests, including the calibration
+  engine validated differentially against Python-generated fixtures.
+- `src/tests/protocol/`: language-neutral protocol characterization
+  suite (68 tests) — passes against the Python server and this
+  implementation:
 
-Community contributions are welcome and encouraged; see [Development](doc/Development.md) for more information.
+```
+cargo build --manifest-path rust/server/Cargo.toml
+RH_TEST_URL=http://127.0.0.1:<port> python3 -m unittest discover -s src/tests/protocol
+```
