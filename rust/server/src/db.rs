@@ -164,6 +164,22 @@ pub fn with_db<T>(state: &SharedState, f: impl FnOnce(&Connection) -> T) -> T {
 }
 
 
+/// Unique-ifies a name against existing names (RHUtils.uniqueName):
+/// "Name" -> "Name 2" -> "Name 3"...
+pub fn unique_name(desired: &str, others: &[String]) -> String {
+    if others.iter().any(|n| n == desired) {
+        let next = match desired.rsplit_once(' ') {
+            Some((base, num)) if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) => {
+                format!("{} {}", base, num.parse::<i64>().unwrap_or(0) + 1)
+            }
+            _ => format!("{} 2", desired),
+        };
+        unique_name(&next, others)
+    } else {
+        desired.to_string()
+    }
+}
+
 /// Reads a raw config.json value as a string (get_item equivalent).
 pub fn get_config_string(state: &SharedState, section: &str, key: &str) -> String {
     if let Ok(text) = std::fs::read_to_string(format!("{}/config.json", state.data_dir)) {

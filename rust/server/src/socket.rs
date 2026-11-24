@@ -250,6 +250,9 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
             Some("environmental_data") => {
                 let _ = socket.emit("environmental_data", &crate::sensor::environmental_data());
             }
+            Some("heatgenerator_list") => {
+                let _ = socket.emit("heatgenerator_list", &crate::heatgen::generator_list());
+            }
             Some("raceclass_rank_method_list") => {
                 let _ = socket.emit("raceclass_rank_method_list", &crate::class_rank::rank_method_list());
             }
@@ -1878,6 +1881,47 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
             .unwrap_or_default();
         let payload = crate::imdtabler::run(&state.data_dir, &freqs);
         let _ = sock.emit("imdtabler_data", &payload);
+    });
+
+    socket.on("generate_heats_v2", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let Some(generator) = data.get("generator").and_then(|v| v.as_str()).map(|s| s.to_string()) else { return };
+        // available seats: enabled profile frequencies (on_generate_heats_v2)
+        let available_seats = db::with_db(&state, |conn| {
+            let pid = db::current_profile_id(conn);
+            db::profile_frequencies(conn, pid)
+                .iter()
+                .filter(|(_, _, f)| *f != 0)
+                .count()
+        });
+        let label = crate::heatgen::generator_label(&generator);
+        let Some(label) = label else { return };
+
+        tracing::info!("Generating heats via {}", label);
+        let mut payload_out: Option<i64> = None;
+        db::with_db(&state, |conn| {
+            let plans = crate::heatgen::generate_plans(conn, &generator, &data, available_seats);
+            if let Some(plans) = plans {
+                payload_out = crate::heatgen::apply(conn, &label, &plans, &data);
+            }
+        });
+        if payload_out.is_some() {
+            crate::socket::emit_priority_message(
+                &state,
+                &format!("Generated heats via {}", label),
+                false,
+            );
+            let heat_payload = db::with_db(&state, |conn| {
+                let race = state.race.lock().unwrap();
+                payloads::build_heat_data(conn, &race)
+            });
+            broadcast(&state, "heat_data", heat_payload);
+            broadcast(&state, "class_data", db::with_db(&state, |conn| payloads::build_class_data(conn)));
+        } else {
+            crate::socket::emit_priority_message(&state, "Heat generation failed. (See log)", false);
+        }
     });
 
     socket.on("retry_secondary", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {

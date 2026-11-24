@@ -7,6 +7,7 @@
 
 mod actions;
 mod api;
+mod heatgen;
 mod imdtabler;
 mod assets;
 mod calibration;
