@@ -54,12 +54,183 @@ pub enum StripBackend {
         width: usize,
         height: usize,
     },
+    /// LedCtrlr over a serial port (ledctrlr_leds.py)
+    LedCtrlr {
+        pixels: Vec<u32>,
+        changed_count: usize,
+        last_changed_idx: usize,
+        same_run_end: isize, // -1 when not a solid run
+    },
+    /// WS2812 via SPI (/dev/spidev*, as rpi5-ws2812 does)
+    Spi {
+        pixels: Vec<u32>,
+        #[allow(dead_code)] // kept for diagnostics
+        device: String,
+    },
     /// No strip attached; effects run silently
+    #[allow(dead_code)]
     None,
+}
+
+/// WS281x color-order remap (led_strip codes in ws281x_leds.py).
+fn reorder(color: u32, order: &str) -> [u8; 3] {
+    let r = ((color >> 16) & 0xFF) as u8;
+    let g = ((color >> 8) & 0xFF) as u8;
+    let b = (color & 0xFF) as u8;
+    match order {
+        "RGB" | "RGBW" => [r, g, b],
+        "RBG" | "RBGW" => [r, b, g],
+        "GRB" | "GRBW" => [g, r, b],
+        "GBR" | "GBRW" => [g, b, r],
+        "BRG" | "BRGW" => [b, r, g],
+        "BGR" | "BGRW" => [b, g, r],
+        _ => [r, g, b],
+    }
+}
+
+/// Encodes RGB pixels as WS2812 SPI bytes (3 SPI bits per bit at 2.4MHz:
+/// '1' -> 0b110, '0' -> 0b100) plus a reset-latch tail.
+fn ws2812_spi_bytes(pixels: &[u32], brightness: u8, order: &str) -> Vec<u8> {
+    let mut bits: Vec<bool> = Vec::with_capacity(pixels.len() * 24);
+    let scale = |v: u8| (v as u16 * brightness as u16 / 255) as u8;
+    for &px in pixels {
+        // reorder() returns channels already in WS2812 wire order
+        let wire = reorder(px, order);
+        for channel in wire {
+            for bit in (0..8).rev() {
+                let on = scale(channel) >> bit & 1 == 1;
+                bits.push(on); // 1
+                bits.push(on); // 2
+                bits.push(!on); // 3
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(bits.len() / 8 + 32);
+    for chunk in bits.chunks(8) {
+        let mut byte = 0u8;
+        for (i, &b) in chunk.iter().enumerate() {
+            if b {
+                byte |= 0x80 >> i;
+            }
+        }
+        out.push(byte);
+    }
+    out.extend(std::iter::repeat(0u8).take(32)); // reset latch
+    out
+}
+
+/// The serial LED controller (LedCtrlr) command/response protocol.
+mod ledctrlr {
+    use std::io::{Read, Write};
+    use std::sync::Mutex;
+
+    pub struct Ctrlr {
+        port: Mutex<Box<dyn serialport::SerialPort>>,
+    }
+
+    impl Ctrlr {
+        pub fn open(path: &str, baud: u32) -> Result<Ctrlr, String> {
+            let sp = serialport::new(path, baud)
+                .timeout(std::time::Duration::from_secs(1))
+                .open()
+                .map_err(|e| format!("LedCtrlr open failed: {}", e))?;
+            Ok(Ctrlr { port: Mutex::new(sp) })
+        }
+
+        pub fn flush_initial(&self) {
+            let mut ser = self.port.lock().unwrap();
+            let _ = ser.write_all(b"\r");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut sink = [0u8; 99];
+            for _ in 0..5 {
+                if ser.read(&mut sink).map(|n| n > 0).unwrap_or(false) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let _ = ser.clear(serialport::ClearBuffer::Input);
+        }
+
+        /// Sends 'cmd\r', consumes the '.'-terminated ack line, then reads
+        /// the '>'-terminated response body (doSendCommandToCtrlr).
+        pub fn command(&self, cmd: &str, want_resp: bool) -> String {
+            let mut ser = self.port.lock().unwrap();
+            if ser.write_all(format!("{}\r", cmd).as_bytes()).is_err() {
+                return String::new();
+            }
+            let mut ack = [0u8; 1];
+            loop {
+                match ser.read(&mut ack) {
+                    Ok(1) => {
+                        let ch = ack[0] as char;
+                        if ch == '.' {
+                            break;
+                        }
+                        if ch == '\0' {
+                            tracing::warn!("No cmd response char from LedCtrlr for: {}", cmd);
+                            break;
+                        }
+                        // '>' from a previous command is ignored; 'E' logged
+                        if ch != '>' {
+                            tracing::warn!("Unexpected LedCtrlr response char '{}' for: {}", ch, cmd);
+                        }
+                    }
+                    _ => {
+                        tracing::warn!("No cmd response char from LedCtrlr for: {}", cmd);
+                        break;
+                    }
+                }
+            }
+            let mut body = String::new();
+            if want_resp {
+                loop {
+                    match ser.read(&mut ack) {
+                        Ok(1) => {
+                            let ch = ack[0] as char;
+                            if ch == '>' {
+                                break;
+                            }
+                            if ch == '\0' {
+                                tracing::warn!("Unexpected end of LedCtrlr response for: {}", cmd);
+                                break;
+                            }
+                            body.push(ch);
+                            if body.len() >= 99 {
+                                tracing::warn!("Too-long LedCtrlr response for: {}", cmd);
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            body.trim().to_string()
+        }
+
+        pub fn send_bytes(&self, data: &[u8]) {
+            let mut ser = self.port.lock().unwrap();
+            if ser.write_all(data).is_err() {
+                tracing::warn!("LedCtrlr pixel-data write failed");
+            }
+        }
+
+        /// Writes one raw byte (the pixel-array terminator read).
+        pub fn read_one(&self) -> Option<u8> {
+            let mut buf = [0u8; 1];
+            self.port.lock().unwrap().read(&mut buf).ok().map(|_| buf[0])
+        }
+    }
 }
 
 pub struct Strip {
     pub backend: StripBackend,
+    /// LedCtrlr serial handle (LedCtrlr backend)
+    ctrlr: Option<ledctrlr::Ctrlr>,
+    /// SPI device handle (Spi backend)
+    spi: Option<std::fs::File>,
+    brightness: u8,
+    order: String,
+    spi_device: String,
 }
 
 impl Strip {
@@ -75,46 +246,231 @@ impl Strip {
                 width,
                 height,
             },
+            ctrlr: None,
+            spi: None,
+            brightness: 255,
+            order: "GRB".to_string(),
+            spi_device: String::new(),
         }
+    }
+
+    /// Backend selection per get_pixel_interface in Python: a configured
+    /// serial LED controller wins, then WS2812-over-SPI, then ANSI
+    /// terminal emulation.
+    pub fn new_from_config(config: &Value, brightness: u8) -> Strip {
+        let led = config.get("LED").cloned().unwrap_or(json!({}));
+        let count = led.get("LED_COUNT").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let order = led
+            .get("LED_STRIP")
+            .and_then(|v| v.as_str())
+            .unwrap_or("GRB")
+            .to_string();
+
+        // serial LED controller (ledctrlr_leds.get_pixel_interface)
+        let ctrlr_port = led
+            .get("SERIAL_CTRLR_PORT")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        if let (Some(port), true) = (ctrlr_port, count > 0) {
+            let baud = led
+                .get("SERIAL_CTRLR_BAUD")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(115200) as u32;
+            match ledctrlr::Ctrlr::open(port, baud) {
+                Ok(ctrlr) => {
+                    ctrlr.flush_initial();
+                    let version = ctrlr.command("V", true);
+                    if version.contains("LED Controller") {
+                        tracing::info!("Established LedCtrlr connection to: {}", version);
+                    } else {
+                        tracing::warn!("Unexpected first response from LedCtrlr: {}", version);
+                    }
+                    let max_resp = ctrlr.command("M", true);
+                    if let Ok(max_leds) = max_resp.parse::<usize>() {
+                        if count > max_leds {
+                            tracing::warn!(
+                                "Configured LED_COUNT ({}) is greater than LedCtrlr maximum ({})",
+                                count, max_leds
+                            );
+                        }
+                    } else {
+                        tracing::warn!("Unable to parse LedCtrlr 'M' response as integer: {}", max_resp);
+                    }
+                    ctrlr.command(&format!("C {} {}", count, order), false);
+                    let mut strip = Strip {
+                        backend: StripBackend::LedCtrlr {
+                            pixels: vec![0; count],
+                            changed_count: 0,
+                            last_changed_idx: 0,
+                            same_run_end: -1,
+                        },
+                        ctrlr: Some(ctrlr),
+                        spi: None,
+                        brightness,
+                        order,
+                        spi_device: String::new(),
+                    };
+                    tracing::info!(
+                        "LED: LedCtrlr via serial port ({}, {} baud, count={})",
+                        port, baud, count
+                    );
+                    strip.set_brightness(brightness);
+                    return strip;
+                }
+                Err(e) => tracing::warn!("LedCtrlr open failed; falling back: {}", e),
+            }
+        }
+
+        // WS2812 over SPI when a spidev device exists (the rpi5-ws2812
+        // path; only GPIO10/MOSI wiring is supported, as on Python's Pi 5)
+        if count > 0 {
+            let spi_dev = "/dev/spidev0.0";
+            if std::path::Path::new(spi_dev).exists() {
+                match std::fs::OpenOptions::new().write(true).open(spi_dev) {
+                    Ok(f) => {
+                        tracing::info!("LED: WS2812 via SPI ({}) count={}", spi_dev, count);
+                        return Strip {
+                            backend: StripBackend::Spi {
+                                pixels: vec![0; count],
+                                device: spi_dev.into(),
+                            },
+                            ctrlr: None,
+                            spi: Some(f),
+                            brightness,
+                            order,
+                            spi_device: spi_dev.into(),
+                        };
+                    }
+                    Err(e) => tracing::warn!("SPI LED open failed; falling back to ANSI: {}", e),
+                }
+            }
+        }
+
+        if count > 0 {
+            tracing::info!("LED: locally emulated via ANSI terminal ({} pixels)", count);
+        }
+        Strip::new(count, 1)
     }
 
     pub fn num_pixels(&self) -> usize {
         match &self.backend {
-            StripBackend::Ansi { pixels, .. } => pixels.len(),
+            StripBackend::Ansi { pixels, .. }
+            | StripBackend::LedCtrlr { pixels, .. }
+            | StripBackend::Spi { pixels, .. } => pixels.len(),
             StripBackend::None => 0,
         }
     }
 
     pub fn set_pixel_color(&mut self, i: usize, color: u32) {
-        if let StripBackend::Ansi { pixels, .. } = &mut self.backend {
-            if let Some(px) = pixels.get_mut(i) {
-                *px = color;
+        match &mut self.backend {
+            StripBackend::Ansi { pixels, .. }
+            | StripBackend::LedCtrlr { pixels, .. }
+            | StripBackend::Spi { pixels, .. } => {
+                if let Some(px) = pixels.get_mut(i) {
+                    *px = color;
+                }
+            }
+            StripBackend::None => {}
+        }
+        if let StripBackend::LedCtrlr {
+            changed_count,
+            last_changed_idx,
+            same_run_end,
+            pixels,
+        } = &mut self.backend
+        {
+            *changed_count += 1;
+            *last_changed_idx = i;
+            if i == 0 {
+                *same_run_end = 0;
+            } else if i as isize == *same_run_end + 1
+                && pixels.get(i).copied().unwrap_or(0)
+                    == pixels.get(*same_run_end as usize).copied().unwrap_or(1)
+            {
+                *same_run_end = i as isize;
+            } else {
+                *same_run_end = -1;
             }
         }
     }
 
     pub fn get_pixel_color(&self, i: usize) -> u32 {
         match &self.backend {
-            StripBackend::Ansi { pixels, .. } => pixels.get(i).copied().unwrap_or(0),
+            StripBackend::Ansi { pixels, .. }
+            | StripBackend::LedCtrlr { pixels, .. }
+            | StripBackend::Spi { pixels, .. } => pixels.get(i).copied().unwrap_or(0),
             StripBackend::None => 0,
         }
     }
 
-    pub fn show(&self) {
-        if let StripBackend::Ansi { pixels, width, height } = &self.backend {
-            // ANSI row rendering (ANSI_leds.py show()); one row per line
-            let mut out = String::new();
-            for row in 0..*height {
-                let start = row * width;
-                let end = (start + width).min(pixels.len());
-                for &px in &pixels[start..end] {
-                    let (r, g, b) = ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff);
-                    // approximate the ANSI color classes with truecolor
-                    out.push_str(&format!("\x1b[48;2;{};{};{}m \x1b[0m", r, g, b));
+    pub fn set_brightness(&mut self, brightness: u8) {
+        self.brightness = brightness;
+        if let Some(ctrlr) = &self.ctrlr {
+            ctrlr.command(&format!("B {}", brightness), false);
+        }
+    }
+
+    pub fn show(&mut self) {
+        match &mut self.backend {
+            StripBackend::Ansi { pixels, width, height } => {
+                // ANSI row rendering (ANSI_leds.py show()); one row per line
+                let mut out = String::new();
+                for row in 0..*height {
+                    let start = row * *width;
+                    let end = (start + *width).min(pixels.len());
+                    for &px in &pixels[start..end] {
+                        let (r, g, b) = ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff);
+                        // approximate the ANSI color classes with truecolor
+                        out.push_str(&format!("\x1b[48;2;{};{};{}m \x1b[0m", r, g, b));
+                    }
+                    out.push_str("\x1b[K\n");
                 }
-                out.push_str("\x1b[K\n");
+                print!("\x1b[H{}", out);
             }
-            print!("\x1b[H{}", out);
+            StripBackend::LedCtrlr { pixels, changed_count, last_changed_idx, same_run_end } => {
+                if let Some(ctrlr) = &self.ctrlr {
+                    if *changed_count == 1 {
+                        ctrlr.command(
+                            &format!("P {} {:06X}", last_changed_idx, pixels[*last_changed_idx]),
+                            false,
+                        );
+                    } else if *same_run_end == (pixels.len() as isize) - 1 {
+                        ctrlr.command(&format!("F {:06X}", pixels[0]), false);
+                    } else {
+                        ctrlr.command("A", false);
+                        let mut bytes = Vec::with_capacity(pixels.len() * 3);
+                        for &px in pixels.iter() {
+                            bytes.push(((px >> 16) & 0xFF) as u8);
+                            bytes.push(((px >> 8) & 0xFF) as u8);
+                            bytes.push((px & 0xFF) as u8);
+                        }
+                        ctrlr.send_bytes(&bytes);
+                        if let Some(resp) = ctrlr.read_one() {
+                            let ch = resp as char;
+                            if ch == 'E' {
+                                let err = ctrlr.command("L", true);
+                                tracing::warn!("LedCtrlr error after pixel array: {}", err);
+                            } else if ch != '>' && ch != '.' {
+                                tracing::warn!("Unexpected LedCtrlr char after pixel array: '{}'", ch);
+                            }
+                        }
+                    }
+                    ctrlr.command("S", false); // show
+                }
+                *changed_count = 0;
+                *same_run_end = -1;
+            }
+            StripBackend::Spi { pixels, .. } => {
+                if let Some(f) = self.spi.as_ref() {
+                    let bytes = ws2812_spi_bytes(pixels, self.brightness, &self.order);
+                    use std::io::Write;
+                    let mut f = f;
+                    if f.write_all(&bytes).is_err() {
+                        tracing::warn!("SPI LED write failed");
+                    }
+                }
+            }
+            StripBackend::None => {}
         }
     }
 }
@@ -686,6 +1042,64 @@ mod tests {
         let s = Strip::new(16, 2);
         assert_eq!(s.num_pixels(), 16);
     }
+
+    #[test]
+    fn color_order_remap() {
+        let c = color(1, 2, 3);
+        assert_eq!(reorder(c, "GRB"), [2, 1, 3]);
+        assert_eq!(reorder(c, "RGB"), [1, 2, 3]);
+        assert_eq!(reorder(c, "BGR"), [3, 2, 1]);
+        assert_eq!(reorder(c, "GBR"), [2, 3, 1]);
+        // unknown falls back to RGB
+        assert_eq!(reorder(c, "junk"), [1, 2, 3]);
+    }
+
+    #[test]
+    fn ws2812_spi_encoding_matches_bit_pattern() {
+        // one GRB pixel: G=0b10101010 R=0b00001111 B=0b11110000, full brightness
+        let bytes = ws2812_spi_bytes(&[color(0x0F, 0xAA, 0xF0)], 255, "GRB");
+        // 24 data bits -> 9 SPI bytes (72 bits), then 32 zero latch bytes
+        assert_eq!(bytes.len(), 9 + 32);
+        assert!(bytes[9..].iter().all(|&b| b == 0));
+        // reconstruct the bit stream: '1' -> 110, '0' -> 100
+        let mut bits = Vec::new();
+        for &b in &bytes[..9] {
+            for i in (0..8).rev() {
+                let pair = (b >> i) & 1;
+                bits.push(pair == 1); // first bit of the 3-bit group
+            }
+        }
+        // bits.len() is 72 but only 24 groups matter: reassemble as triplets
+        let mut groups = Vec::new();
+        for chunk in bits.chunks(3) {
+            groups.push((chunk[0], chunk[2]));
+        }
+        // GRB order: G=0xAA -> 10101010, R=0x0F, B=0xF0
+        let expected_bits = {
+            let mut v = Vec::new();
+            for channel in [0xAAu8, 0x0F, 0xF0] {
+                for i in (0..8).rev() {
+                    let on = (channel >> i) & 1 == 1;
+                    v.push((on, !on));
+                }
+            }
+            v
+        };
+        assert_eq!(groups, expected_bits);
+        // brightness scaling: half brightness zeroes the low bit patterns' scale
+        let dimmed = ws2812_spi_bytes(&[ColorVal::WHITE], 128, "GRB");
+        assert_ne!(dimmed[..9], ws2812_spi_bytes(&[ColorVal::WHITE], 255, "GRB")[..9]);
+    }
+
+    #[test]
+    fn backend_selection_prefers_ansi_without_hardware() {
+        // no LED_COUNT and no serial controller -> plain ANSI strip
+        let s = Strip::new_from_config(&json!({"LED": {"LED_COUNT": 0}}), 32);
+        assert!(matches!(s.backend, StripBackend::Ansi { .. }));
+        // LED_COUNT without any spidev in the test env -> ANSI emulation
+        let s = Strip::new_from_config(&json!({"LED": {"LED_COUNT": 8}}), 32);
+        assert!(matches!(s.backend, StripBackend::Ansi { .. }));
+    }
 }
 
 // -- manager --
@@ -703,24 +1117,14 @@ pub struct LedManager {
 
 impl LedManager {
     /// Builds the manager with the strip chosen from the LED config
-    /// (get_pixel_interface): LED_COUNT/LED_ROWS.
+    /// (get_pixel_interface chain: serial controller -> WS2812 SPI -> ANSI).
     pub fn new(config: &Value) -> LedManager {
-        let count = config
+        let brightness = config
             .get("LED")
-            .and_then(|l| l.get("LED_COUNT"))
+            .and_then(|l| l.get("ledBrightness"))
             .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-        let rows = config
-            .get("LED")
-            .and_then(|l| l.get("LED_ROWS"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as usize;
-        let strip = if count > 0 {
-            tracing::info!("LED: locally emulated via ANSI terminal ({} pixels)", count);
-            Strip::new(count, rows)
-        } else {
-            Strip { backend: StripBackend::None }
-        };
+            .unwrap_or(32) as u8;
+        let strip = Strip::new_from_config(config, brightness);
         let mut mgr = LedManager {
             strip: Arc::new(Mutex::new(strip)),
             effects: HashMap::new(),
