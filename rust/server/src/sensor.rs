@@ -18,7 +18,8 @@ fn cached_discover() -> &'static Vec<SensorReading> {
 }
 
 /// Discovers available sensors (linux_sensor.discover): core temperature
-/// when thermal_zone0 exists, battery when power_supply/battery is present.
+/// when thermal_zone0 exists; battery via sysfs power_supply, or an
+/// INA219 on the I²C bus when that driver is enabled.
 #[allow(dead_code)] // discover() is used by tests and future sensor UI
 pub(crate) fn discover() -> Vec<SensorReading> {
     let mut sensors = Vec::new();
@@ -29,6 +30,14 @@ pub(crate) fn discover() -> Vec<SensorReading> {
             values: vec![("temperature", temp, "°C")],
         });
         tracing::info!("Core temperature available");
+    }
+
+    // I²C INA219 battery monitor (stub — see ina219_stub below).
+    // When enabled it takes precedence over the sysfs battery path.
+    if let Some(values) = ina219_stub::discover_readings() {
+        sensors.push(SensorReading { name: "Battery", values });
+        tracing::info!("Battery status available (INA219)");
+        return sensors;
     }
 
     let battery_base = "/sys/class/power_supply/battery";
@@ -53,6 +62,60 @@ pub(crate) fn discover() -> Vec<SensorReading> {
     }
     sensors
 }
+
+/// INA219 battery-monitor stub (port of ina219_sensor.py, pending
+/// hardware validation).
+///
+/// The INA219 sits on the I²C bus (default addr 0x41 per the Python
+/// plugin's supported addresses) and reports shunt voltage, bus voltage,
+/// current and power through its registers (0x01 shunt, 0x02 bus,
+/// 0x03 power, 0x05 calibration).  A real driver needs:
+///   1. an I²C transport (/dev/i2c-N handle),
+///   2. the calibration-constant write (r_shunt + max current),
+///   3. read/decode of the four registers,
+///   4. live hardware to verify the readings against.
+/// Until then this stub stays dormant: it never reports readings, so
+/// discovery falls through to the sysfs battery path (or nothing).
+/// The reading tuple shape already matches SensorReading, so activating
+/// a real driver later only means returning Some(vec![...]) here.
+mod ina219_stub {
+    // (no imports needed while dormant; the driver will use super::SensorReading)
+
+    /// Supported INA219 addresses (ina219_sensor.py).
+    #[allow(dead_code)]
+    pub const SUPPORTED_ADDRS: [u8; 4] = [0x40, 0x41, 0x44, 0x45];
+
+    /// I²C bus index used by the Python server's HARDWARE.I2C_BUS config.
+    #[allow(dead_code)]
+    pub const DEFAULT_I2C_BUS: u8 = 1;
+
+    /// Register addresses (INA219 datasheet), documented for the driver.
+    #[allow(dead_code)]
+    pub const REG_CONFIG: u8 = 0x00;
+    #[allow(dead_code)]
+    pub const REG_SHUNT_VOLTAGE: u8 = 0x01;
+    #[allow(dead_code)]
+    pub const REG_BUS_VOLTAGE: u8 = 0x02;
+    #[allow(dead_code)]
+    pub const REG_POWER: u8 = 0x03;
+    #[allow(dead_code)]
+    pub const REG_CURRENT: u8 = 0x04;
+    #[allow(dead_code)]
+    pub const REG_CALIBRATION: u8 = 0x05;
+
+    /// Stub discovery: always dormant (returns None) until a real I²C
+    /// driver replaces this body.  The tuple shape matches SensorReading
+    /// values, so activating a driver later only means returning Some.
+    pub fn discover_readings() -> Option<Vec<(&'static str, f64, &'static str)>> {
+        // TODO(ina219): probe SUPPORTED_ADDRS on /dev/i2c-{DEFAULT_I2C_BUS},
+        // write calibration, read REG_BUS_VOLTAGE/REG_CURRENT, decode to
+        // (voltage V, current A, capacity Ah) readings and return Some.
+        None
+    }
+}
+
+#[allow(unused_imports)]
+pub(crate) use ina219_stub::SUPPORTED_ADDRS as INA219_ADDRS;
 
 fn read_core_temp() -> Option<f64> {
     read_f64("/sys/class/thermal/thermal_zone0/temp", 1000.0)
