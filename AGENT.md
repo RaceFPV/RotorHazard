@@ -205,16 +205,19 @@ Without the bridge: no plugins, no problem. The server is pure Rust.
 - [ ] `emit_plugin_event` should be called at more lifecycle points
        (heat_set, frequency_set, option_set, pilot_done, etc.)
 
-## Deployed environment
+## Deployed environment (THIS deployment — not universal)
 
-- **Pi 5** at `racefpv@pi4.k3s.live` (SSH via WSL default key)
+> These are the specifics of one production deployment. Other
+> deployments will differ. Do not hardcode these paths in source code.
+
+- **Pi 5** (hostname/address per your SSH config)
 - NuclearHazard board, STM32 timer node on `/dev/ttyAMA0` at 921600 baud
 - systemd service: `rh-server.service`
-- Data dir: `/home/racefpv/rh-rust/data`
-- Binary: `/home/racefpv/rh-rust/rust/target/release/rh-server`
+- Data dir: `<user-home>/rh-rust/data`
+- Binary: `<user-home>/rh-rust/rust/target/release/rh-server`
 - udev rule: `ttyAMA0` → group `dialout`, mode 0660
 - Serial console REMOVED from cmdline.txt, getty disabled
-- Deploy: `rsync` `rust/server/src/` to Pi, rebuild natively, restart service
+- Deploy: `rsync` `rust/server/src/` to the Pi, rebuild natively, restart service
 
 ## For an LLM picking this up
 
