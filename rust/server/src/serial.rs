@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 // -- RH node command codes (RHInterface.py) --
-
+// Some commands are not exercised by the server yet but are kept as
+// documentation of the complete node wire protocol.
+#[allow(dead_code)]
 pub const READ_FREQUENCY: u8 = 0x03;
 pub const READ_LAP_STATS: u8 = 0x05;
 pub const READ_LAP_PASS_STATS: u8 = 0x0D;
@@ -15,24 +17,32 @@ pub const READ_LAP_EXTREMUMS: u8 = 0x0E;
 pub const READ_RHFEAT_FLAGS: u8 = 0x11;
 pub const READ_REVISION_CODE: u8 = 0x22;
 pub const READ_NODE_RSSI_PEAK: u8 = 0x23;
+#[allow(dead_code)]
 pub const READ_NODE_RSSI_NADIR: u8 = 0x24;
 pub const READ_ENTER_AT_LEVEL: u8 = 0x31;
 pub const READ_EXIT_AT_LEVEL: u8 = 0x32;
+#[allow(dead_code)]
 pub const READ_TIME_MILLIS: u8 = 0x33;
 pub const READ_MULTINODE_COUNT: u8 = 0x39;
+#[allow(dead_code)]
 pub const READ_CURNODE_INDEX: u8 = 0x3A;
 pub const READ_NODE_SLOTIDX: u8 = 0x3C;
 pub const READ_FW_VERSION: u8 = 0x3D;
+#[allow(dead_code)]
 pub const READ_FW_BUILDDATE: u8 = 0x3E;
+#[allow(dead_code)]
 pub const READ_FW_BUILDTIME: u8 = 0x3F;
 pub const READ_FW_PROCTYPE: u8 = 0x40;
 
+#[allow(dead_code)]
 pub const WRITE_FREQUENCY: u8 = 0x51;
 pub const WRITE_ENTER_AT_LEVEL: u8 = 0x71;
 pub const WRITE_EXIT_AT_LEVEL: u8 = 0x72;
 pub const WRITE_CURNODE_INDEX: u8 = 0x7A;
+#[allow(dead_code)]
 pub const SEND_STATUS_MESSAGE: u8 = 0x75;
 pub const FORCE_END_CROSSING: u8 = 0x78;
+#[allow(dead_code)]
 pub const JUMP_TO_BOOTLOADER: u8 = 0x7E;
 
 pub const MAX_RETRY_COUNT: u32 = 4;
@@ -232,6 +242,8 @@ pub struct SerialNode {
     /// shared tracker of the currently-selected slot on the processor
     curnode_holder: Option<Arc<Mutex<i32>>>,
     pub api_level: u16,
+    /// READ_RHFEAT_FLAGS value (api >= 32); 0 when unsupported
+    pub feat_flags: u16,
     pub firmware_version: String,
     pub firmware_proctype: String,
     pub frequency: u16,
@@ -249,6 +261,7 @@ impl Clone for SerialNode {
             multi_node_index: self.multi_node_index,
             curnode_holder: self.curnode_holder.clone(),
             api_level: self.api_level,
+            feat_flags: self.feat_flags,
             firmware_version: self.firmware_version.clone(),
             firmware_proctype: self.firmware_proctype.clone(),
             frequency: self.frequency,
@@ -399,6 +412,29 @@ impl SerialNode {
         self.write_block(FORCE_END_CROSSING, &[0])
     }
 
+    /// Re-opens the serial port after a lost/failed connection (USB
+    /// re-plug, node reset, ...).  Swaps the new port into the shared
+    /// handle in place, so all slot clones pick it up.
+    pub fn reopen(&self) -> bool {
+        match serialport::new(&self.port, self.baud)
+            .timeout(std::time::Duration::from_millis(250))
+            .open()
+        {
+            Ok(sp) => {
+                let mut guard = self.serial.lock().unwrap();
+                *guard = sp;
+                true
+            }
+            Err(e) => {
+                debug!("Reopen {} failed: {}", self.port, e);
+                false
+            }
+        }
+    }
+
+    /// Used by the node-firmware-update flow (not yet ported; kept for
+    /// the upcoming updatenodes implementation).
+    #[allow(dead_code)]
     pub fn jump_to_bootloader(&self) -> bool {
         self.write_block(JUMP_TO_BOOTLOADER, &[])
     }
@@ -505,6 +541,7 @@ pub fn discover_nodes(
                     multi_node_index: -1,
                     curnode_holder: None,
                     api_level: 0,
+                    feat_flags: 0,
                     firmware_version: String::new(),
                     firmware_proctype: String::new(),
                     frequency: 0,
@@ -535,6 +572,11 @@ pub fn discover_nodes(
 
                 let mut base = node.clone();
                 base.api_level = api_level;
+                if api_level >= 32 {
+                    if let Some(d) = base.read_block(READ_RHFEAT_FLAGS, 2) {
+                        base.feat_flags = unpack_16(&d);
+                    }
+                }
                 if api_level >= 34 {
                     if let Some(d) = base.read_block(READ_FW_VERSION, 16) {
                         base.firmware_version =

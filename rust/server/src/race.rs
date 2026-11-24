@@ -90,6 +90,13 @@ pub fn stage_race(state: &SharedState) {
             laps.clear();
         }
         drop(race);
+        // clear any stuck crossing flags on real hardware (Python sends
+        // FORCE_END_CROSSING when a race starts)
+        if let Some(hw) = state.hardware.lock().unwrap().as_ref() {
+            for i in 0..hw.num_nodes() {
+                hw.force_end_crossing(i);
+            }
+        }
         emit_race_status(&state);
     });
 

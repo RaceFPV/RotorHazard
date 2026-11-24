@@ -1698,6 +1698,10 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 rusqlite::params![arr.to_string(), profile_id],
             );
         });
+        // push to real hardware if present
+        if let Some(hw) = state.hardware.lock().unwrap().as_mut() {
+            hw.set_enter_at_level(node as usize, level);
+        }
         // response goes only to the requesting socket
         let payload = db::with_db(&state, payloads::build_enter_exit_levels);
         let _ = sock.emit("enter_and_exit_at_levels", &payload);
@@ -1727,6 +1731,10 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 rusqlite::params![arr.to_string(), profile_id],
             );
         });
+        // push to real hardware if present
+        if let Some(hw) = state.hardware.lock().unwrap().as_mut() {
+            hw.set_exit_at_level(node as usize, level);
+        }
         let payload = db::with_db(&state, payloads::build_enter_exit_levels);
         let _ = sock.emit("enter_and_exit_at_levels", &payload);
     });
