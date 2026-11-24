@@ -1900,11 +1900,19 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         let Some(label) = label else { return };
 
         tracing::info!("Generating heats via {}", label);
+        // flatten 'params' into the generate args (on_generate_heats_v2)
+        let mut generate_args = data.clone();
+        if let Some(params) = data.get("params").and_then(|v| v.as_object()) {
+            let obj = generate_args.as_object_mut().unwrap();
+            for (k, v) in params {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
         let mut payload_out: Option<i64> = None;
         db::with_db(&state, |conn| {
-            let plans = crate::heatgen::generate_plans(conn, &generator, &data, available_seats);
+            let plans = crate::heatgen::generate_plans(conn, &generator, &generate_args, available_seats);
             if let Some(plans) = plans {
-                payload_out = crate::heatgen::apply(conn, &label, &plans, &data);
+                payload_out = crate::heatgen::apply(conn, &label, &plans, &generate_args);
             }
         });
         if payload_out.is_some() {

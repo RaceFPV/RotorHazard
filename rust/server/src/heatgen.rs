@@ -313,6 +313,14 @@ pub fn generate_plans(
             get("seed_offset").unwrap_or(0),
             args.get("suffix").and_then(|v| v.as_str()).unwrap_or("Main"),
         ),
+        n if n == crate::export_import::clean_var_name("Ladder") => generate_ladder(
+            available_seats,
+            get("qualifiers_per_heat"),
+            get("advances_per_heat"),
+            total,
+            get("seed_offset").unwrap_or(0),
+            args.get("suffix").and_then(|v| v.as_str()).unwrap_or("Main"),
+        ),
         n if n == crate::export_import::clean_var_name("Balanced random fill") => generate_balanced(
             available_seats,
             get("qualifiers_per_heat"),
@@ -417,7 +425,13 @@ pub fn apply(
     let input_class: Option<i64> = args.get("input_class").and_then(|v| v.as_i64());
     let mut output_class: Option<i64> = args.get("output_class").and_then(|v| v.as_i64());
 
-    let tx = conn.unchecked_transaction().ok()?;
+    let tx = match conn.unchecked_transaction() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Heat generation: transaction failed: {}", e);
+            return None;
+        }
+    };
 
     if output_class.is_none() {
         let existing: Vec<String> = {
@@ -429,10 +443,11 @@ pub fn apply(
         tx.execute(
             "INSERT INTO race_class (name, description, format_id, win_condition, \
                                     results, \"cacheStatus\", ranking, rank_settings, \
-                                    \"rankStatus\", rounds, \"heatAdvanceType\", \"roundType\", \"order\", points_method)
-             VALUES (?1, NULL, NULL, '', NULL, '{}', NULL, NULL, '{}', 0, 0, 0, NULL, NULL)",
+                                    \"rankStatus\", rounds, \"heatAdvanceType\", \"roundType\", \"order\", active)
+             VALUES (?1, NULL, NULL, '', NULL, '{}', NULL, NULL, '{}', 0, 0, 0, NULL, 1)",
             rusqlite::params![name],
         )
+        .map_err(|e| { tracing::error!("Heat generation: class insert failed: {}", e); e })
         .ok()?;
         output_class = Some(tx.last_insert_rowid());
     }
@@ -448,6 +463,7 @@ pub fn apply(
              VALUES (?1, ?2, NULL, ?3, NULL, '{}', NULL, 0, 1, 0, 1, NULL, NULL)",
             rusqlite::params![id, plan.name, output_class],
         )
+        .map_err(|e| { tracing::error!("Heat generation: heat insert failed: {}", e); e })
         .ok()?;
         for node_index in 0..8i64 {
             tx.execute(
@@ -455,6 +471,7 @@ pub fn apply(
                  VALUES (?1, ?2, ?3, NULL, NULL, 0, NULL, NULL)",
                 rusqlite::params![crate::db::next_heat_node_id(&tx), id, node_index],
             )
+            .map_err(|e| { tracing::error!("Heat generation: slot insert failed: {}", e); e })
             .ok()?;
         }
         heat_id_mapping.push(id);
@@ -553,10 +570,13 @@ pub fn apply(
                 }
                 SEED_HEAT_INDEX => {
                     data.insert("method", json!(PROGRAM_HEAT_RESULT));
-                    // Python indexes the mapping negatively from the end
-                    // (seed_index of -1 refers to the heat inserted just
-                    // before this one)
-                    let idx = heat_id_mapping.len() as i64 + seed_slot.seed_index.unwrap_or(0);
+                    // Python indexes heat_id_mapping directly: brackets use
+                    // 0-based forward references, the ladder uses negative
+                    // back-references — plain list-index semantics cover both
+                    let mut idx = seed_slot.seed_index.unwrap_or(0);
+                    if idx < 0 {
+                        idx += heat_id_mapping.len() as i64;
+                    }
                     if idx >= 0 && (idx as usize) < heat_id_mapping.len() {
                         data.insert("seed_heat_id", json!(heat_id_mapping[idx as usize]));
                     } else {
@@ -609,7 +629,10 @@ pub fn apply(
         tracing::info!("{} unseeded pilots remaining in pool", pilot_pool.len());
     }
 
-    tx.commit().ok()?;
+    if let Err(e) = tx.commit() {
+        tracing::error!("Heat generation: commit failed: {}", e);
+        return None;
+    }
     Some(output_class)
 }
 
