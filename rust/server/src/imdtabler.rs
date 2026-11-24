@@ -27,6 +27,7 @@ pub fn jar_path(data_dir: &str) -> String {
 }
 
 /// True when the jar exists and java responds (Use_imdtabler_jar_flag).
+#[allow(dead_code)] // wired to the imdtabler page render
 pub fn available(data_dir: &str) -> bool {
     let jar = jar_path(data_dir);
     !jar.is_empty()
@@ -72,6 +73,7 @@ pub fn run(data_dir: &str, freq_list: &[u64]) -> Value {
 }
 
 /// The page payload with the version string (emit_imdtabler_page).
+#[allow(dead_code)] // wired to the imdtabler page render
 pub fn page_data(data_dir: &str, profile_freqs: &[i64]) -> Value {
     if !available(data_dir) {
         return json!({"use_imdtabler_jar_flag": false});
