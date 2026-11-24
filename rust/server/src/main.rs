@@ -7,6 +7,7 @@
 
 mod api;
 mod assets;
+mod calibration;
 mod hardware;
 mod db;
 mod export_import;
