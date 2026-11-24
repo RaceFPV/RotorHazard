@@ -349,6 +349,9 @@ pub struct AppState {
     pub server_instance_token: f64,
     /// Undo states for the last auto adjustments (calibration module)
     pub cal_undo: Mutex<std::collections::HashMap<String, CalUndo>>,
+    /// Plugin-registered fetchable config sections (ui.register_config_section):
+    /// section -> None for the whole section, Some(items) for an allowlist.
+    pub config_load_items: Mutex<std::collections::HashMap<String, Option<Vec<String>>>>,
 }
 
 impl AppState {

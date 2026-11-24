@@ -307,6 +307,29 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             crate::socket::broadcast(state, "clear_priority_messages", json!({}));
             Ok(json!(true))
         }
+        ("ui", "register_config_section") => {
+            // RHUI.register_config_section: allows a config section to be
+            // fetched via a load_data request; SECRETS is refused
+            let section = arg_str("section").unwrap_or_default();
+            if crate::socket::RESERVED_CONFIG_SECTIONS.contains(&section.as_str()) {
+                tracing::warn!("Refusing to register protected config section: {}", section);
+                return Ok(json!(false));
+            }
+            let items = args
+                .get("items")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                });
+            state
+                .config_load_items
+                .lock()
+                .unwrap()
+                .insert(section, items);
+            Ok(json!(true))
+        }
 
         _ => Err(format!("Unknown RHAPI method: {}.{}", object, method)),
     }

@@ -291,16 +291,20 @@ const CONFIG_LOAD_ITEMS: &[(&str, Option<&[&str]>)] = &[
 
 /// Sections never fetchable, whatever a plugin registers
 /// (RHUI.RESERVED_CONFIG_SECTIONS).
-const RESERVED_CONFIG_SECTIONS: &[&str] = &["SECRETS"];
+pub const RESERVED_CONFIG_SECTIONS: &[&str] = &["SECRETS"];
 
-fn config_section_allowed(section: &str) -> Option<Option<&[&str]>> {
+fn config_section_allowed(state: &SharedState, section: &str) -> Option<Option<Vec<String>>> {
     if RESERVED_CONFIG_SECTIONS.contains(&section) {
         return None;
+    }
+    // plugin-registered sections take precedence
+    if let Some(items) = state.config_load_items.lock().unwrap().get(section) {
+        return Some(items.clone());
     }
     CONFIG_LOAD_ITEMS
         .iter()
         .find(|(s, _)| *s == section)
-        .map(|(_, items)| *items)
+        .map(|(_, items)| items.map(|i| i.iter().map(|s| s.to_string()).collect()))
 }
 
 fn build_config_sections(state: &SharedState, request: Option<&Value>) -> Value {
@@ -308,7 +312,7 @@ fn build_config_sections(state: &SharedState, request: Option<&Value>) -> Value 
     if let Some(sections) = request.and_then(|v| v.as_object()) {
         for (section, keys) in sections {
             // never serve a section such as SECRETS, or one no page may fetch
-            let Some(allowed) = config_section_allowed(section) else {
+            let Some(allowed) = config_section_allowed(state, section) else {
                 tracing::warn!("Ignoring 'load_data' request for config section: {}", section);
                 continue;
             };
@@ -325,7 +329,7 @@ fn build_config_sections(state: &SharedState, request: Option<&Value>) -> Value 
                 (Some(items), Some(arr)) => {
                     for key in arr {
                         if let Some(key) = key.as_str() {
-                            if !items.contains(&key) {
+                            if !items.iter().any(|i| i == key) {
                                 tracing::warn!(
                                     "Ignoring 'load_data' request for config item: {}/{}",
                                     section, key

@@ -91,6 +91,12 @@ class RhapiUI:
     def clear_messages(self):
         self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'clear_messages', 'args': {}})
 
+    def register_config_section(self, section, items=None):
+        '''Allows a config section to be fetched via a load_data request
+        (RHUI.register_config_section); items None allows the whole section.'''
+        return self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'register_config_section',
+                                            'args': {'section': section, 'items': items}})
+
 
 class Rhapi:
     '''The object surface handed to plugins (RHAPI subset).'''
