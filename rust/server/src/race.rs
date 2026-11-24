@@ -210,12 +210,14 @@ pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
     }
     let start = race.start_time_monotonic;
     if let Some(laps) = race.node_laps.get_mut(node_index) {
-        let lap_time = match laps.last() {
-            Some(prev) => (now - prev.lap_time_stamp) * 1000.0,
-            None => (now - start) * 1000.0,
+        // lap_time_stamp is milliseconds since race start (Python convention)
+        let stamp = (now - start) * 1000.0;
+        let lap_time = match laps.iter().rev().find(|l| !l.deleted) {
+            Some(prev) => stamp - prev.lap_time_stamp,
+            None => stamp,
         };
         laps.push(Lap {
-            lap_time_stamp: now,
+            lap_time_stamp: stamp,
             lap_time,
             source: 1, // real-time source
             deleted: false,
@@ -534,8 +536,9 @@ fn fake_rand() -> u64 {
 
 
 /// Inserts a lap at its place by time stamp, for a pass the seat missed
-/// (RHRace.insert_lap in Python). Returns its lap index, or None when the
-/// race is not running/stopped or the arguments are invalid.
+/// (RHRace.insert_lap in Python). `lap_time_stamp` is milliseconds since
+/// race start. Returns its lap index, or None when the race is not
+/// running/stopped or the arguments are invalid.
 pub fn insert_lap(
     state: &SharedState,
     node_index: usize,
@@ -553,7 +556,6 @@ pub fn insert_lap(
         tracing::info!("Unable to insert lap: Node {} TimeStamp {}", node_index + 1, lap_time_stamp);
         return None;
     }
-    let start = race.start_time_monotonic;
     let laps = &mut race.node_laps[node_index];
     let lap_index = laps
         .iter()
@@ -570,14 +572,14 @@ pub fn insert_lap(
         },
     );
     // calc_lap_times from the insertion point: lap_time is the gap to the
-    // previous active lap (or the race start for the first active lap)
+    // previous active lap (the first active lap spans from the race start)
     let mut last_stamp: Option<f64> = None;
     for idx in 0..laps.len() {
         if !laps[idx].deleted {
             if idx >= lap_index {
                 laps[idx].lap_time = match last_stamp {
-                    Some(prev) => (laps[idx].lap_time_stamp - prev) * 1000.0,
-                    None => (laps[idx].lap_time_stamp - start) * 1000.0,
+                    Some(prev) => laps[idx].lap_time_stamp - prev,
+                    None => laps[idx].lap_time_stamp,
                 };
             }
             last_stamp = Some(laps[idx].lap_time_stamp);

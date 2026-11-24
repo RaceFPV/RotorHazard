@@ -10,7 +10,8 @@ pub const RACE_STATUS_DONE: i64 = 2;
 pub const RACE_STATUS_STAGING: i64 = 3;
 
 /// A single lap crossing in the current (unsaved) race.
-/// `lap_time_stamp` is monotonic-based seconds; `lap_time` is milliseconds.
+/// `lap_time_stamp` and `lap_time` are milliseconds since race start
+/// (the Python convention).
 #[derive(Debug, Clone)]
 pub struct Lap {
     pub lap_time_stamp: f64,

@@ -44,13 +44,13 @@ pub struct CalLapLike {
 
 /// Merges the suggestion's recalculated laps with the current manual and API
 /// laps, sorted by time stamp with recomputed lap times (_replacement_laps).
-/// Suggested stamps are in ms; current/saved stamps in seconds (the Rust
-/// convention). Result stamps are seconds; lap times in ms.
+/// All stamps are in milliseconds since race start (the Python convention);
+/// lap times are in ms.
 fn replacement_laps(suggested: &[CalLapLike], current: &[UndoLap]) -> Vec<UndoLap> {
     let mut laps: Vec<UndoLap> = suggested
         .iter()
         .map(|l| UndoLap {
-            lap_time_stamp: l.lap_time_stamp / 1000.0,
+            lap_time_stamp: l.lap_time_stamp,
             lap_time: 0.0,
             peak_rssi: l.peak_rssi,
             source: LAP_SOURCE_RECALC,
@@ -81,8 +81,8 @@ fn with_lap_times(laps: &mut [UndoLap]) {
             lap.lap_time = 0.0;
         } else {
             lap.lap_time = match last {
-                Some(prev) => (lap.lap_time_stamp - prev) * 1000.0,
-                None => lap.lap_time_stamp * 1000.0,
+                Some(prev) => lap.lap_time_stamp - prev,
+                None => lap.lap_time_stamp,
             };
             last = Some(lap.lap_time_stamp);
         }
@@ -706,7 +706,7 @@ pub fn undo_auto_adjust_seat(state: &SharedState, seat_index: i64) -> Adjust {
                     .filter(|(_, l)| {
                         l.source == LAP_SOURCE_RECALC
                             && !l.deleted
-                            && stamps.contains(&(l.lap_time_stamp * 1000.0))
+                            && stamps.contains(&l.lap_time_stamp)
                     })
                     .map(|(i, _)| i)
                     .collect()
@@ -746,8 +746,8 @@ pub fn undo_auto_adjust_seat(state: &SharedState, seat_index: i64) -> Adjust {
 }
 
 /// Inserts the suggested passes the seat has no lap for; returns their time
-/// stamps in ms (_recover_laps). Live lap stamps are seconds; suggestion
-/// stamps are ms, so comparisons convert the live stamps to ms.
+/// stamps in ms (_recover_laps). All stamps are milliseconds since race
+/// start, matching the Python convention.
 fn recover_laps(
     state: &SharedState,
     seat: usize,
@@ -768,7 +768,7 @@ fn recover_laps(
         .unwrap()
         .node_laps
         .get(seat)
-        .map(|laps| laps.iter().map(|l| (l.lap_time_stamp * 1000.0, l.deleted)).collect())
+        .map(|laps| laps.iter().map(|l| (l.lap_time_stamp, l.deleted)).collect())
         .unwrap_or_default();
     let mut missed: Vec<&calibration::CalLap> = Vec::new();
     for lap in suggested {
@@ -798,7 +798,7 @@ fn recover_laps(
         if crate::race::insert_lap(
             state,
             seat,
-            lap.lap_time_stamp / 1000.0,
+            lap.lap_time_stamp,
             LAP_SOURCE_RECALC,
             lap.peak_rssi,
             last,
@@ -824,20 +824,17 @@ fn recovered_laps(state: &SharedState, seat: usize, stamps_ms: &[f64]) -> Vec<Va
         .map(|v| v == 1)
         .unwrap_or(false)
     });
-    let (start, mut laps) = {
+    let mut laps = {
         let race = state.race.lock().unwrap();
-        (
-            race.start_time_monotonic,
-            race.node_laps
+        race.node_laps
                 .get(seat)
                 .map(|laps| {
                     laps.iter()
-                        .filter(|l| !l.deleted && stamps_ms.contains(&(l.lap_time_stamp * 1000.0)))
+                        .filter(|l| !l.deleted && stamps_ms.contains(&l.lap_time_stamp))
                         .cloned()
                         .collect::<Vec<_>>()
                 })
-                .unwrap_or_default(),
-        )
+                .unwrap_or_default()
     };
     laps.sort_by(|a, b| a.lap_time_stamp.partial_cmp(&b.lap_time_stamp).unwrap());
     laps.iter()
@@ -848,16 +845,15 @@ fn recovered_laps(state: &SharedState, seat: usize, stamps_ms: &[f64]) -> Vec<Va
                 "lap_number": lap_number,
                 "lap_time": lap.lap_time,
                 "lap_time_formatted": db::format_time_to_str(lap.lap_time),
-                "lap_time_stamp": lap.lap_time_stamp - start,
+                "lap_time_stamp": lap.lap_time_stamp,
             })
         })
         .collect()
 }
 
 /// Replaces a seat's live laps with the given set and recomputes lap times
-/// (race.replace_laps). Stamps in seconds, lap times in ms.
+/// (race.replace_laps). Stamps and lap times in ms since race start.
 fn replace_live_laps(state: &SharedState, seat: usize, laps: &[UndoLap]) {
-    let start = state.race.lock().unwrap().start_time_monotonic;
     let mut new_laps: Vec<crate::state::Lap> = laps
         .iter()
         .map(|l| crate::state::Lap {
@@ -874,8 +870,8 @@ fn replace_live_laps(state: &SharedState, seat: usize, laps: &[UndoLap]) {
             lap.lap_time = 0.0;
         } else {
             lap.lap_time = match last {
-                Some(prev) => (lap.lap_time_stamp - prev) * 1000.0,
-                None => (lap.lap_time_stamp - start) * 1000.0,
+                Some(prev) => lap.lap_time_stamp - prev,
+                None => lap.lap_time_stamp,
             };
             last = Some(lap.lap_time_stamp);
         }

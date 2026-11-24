@@ -37,7 +37,7 @@ pub struct PilotLaps {
     pub team_name: Option<String>,
     pub node: usize,
     /// All crossings, including the initial crossing (lap 0).
-    /// (lap_time ms, lap_time_stamp seconds)
+    /// (lap_time ms, lap_time_stamp ms since race start)
     pub crossings: Vec<(f64, f64)>,
 }
 
