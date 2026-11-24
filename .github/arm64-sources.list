@@ -1,0 +1,2 @@
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main universe
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe
