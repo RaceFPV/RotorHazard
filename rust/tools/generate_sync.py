@@ -15,7 +15,7 @@ DRY_RUN="${1:-}"
 MARKER_FILE=".upstream-sync-sha"
 PORTED_DIRS="src/server src/interface"
 LOG_PREFIX="[upstream-sync]"
-TRUSTED_CONTRIBUTORS="${TRUSTED_CONTRIBUTORS:-hazardousup,thedjnn,technologiosity,EsotericRifts,neo-sam,RotorHazard-bot,dependabot[bot],github-actions[bot]}"
+TRUSTED_CONTRIBUTORS="${TRUSTED_CONTRIBUTORS:-2Turbulent,Alessandro Fiorillo,Andrey Zhereshchin,Arnaud M,Bryce Gruber,Dan Vogel,David Just,Diez B. Roggisch,E Thomas,Eduardo,Glenn Pringle,Hazard Creative,HazardCreative,J Ro,Jens Hofmann,JosepBC,KennyVDSypt,Klaas Schoute,Klaus Michael,Licardo,Louis Hitchcock,Mark Hale,Master92,Nandox7,Paulo Jesus,RaceFPV,Ramon Hernandez Roldan,Rodrigo Cardenas,ScorpionTDL,Vigneswara Baarathi,Viki Baarathi,Vlad Kolotoff,bob9,callmeyagr,eedok,husky-koglhof,kestux75,mac@multiprotocol,pamjesus,pulquero,ryaniftron,skyfpv,szafranski,まっく まるちぷろとこる}"
 MAX_OUTPUT_RATIO="${MAX_OUTPUT_RATIO:-20}"
 
 log() { echo "$LOG_PREFIX $*"; }
