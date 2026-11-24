@@ -1,0 +1,66 @@
+name: Upstream Sync
+
+# Detects upstream changes to the ported Python files, merges them,
+# ports behavioral changes to Rust via LLM, tests, and auto-merges.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # daily at 6am UTC
+  workflow_dispatch: {}  # manual trigger
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for diffing
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure upstream remote
+        run: |
+          git remote add upstream https://github.com/RotorHazard/RotorHazard.git || true
+          git config user.name "upstream-sync-bot"
+          git config user.email "sync@rotorhazard.local"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/server/Cargo.lock') }}
+
+      - name: Restore upstream sync marker
+        uses: actions/cache@v4
+        with:
+          path: .upstream-sync-sha
+          key: upstream-sync-sha
+
+      - name: Run upstream sync
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          chmod +x rust/tools/upstream-sync.sh
+          ./rust/tools/upstream-sync.sh
+
+      - name: Save upstream sync marker
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .upstream-sync-sha
+          key: upstream-sync-sha-${{ github.run_id }}
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error::Upstream sync failed — check the log for details"
+          echo "The sync was rolled back to the pre-merge state."
+          echo "Port the upstream changes manually."
