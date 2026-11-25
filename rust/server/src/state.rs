@@ -370,4 +370,4 @@ impl AppState {
 pub type SharedState = Arc<AppState>;
 
 /// The release version string reported to clients and cluster peers.
-pub const RELEASE_VERSION: &str = "4.6.0-dev.2-rust";
+pub const RELEASE_VERSION: &str = "4.6.0-dev.3-rust";
