@@ -14,6 +14,9 @@ name: Upstream Sync
 #   var     LLM_BASE_URL    override the endpoint (default OpenRouter chat completions)
 #   var     LLM_MODEL       override the model (default deepseek-v4.1-flash-1017)
 #   var     LLM_MAX_TOKENS  output cap (default 64000)
+#   var     LLM_REASONING_EFFORT  max|high|low|none; unset uses the
+#           provider default, which is already "high" for
+#           deepseek-v4.1-flash-1017
 # Without LLM_API_KEY the run still merges upstream and pushes, and records
 # "LLM port skipped" instead of porting.
 
@@ -93,6 +96,7 @@ jobs:
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS }}
+          LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT }}
           SYNC_ARGS: ${{ inputs.dry_run && '--dry-run' || '' }}
         run: |
           chmod +x rust/tools/upstream-sync.sh
