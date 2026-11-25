@@ -8,6 +8,14 @@ name: Upstream Sync
 # work happens on `rust`. So this file lives on both branches and the job
 # checks out `rust` explicitly. Do not delete the copy on `main` -- without it
 # the schedule is never registered.
+#
+# Configuration:
+#   secret  LLM_API_KEY     bearer token for the provider (OpenRouter by default)
+#   var     LLM_BASE_URL    override the endpoint (default OpenRouter chat completions)
+#   var     LLM_MODEL       override the model (default deepseek-v4.1-flash-1017)
+#   var     LLM_MAX_TOKENS  output cap (default 64000)
+# Without LLM_API_KEY the run still merges upstream and pushes, and records
+# "LLM port skipped" instead of porting.
 
 on:
   schedule:
@@ -70,12 +78,21 @@ jobs:
       - name: Install python client deps (cross-validation gate)
         run: python3 -m pip install --quiet 'python-socketio[client]' requests websocket-client
 
+      - name: Tool self-tests (no network, no key needed)
+        run: |
+          python3 rust/tools/test_llm_call.py
+          python3 rust/tools/test_validate_port.py
+          python3 rust/tools/test_pipeline_stub.py
+
       - name: Build server (the protocol suite runs the release binary)
         run: cargo build --release --manifest-path rust/server/Cargo.toml
 
       - name: Run upstream sync
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS }}
           SYNC_ARGS: ${{ inputs.dry_run && '--dry-run' || '' }}
         run: |
           chmod +x rust/tools/upstream-sync.sh
@@ -85,4 +102,4 @@ jobs:
         if: failure()
         run: |
           echo "::error::Upstream sync failed — the rust branch was rolled back to its pre-merge state"
-          echo "Check the log for the failing gate: fetch, merge, validation, cargo test, or the protocol suite."
+          echo "Check the log for the failing gate: self-tests, fetch, merge, validation, cargo test, or the protocol suite."
