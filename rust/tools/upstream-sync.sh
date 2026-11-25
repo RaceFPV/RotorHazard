@@ -285,10 +285,12 @@ else
         sleep 0.4
         curl -sf "http://127.0.0.1:$SUITE_PORT/api/status" >/dev/null 2>&1 && break
     done
+    SUITE_OUT="$SUITE_DATA/suite.out"
     if (cd "$SUITE_DIR" && RH_TEST_URL="http://127.0.0.1:$SUITE_PORT" \
-        python3 -m unittest discover -s . -p 'test_protocol*.py' 2>&1 | tail -5); then
+        python3 -m unittest discover -s . -p 'test_protocol*.py') > "$SUITE_OUT" 2>&1; then
         SUITE_RC=0
     fi
+    tail -5 "$SUITE_OUT"
     kill "$SUITE_PID" 2>/dev/null || true
     wait "$SUITE_PID" 2>/dev/null || true
     rm -rf "$SUITE_DATA"
