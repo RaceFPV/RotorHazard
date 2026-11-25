@@ -160,7 +160,13 @@ dispatch):
 4. Checks the contributor allowlist (line-wise; display names and logins)
 5. Sanitizes the diff (strips *comment lines only*; string literals are kept
    deliberately, because event names and message texts live in them)
-6. Sends it to the Anthropic API and validates the reply
+6. Sends it to the configured LLM provider and validates the reply. The call
+   lives in `rust/tools/llm_call.py`; OpenRouter and Anthropic share one body
+   shape and differ only in URL and auth headers. Config: `LLM_API_KEY`
+   (secret, required for a port), `LLM_BASE_URL` (default OpenRouter chat
+   completions), `LLM_MODEL` (default `deepseek/deepseek-v4.1-flash-1017`),
+   `LLM_MAX_TOKENS` (default 64000), `LLM_STYLE` (openai|anthropic, inferred
+   from the URL). With no `LLM_API_KEY` the run merges and pushes unported.
 7. Gates: `cargo test --release` by **exit status**, then the Python protocol
    suite against the built release binary
 8. Stages everything (`git add -A`) and pushes; any failure resets the branch
@@ -185,6 +191,10 @@ Security (`rust/tools/validate_port.py`, called by the script):
 - Truncation guard: a re-emit shorter than 50% of an existing file is refused
   before it lands (full-file responses are capped by max_tokens)
 - Size limit: output over 20x the Python diff is rejected
+
+Tool self-tests (no network, no key): `rust/tools/test_llm_call.py`,
+`rust/tools/test_validate_port.py`, `rust/tools/test_pipeline_stub.py` (stub
+provider, proves transport + parse + identical round trip).
 
 Run manually: `./rust/tools/upstream-sync.sh [--dry-run]`
 Validator tests: `python3 rust/tools/test_validate_port.py` (copies real
