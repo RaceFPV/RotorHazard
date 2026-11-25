@@ -153,7 +153,11 @@ run_gates() {
     wait "$suite_pid" 2>/dev/null || true
     rm -rf "$suite_data"
     if [ "$suite_rc" != "0" ]; then
+        # Naming the failures matters: the run log is the only debugging channel
+        # when this happens unattended.
         log "PROTOCOL SUITE FAILED"
+        grep -E '^(FAIL|ERROR):' "$suite_out" | sed 's/^/    /' | head -20 || true
+        tail -25 "$suite_out" | sed 's/^/    /' || true
         return 1
     fi
     log "protocol suite passed"
