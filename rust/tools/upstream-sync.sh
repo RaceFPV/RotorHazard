@@ -89,16 +89,27 @@ publish() {
 # because the merge-only path and the ported path start from different states.
 run_gates() {
     log "running tests..."
-    set +e
-    local test_out
-    test_out=$(cargo test --release --manifest-path rust/server/Cargo.toml 2>&1)
-    local test_rc=$?
-    set -e
-    if [ "$test_rc" != "0" ]; then
-        log "TESTS FAILED"
-        log "Test output: $test_out"
-        return 1
-    fi
+    # The protocol suites spawn real servers and a couple of cases are timing
+    # sensitive under parallel load: test_saved_race_nodes_have_laps passes 3/3
+    # in isolation but failed once in a full run. One retry keeps a flake from
+    # rejecting a good port; a genuine regression fails both attempts.
+    local test_out test_rc attempt
+    for attempt in 1 2; do
+        set +e
+        test_out=$(cargo test --release --manifest-path rust/server/Cargo.toml 2>&1)
+        test_rc=$?
+        set -e
+        if [ "$test_rc" = "0" ]; then
+            break
+        fi
+        log "test run $attempt failed (rc $test_rc)"
+        if [ "$attempt" = "2" ]; then
+            log "TESTS FAILED"
+            log "Test output: $test_out"
+            return 1
+        fi
+        log "retrying once"
+    done
 
     local py="${PYTHON_BIN:-python3}"
     log "running python protocol suite (cross-validation gate) with $py..."
