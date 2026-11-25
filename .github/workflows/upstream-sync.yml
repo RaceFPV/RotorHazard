@@ -29,6 +29,10 @@ on:
         description: 'Show the ported-file diff only (no merge, no port, no push)'
         type: boolean
         default: false
+      smoke_llm:
+        description: 'One real LLM call to verify key/model/validator (no merge, no push)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -87,10 +91,30 @@ jobs:
           python3 rust/tools/test_validate_port.py
           python3 rust/tools/test_pipeline_stub.py
 
+      - name: Guard - no credential committed
+        run: |
+          if git grep -nE 'sk-(or|ant)-v1-[A-Za-z0-9_-]{20,}' -- . ; then
+            echo '::error::an API key appears to be committed to the tree'
+            exit 1
+          fi
+          echo 'no key-shaped strings in the tree'
+
+      - name: LLM smoke test (one real call)
+        if: ${{ inputs.smoke_llm }}
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS }}
+          LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT }}
+        run: python3 rust/tools/smoke_llm.py
+
       - name: Build server (the protocol suite runs the release binary)
+        if: ${{ !inputs.smoke_llm }}
         run: cargo build --release --manifest-path rust/server/Cargo.toml
 
       - name: Run upstream sync
+        if: ${{ !inputs.smoke_llm }}
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
