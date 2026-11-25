@@ -109,10 +109,6 @@ jobs:
           LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT }}
         run: python3 rust/tools/smoke_llm.py
 
-      - name: Build server (the protocol suite runs the release binary)
-        if: ${{ !inputs.smoke_llm }}
-        run: cargo build --release --manifest-path rust/server/Cargo.toml
-
       - name: Run upstream sync
         if: ${{ !inputs.smoke_llm }}
         env:

@@ -273,6 +273,16 @@ if [ "${SKIP_PY_SUITE:-0}" = "1" ]; then
 elif ! python3 -c "import socketio, requests" 2>/dev/null; then
     log "python socketio/requests missing -- skipping cross-validation suite"
 else
+    # The suite drives the real binary, and `cargo test` builds the test
+    # harness rather than target/release/rh-server (the artifact's mtime is
+    # untouched by it), so build here instead of relying on the caller.
+    log "building server binary for the protocol suite..."
+    if ! cargo build --release --manifest-path rust/server/Cargo.toml; then
+        log "server build failed — reverting"
+        git reset --hard "$PRE_MERGE_SHA"
+        die "server build failed"
+    fi
+
     SUITE_DIR="$(git rev-parse --show-toplevel)/src/tests/protocol"
     SUITE_PORT=5877
     SUITE_DATA=$(mktemp -d /tmp/rh-sync-suite.XXXXXX)
