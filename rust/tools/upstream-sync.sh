@@ -31,7 +31,17 @@ MAX_OUTPUT_RATIO="${MAX_OUTPUT_RATIO:-20}"
 log() { echo "$LOG_PREFIX $*"; }
 die() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
-# Publish the current work.
+# Publish a merge-only outcome: no ported Rust, so no review is needed and it
+# goes straight to rust whatever SYNC_MODE says. Opening a PR for a pure
+# upstream merge would be noise.
+publish_merge() {
+    local message="$1"
+    git add -A
+    git commit --allow-empty -m "$message"
+    git push origin rust
+}
+
+# Publish a ported change.
 #
 # SYNC_MODE=pr commits on upstream-sync/<sha> and opens a pull request against
 # `rust`, so nothing lands unreviewed. SYNC_MODE=push commits straight to rust.
@@ -91,7 +101,7 @@ if [ -z "$PY_DIFF" ]; then
         git merge --abort 2>/dev/null || true
         die "merge conflict — manual resolution required"
     }
-    publish "Upstream sync ($UPSTREAM_SHA): merged, no ported-file changes"
+    publish_merge "Upstream sync ($UPSTREAM_SHA): merged, no ported-file changes"
     exit 0
 fi
 
@@ -118,7 +128,7 @@ if [ "$ALL_TRUSTED" = "false" ]; then
         git merge --abort 2>/dev/null || true
         die "merge conflict — manual resolution required"
     }
-    publish "Upstream sync ($UPSTREAM_SHA): untrusted contributor, manual port needed"
+    publish_merge "Upstream sync ($UPSTREAM_SHA): untrusted contributor, manual port needed"
     exit 0
 fi
 
@@ -143,7 +153,7 @@ log "merge clean"
 # --- LLM port ---
 if [ "${SKIP_LLM_PORT:-0}" = "1" ] || [ -z "${LLM_API_KEY:-}" ]; then
     log "LLM port skipped (no LLM_API_KEY or SKIP_LLM_PORT set)"
-    publish "Upstream sync ($UPSTREAM_SHA): merged, LLM port skipped"
+    publish_merge "Upstream sync ($UPSTREAM_SHA): merged, LLM port skipped"
     exit 0
 fi
 

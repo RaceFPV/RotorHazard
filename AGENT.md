@@ -205,8 +205,12 @@ accepts one deliberately. An LLM API error also fails and reverts.
 
 PRs opened with `GITHUB_TOKEN` do not trigger `rust-ci.yml` (a GitHub
 limitation, not a config error). The script's own gates — `cargo test` and
-the protocol suite — are what vouch for the port; add a fine-grained PAT as
-`SYNC_PAT` if you want CI checks on the PR itself.
+the protocol suite — are what vouch for the port. CI checks on the PR would
+need a separate fine-grained PAT; nothing is wired for that yet.
+
+Merge-only outcomes (no ported files changed, untrusted contributor, no key)
+carry no ported Rust and push straight to `rust` — they are not review
+tasks. Only an actual port opens a PR.
 
 Placement rule: GitHub only loads `schedule` and `workflow_dispatch` from the
 **default branch**, which here is `main` (a 1:1 upstream mirror) while all work
