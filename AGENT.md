@@ -182,6 +182,12 @@ Security (`rust/tools/validate_port.py`, called by the script):
 - Rules run on **added lines only**. Whole-file scanning rejected real code:
   auth modules say `PASSWORD`, `db.rs`/`heatgen.rs` say `include_str!`,
   `imdtabler.rs` says `std::process::Command`.
+- Output shapes: `{"path", "new_content"}` for small files, and
+  `{"path", "edits": [{"old", "new"}]}` for everything else. Anchors must
+  match exactly once, are applied in order, and are the reason a 3,000-line
+  `socket.rs` change is a few hundred output tokens instead of a full
+  regeneration. Rejections are named: `anchor_missing`, `anchor_ambiguous`,
+  `anchor_too_short`, `anchor_malformed`.
 - Structural bans: `unsafe {`, process spawn, raw TCP/UDP, `include_*!`,
   `extern crate`, shell paths, new URLs
 - Secret bans: key prefixes (`sk-`, `ghp_`, `AKIA`, `xox*`) and
@@ -237,9 +243,6 @@ Without the bridge: no plugins, no problem. The server is pure Rust.
       auth 3, export 2, results 3, ui 2, new_features 5 = 46 tests) —
       optional while the Python suite gates CI; each is a mechanical
       conversion following `protocol_core.rs`
-- [ ] Upstream sync: anchored block edits instead of full-file rewrites.
-      `socket.rs` is ~3,000 lines, larger than a 16k-token response, so any
-      upstream change touching it can only fail (safely) today.
 - [ ] ws281x GPIO LED backend (classic Pi 4 PWM/DMA; SPI backend works
        on Pi 5 and Pi 4 with GPIO10 wiring)
 - [ ] Node firmware update UI flow (`/updatenodes` page renders but
