@@ -212,15 +212,33 @@ jobs:
 
       - name: Pack
         run: |
-          mkdir -p dist
-          cp rust/target/release/rh-server dist/rh-server-macos-arm64
-          shasum -a 256 dist/rh-server-macos-arm64
+          STAGING="dist/RotorHazard"
+          mkdir -p "$STAGING"
+          cp rust/target/release/rh-server "$STAGING/"
+          cp LICENSE "$STAGING/" || true
+          printf '%s\n' \
+            'RotorHazard server (macOS, Apple Silicon)' \
+            '' \
+            'Run in Terminal:' \
+            '  ./rh-server' \
+            '' \
+            'First launch: macOS blocks unsigned binaries. Allow it with:' \
+            '  xattr -d com.apple.quarantine ./rh-server' \
+            'or via System Settings > Privacy & Security > Open Anyway.' \
+            '' \
+            'The server resolves its data directory automatically:' \
+            'RH_DATA_DIR env, a data/ folder next to the binary, or ~/rh-data.' \
+            '' \
+            'Web UI: http://localhost:5000 (config.json GENERAL.HTTP_PORT to change)' \
+            > "$STAGING/README.txt"
+          hdiutil create -volname "RotorHazard" -srcfolder "$STAGING" -ov -format UDZO "dist/rh-server-macos-arm64.dmg"
+          shasum -a 256 dist/rh-server-macos-arm64.dmg
 
-      - name: Upload binary artifact
+      - name: Upload disk image artifact
         uses: actions/upload-artifact@v4
         with:
           name: rh-server-macos-arm64
-          path: dist/rh-server-macos-arm64
+          path: dist/rh-server-macos-arm64.dmg
           if-no-files-found: error
 
   release:
