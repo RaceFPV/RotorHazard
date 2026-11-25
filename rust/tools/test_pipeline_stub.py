@@ -17,11 +17,18 @@ import subprocess
 import sys
 import tempfile
 import threading
+import importlib.util
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 captured = {}
+
+# Read the module's own default rather than duplicating the string here.
+_spec = importlib.util.spec_from_file_location("llm_call", os.path.join(HERE, "llm_call.py"))
+_llm_call = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_llm_call)
+llm_default_model = _llm_call.DEFAULT_MODEL
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -95,6 +102,19 @@ def main():
         print("auth header ok:", headers.get("Authorization") == "Bearer dummy-token")
         print("content-type ok:", headers.get("Content-Type") == "application/json")
 
+        # Actions passes an undefined vars.X as an empty string. That must fall
+        # back to the default model rather than send model: "".
+        env_blank = dict(env)
+        env_blank["LLM_MODEL"] = ""
+        env_blank["LLM_MAX_TOKENS"] = ""
+        proc_blank = subprocess.run([sys.executable, os.path.join(HERE, "llm_call.py"),
+                                     prompt_path, out_path],
+                                    capture_output=True, text=True, env=env_blank)
+        blank_body = captured.get("body", {})
+        print("blank vars -> status:", proc_blank.stdout.strip(),
+              "| model:", blank_body.get("model"),
+              "| max_tokens:", blank_body.get("max_tokens"))
+
         result = subprocess.run([sys.executable, os.path.join(HERE, "validate_port.py"),
                                  out_path, "100000"],
                                 cwd=sandbox, capture_output=True, text=True)
@@ -107,7 +127,9 @@ def main():
               and result.stdout.strip() == "applied_1"
               and after == original
               and body.get("max_tokens") == 64000
-              and headers.get("Authorization") == "Bearer dummy-token")
+              and headers.get("Authorization") == "Bearer dummy-token"
+              and blank_body.get("model") == llm_default_model
+              and blank_body.get("max_tokens") == 64000)
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
         server.shutdown()

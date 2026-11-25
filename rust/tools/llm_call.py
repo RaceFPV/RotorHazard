@@ -38,6 +38,32 @@ DEFAULT_MAX_TOKENS = 64000
 ANTHROPIC_VERSION = "2023-06-01"
 
 
+def env_or(environ, name, default):
+    """Environment value with empty/whitespace treated as absent.
+
+    GitHub Actions passes `${{ vars.X }}` as an empty string when the variable
+    is not defined, so a plain dict.get(name, default) would hand back "" and
+    silently override the default.
+    """
+    value = (environ.get(name) or "").strip()
+    return value or default
+
+
+def resolve_config(environ):
+    """All tunables in one place, so they can be tested without the network."""
+    base_url = env_or(environ, "LLM_BASE_URL", DEFAULT_BASE_URL)
+    return {
+        "api_key": (environ.get("LLM_API_KEY") or "").strip(),
+        "base_url": base_url,
+        "model": env_or(environ, "LLM_MODEL", DEFAULT_MODEL),
+        "max_tokens": int(env_or(environ, "LLM_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
+        "timeout": int(env_or(environ, "LLM_TIMEOUT", "900")),
+        "attempts": max(1, int(env_or(environ, "LLM_RETRIES", "3"))),
+        "style": resolve_style(base_url, env_or(environ, "LLM_STYLE", "")),
+        "reasoning_effort": env_or(environ, "LLM_REASONING_EFFORT", "") or None,
+    }
+
+
 def resolve_style(base_url, explicit=None):
     if explicit:
         style = explicit.strip().lower()
@@ -93,29 +119,23 @@ def main():
         sys.exit("usage: llm_call.py <prompt_file> <out_file>")
 
     prompt_path, out_path = sys.argv[1], sys.argv[2]
-    api_key = os.environ.get("LLM_API_KEY", "").strip()
-    if not api_key:
+    config = resolve_config(os.environ)
+    if not config["api_key"]:
         print("000")
         sys.exit("LLM_API_KEY is not set")
-
-    base_url = os.environ.get("LLM_BASE_URL", DEFAULT_BASE_URL)
-    model = os.environ.get("LLM_MODEL", DEFAULT_MODEL)
-    max_tokens = os.environ.get("LLM_MAX_TOKENS", DEFAULT_MAX_TOKENS)
-    timeout = int(os.environ.get("LLM_TIMEOUT", "900"))
-    attempts = max(1, int(os.environ.get("LLM_RETRIES", "3")))
-    style = resolve_style(base_url, os.environ.get("LLM_STYLE"))
 
     with open(prompt_path, encoding="utf-8") as handle:
         prompt = handle.read()
 
-    headers = build_headers(style, api_key)
-    body = build_payload(style, model, prompt, max_tokens,
-                         reasoning_effort=(os.environ.get("LLM_REASONING_EFFORT") or "").strip() or None)
+    headers = build_headers(config["style"], config["api_key"])
+    body = build_payload(config["style"], config["model"], prompt,
+                         config["max_tokens"],
+                         reasoning_effort=config["reasoning_effort"])
 
     status = "000"
-    for attempt in range(1, attempts + 1):
+    for attempt in range(1, config["attempts"] + 1):
         try:
-            status, payload = post(base_url, headers, body, timeout)
+            status, payload = post(config["base_url"], headers, body, config["timeout"])
             status = str(status)
         except urllib.error.HTTPError as exc:
             status = str(exc.code)
@@ -135,7 +155,7 @@ def main():
             print(status)
             return 0
 
-        if attempt < attempts:
+        if attempt < config["attempts"]:
             time.sleep(min(30, 5 * attempt))
 
     print(status)

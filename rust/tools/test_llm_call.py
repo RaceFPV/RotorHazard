@@ -61,6 +61,35 @@ def main():
     check("default base url", llm_call.DEFAULT_BASE_URL,
           "https://openrouter.ai/api/v1/chat/completions")
 
+    # Empty-but-present env vars (what Actions sends for an undefined vars.X)
+    # must fall back to the defaults, not override them with "".
+    cfg = llm_call.resolve_config({})
+    check("no env -> default model", cfg["model"], llm_call.DEFAULT_MODEL)
+    check("no env -> default base url", cfg["base_url"], llm_call.DEFAULT_BASE_URL)
+    check("no env -> default max_tokens", cfg["max_tokens"], 64000)
+    check("no env -> openai style", cfg["style"], "openai")
+
+    cfg = llm_call.resolve_config({"LLM_API_KEY": "k", "LLM_MODEL": "",
+                                   "LLM_BASE_URL": "", "LLM_MAX_TOKENS": "",
+                                   "LLM_REASONING_EFFORT": "", "LLM_STYLE": "",
+                                   "LLM_TIMEOUT": "", "LLM_RETRIES": ""})
+    check("empty env -> default model", cfg["model"], llm_call.DEFAULT_MODEL)
+    check("empty env -> default base url", cfg["base_url"], llm_call.DEFAULT_BASE_URL)
+    check("empty env -> default max_tokens", cfg["max_tokens"], 64000)
+    check("empty env -> default timeout", cfg["timeout"], 900)
+    check("empty env -> default attempts", cfg["attempts"], 3)
+    check("empty env -> no reasoning effort", cfg["reasoning_effort"], None)
+    check("whitespace treated as unset",
+          llm_call.resolve_config({"LLM_MODEL": "   "})["model"], llm_call.DEFAULT_MODEL)
+
+    # Explicit values win.
+    cfg = llm_call.resolve_config({"LLM_API_KEY": "k", "LLM_MODEL": "vendor/other",
+                                   "LLM_REASONING_EFFORT": "max",
+                                   "LLM_BASE_URL": "https://api.anthropic.com/v1/messages"})
+    check("explicit model wins", cfg["model"], "vendor/other")
+    check("explicit effort wins", cfg["reasoning_effort"], "max")
+    check("anthropic url switches style", cfg["style"], "anthropic")
+
     # No key: prints 000 and exits non-zero, without attempting a request.
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
         handle.write("prompt")
