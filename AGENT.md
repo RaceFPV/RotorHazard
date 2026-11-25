@@ -50,12 +50,19 @@ server startup is slower in debug mode and can cause timeouts.
 
 ## CI cost policy
 
-`.github/workflows/rust-ci.yml` runs build + unit + protocol tests only for
-commits touching `rust/**` or the workflow file itself. Platform binaries
-(x86_64, aarch64 cross-build, Windows, macOS) are built on **tag pushes only**,
-or on manual dispatch with `build_bundles`; the macOS runner bills at 10x
-minutes, which is why ordinary branch commits never package. Path filters are
-not evaluated for tag pushes, so a release tag always builds every platform.
+Two workflows, deliberately separate so a test run never looks like a release:
+
+- `rust-ci.yml` — build + unit + protocol tests only, `contents: read`. Runs for
+  commits touching `rust/**` or the workflow file, on PRs, and when called by
+  the release workflow as its gate. It never packages, uploads or publishes.
+- `rust-release.yml` — the binaries. A tag push (`rh-server-rust-v*`) runs the
+  test gate via `workflow_call`, builds x86_64 / aarch64 / Windows / macOS, and
+  publishes a GitHub release. Manual dispatch builds the same four artifacts
+  and stops there (no publish), for exercising packaging without a tag.
+
+The macOS runner bills at 10x minutes, which is why ordinary branch commits
+never package. Path filters are not evaluated for tag pushes, so tags are
+handled entirely by the release workflow.
 
 A merge that only brings in upstream Python changes therefore runs no Rust CI —
 the upstream-sync job has already run `cargo test` and the protocol suite as

@@ -1,0 +1,239 @@
+name: Rust Release
+
+# Builds the platform binaries and, on a tag, publishes them.
+#
+#   tag push rh-server-rust-v*  -> test gate -> 4 bundles -> GitHub release
+#   manual dispatch             -> test gate -> 4 bundles -> artifacts only
+#
+# Manual dispatch exists to exercise the packaging path without cutting a tag;
+# it never publishes. Ordinary branch commits run rust-ci.yml instead and never
+# touch this workflow.
+
+on:
+  push:
+    tags: ['rh-server-rust-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rust-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Test gate
+    uses: ./.github/workflows/rust-ci.yml
+
+  bundle:
+    name: Bundle (x86_64)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-bundle-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bundle-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
+
+      - name: Build release binary
+        run: ./rust/build-release.sh
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rh-server-linux-x86_64
+          path: dist/rh-server-linux-x86_64
+          if-no-files-found: error
+
+  bundle-aarch64:
+    name: Bundle (aarch64 / Raspberry Pi)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install aarch64 compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config libudev-dev
+
+      - name: Fetch arm64 libudev into a sysroot
+        run: |
+          # hermetic sysroot from ports.ubuntu.com -- no repo/multiarch changes
+          source /etc/os-release
+          SUITE="${VERSION_CODENAME:-noble}"
+          MIRROR=http://ports.ubuntu.com/ubuntu-ports
+          IDX=$(curl -fsSL "$MIRROR/dists/$SUITE/main/binary-arm64/Packages.gz" | zcat)
+          get_file() {  # package name -> pool path
+            echo "$IDX" | awk -v pkg="$1" '$0=="Package: " pkg {f=1} f && /^Filename: /{print $2; exit}'
+          }
+          mkdir -p arm64-sysroot
+          for pkg in libudev1 libudev-dev; do
+            fpath=$(get_file "$pkg")
+            test -n "$fpath" || { echo "could not locate $pkg"; exit 1; }
+            curl -fsSL "$MIRROR/$fpath" -o /tmp/$pkg.deb
+            dpkg-deb -x /tmp/$pkg.deb arm64-sysroot
+          done
+          # also place the arm64 libudev where the cross linker looks by
+          # default, so -ludev resolves regardless of pkg-config -L output
+          # (pkgconf 2.x sysroot handling can emit a bogus -L)
+          sudo cp -a arm64-sysroot/usr/lib/aarch64-linux-gnu/libudev.so* /usr/aarch64-linux-gnu/lib/
+          ls arm64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig/
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-aarch64-
+
+      - name: Build aarch64 binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: '1'
+          # target-scoped: only the aarch64 build probes the sysroot; the
+          # native x86_64 build (same script) keeps using host pkg-config
+          PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: ${{ github.workspace }}/arm64-sysroot
+          PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: ${{ github.workspace }}/arm64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig
+        run: ./rust/build-release.sh
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rh-server-linux-aarch64
+          path: dist/rh-server-linux-aarch64
+          if-no-files-found: error
+
+  bundle-windows:
+    name: Bundle (Windows x64)
+    needs: gate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-bundle-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bundle-
+
+      - name: Build
+        env:
+          # no NASM on the runner: build OpenSSL without assembler
+          OPENSSL_NO_ASM: '1'
+        run: cargo build --release --manifest-path rust/server/Cargo.toml
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item rust/target/release/rh-server.exe dist/rh-server-windows-x64.exe
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rh-server-windows-x64
+          path: dist/rh-server-windows-x64.exe
+          if-no-files-found: error
+
+  bundle-macos:
+    name: Bundle (macOS arm64 / Apple Silicon)
+    needs: gate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-bundle-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bundle-
+
+      - name: Build
+        env:
+          # fall back to no-asm if the runner lacks the assembler tooling
+          OPENSSL_NO_ASM: '1'
+        run: cargo build --release --manifest-path rust/server/Cargo.toml
+
+      - name: Pack
+        run: |
+          STAGING="dist/RotorHazard"
+          mkdir -p "$STAGING"
+          cp rust/target/release/rh-server "$STAGING/"
+          cp LICENSE "$STAGING/" || true
+          printf '%s\n' \
+            'RotorHazard server (macOS, Apple Silicon)' \
+            '' \
+            'Run in Terminal:' \
+            '  ./rh-server' \
+            '' \
+            'First launch: macOS blocks unsigned binaries. Allow it with:' \
+            '  xattr -d com.apple.quarantine ./rh-server' \
+            'or via System Settings > Privacy & Security > Open Anyway.' \
+            '' \
+            'The server resolves its data directory automatically:' \
+            'RH_DATA_DIR env, a data/ folder next to the binary, or ~/rh-data.' \
+            '' \
+            'Web UI: http://localhost:5000 (config.json GENERAL.HTTP_PORT to change)' \
+            > "$STAGING/README.txt"
+          hdiutil create -volname "RotorHazard" -srcfolder "$STAGING" -ov -format UDZO "dist/rh-server-macos-arm64.dmg"
+          shasum -a 256 dist/rh-server-macos-arm64.dmg
+
+      - name: Upload disk image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rh-server-macos-arm64
+          path: dist/rh-server-macos-arm64.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish release (tag pushes only)
+    needs: [bundle, bundle-aarch64, bundle-windows, bundle-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download bundles
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/rh-server-*
+          generate_release_notes: true
