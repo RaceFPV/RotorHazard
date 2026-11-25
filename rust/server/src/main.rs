@@ -243,6 +243,7 @@ async fn main() {
         admin_password,
         config_items: Arc::new(Mutex::new(std::collections::HashMap::new())),
         mock: Mutex::new((0..num_nodes).map(|_| state::MockNodeState::new()).collect()),
+        scan: Mutex::new((0..num_nodes).map(|_| state::ScanState::default()).collect()),
         mock_provider: Mutex::new((
             String::new(),
             crate::mock::MockProvider::NoSignal,
@@ -374,14 +375,38 @@ async fn main() {
                 let payload = db::with_db(&hb_state, |conn| {
                     let profile_id = db::current_profile_id(conn);
                     let freqs = db::profile_frequencies(conn, profile_id);
+                    // Advance any enabled scan before reporting, exactly like
+                    // the sweep in RHRace.get_heartbeat_json: step by interval,
+                    // wrap to min at the top of the band, narrow by zoom, and
+                    // reset the step to max when it gets finer than min.
+                    let mut scan = hb_state.scan.lock().unwrap();
+                    for i in 0..hb_state.node_count() {
+                        if let Some(s) = scan.get_mut(i) {
+                            if s.enabled {
+                                let mut next = s.current_freq + s.interval;
+                                if next < s.min_freq || next > s.max_freq {
+                                    next = s.min_freq;
+                                    s.interval /= s.zoom;
+                                    if s.interval < s.min_interval {
+                                        s.interval = s.max_interval;
+                                    }
+                                }
+                                s.current_freq = next;
+                            }
+                        }
+                    }
+                    let frequencies: Vec<i64> = (0..hb_state.node_count())
+                        .map(|i| match scan.get(i) {
+                            Some(s) if s.enabled => s.current_freq.round() as i64,
+                            _ => freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0),
+                        })
+                        .collect();
                     let mock = hb_state.mock.lock().unwrap();
                     json!({
                         "current_rssi": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.current_rssi).unwrap_or(0))
                             .collect::<Vec<_>>(),
-                        "frequency": (0..hb_state.node_count())
-                            .map(|i| freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0))
-                            .collect::<Vec<_>>(),
+                        "frequency": frequencies,
                         "loop_time": (0..hb_state.node_count())
                             .map(|i| mock.get(i).map(|m| m.loop_time).unwrap_or(1))
                             .collect::<Vec<_>>(),

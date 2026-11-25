@@ -143,11 +143,11 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 let _ = socket.emit("current_heat", &payload);
             }
             Some("seat_data") => {
-                let payload = db::with_db(state, payloads::build_seat_data);
+                let payload = payloads::build_seat_data(state);
                 let _ = socket.emit("seat_data", &payload);
             }
             Some("min_lap") => {
-                let payload = db::with_db(state, payloads::build_min_lap);
+                let payload = payloads::build_min_lap(state);
                 let _ = socket.emit("min_lap", &payload);
             }
             Some("enter_and_exit_at_levels") => {
@@ -2198,10 +2198,8 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         let state = s.0.clone();
         let data = data.0;
         let val = data.get("start_thresh_lower_amount").cloned().unwrap_or(json!(0));
-        // stored in config.json TIMING section by Python; Rust keeps it in DB for now
-        db::with_db(&state, |conn| {
-            db::set_option(conn, "TIMING_startThreshLowerAmount", &val.to_string());
-        });
+        crate::phase3::persist_config_item(
+            &state.data_dir, "TIMING", "startThreshLowerAmount", &val);
         let payload = json!({"start_thresh_lower_amount": val.as_i64().unwrap_or(0)});
         let _ = sock.emit("start_thresh_lower_amount", &payload);
     });
@@ -2227,7 +2225,7 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
             db::set_option(conn, "MinLapSec", &val.to_string());
         });
         // min_lap emitted with noself=True
-        let payload = db::with_db(&state, payloads::build_min_lap);
+        let payload = payloads::build_min_lap(&state);
         if let Some(ns) = state.io.get().and_then(|io| io.of("/")) {
             let ns = ns.except(sid);
             tokio::spawn(async move {
@@ -2246,6 +2244,76 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
                 &state.data_dir, "UI", "currentLanguage", &json!(lang),
             );
         }
+    });
+
+    socket.on("set_scan", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let Some(node) = data.get("node").and_then(|v| v.as_i64()) else { return };
+        if node < 0 || node as usize >= state.node_count() { return; }
+
+        let num = |key: &str| data.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let (min_f, max_f) = (num("min_scan_frequency"), num("max_scan_frequency"));
+        let (max_i, min_i) = (num("max_scan_interval"), num("min_scan_interval"));
+        let zoom = num("scan_zoom");
+        let valid = min_f > 0.0 && min_f <= max_f && min_i > 0.0 && min_i <= max_i && zoom > 0.0;
+
+        // Read the profile frequency first (db lock before scan lock, the same
+        // order the heartbeat uses) so a fresh scan starts at the seat's
+        // current channel.
+        let start_freq = {
+            let conn = state.db.lock().unwrap();
+            let profile_id = db::current_profile_id(&conn);
+            db::profile_frequencies(&conn, profile_id)
+                .get(node as usize)
+                .map(|(_, _, f)| *f as f64)
+                .unwrap_or(0.0)
+        };
+
+        let mut scans = state.scan.lock().unwrap();
+        let entry = &mut scans[node as usize];
+        if valid {
+            entry.enabled = true;
+            entry.min_freq = min_f;
+            entry.max_freq = max_f;
+            entry.max_interval = max_i;
+            entry.min_interval = min_i;
+            entry.zoom = zoom;
+            entry.interval = max_i;
+            entry.current_freq = start_freq;
+        } else {
+            // Invalid parameters disable the scan and the heartbeat reverts to
+            // the profile frequency, as set_scan_interval does in Python.
+            *entry = crate::state::ScanState::default();
+        }
+    });
+
+    socket.on("set_seat_color", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        let data = data.0;
+        let Some(seat_id) = data.get("seat_id").and_then(|v| v.as_i64()) else { return };
+        let Some(color) = data.get("color").and_then(|v| v.as_str()) else { return };
+        let mut colors = payloads::seat_colors(&state);
+        if seat_id < 0 || seat_id as usize >= colors.len() {
+            return;
+        }
+        colors[seat_id as usize] = color.to_string();
+        crate::phase3::persist_config_item(&state.data_dir, "LED", "seatColors", &json!(colors));
+        broadcast(&state, "seat_data", payloads::build_seat_data(&state));
+    });
+
+    socket.on("reset_seat_color", move |sock: SocketRef, s: State<SharedState>| async move {
+        let state = s.0.clone();
+            if !socket_authed(&sock, &state) { return; }
+        crate::phase3::persist_config_item(
+            &state.data_dir,
+            "LED",
+            "seatColors",
+            &json!(payloads::DEFAULT_SEAT_COLORS),
+        );
+        broadcast(&state, "seat_data", payloads::build_seat_data(&state));
     });
 
     socket.on("set_config", move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {

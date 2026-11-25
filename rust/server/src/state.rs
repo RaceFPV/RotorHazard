@@ -315,6 +315,22 @@ pub struct ServerInfo {
     pub json_api: i64,
 }
 
+/// Per-seat frequency scan (Python Node.set_scan_interval + the sweep in
+/// get_heartbeat_json). A scanner sweeps its node across a band by adding
+/// `interval` to the frequency on every heartbeat, wrapping at the band edges
+/// and narrowing the step by `zoom` each pass.
+#[derive(Clone, Debug, Default)]
+pub struct ScanState {
+    pub enabled: bool,
+    pub min_freq: f64,
+    pub max_freq: f64,
+    pub max_interval: f64,
+    pub min_interval: f64,
+    pub zoom: f64,
+    pub interval: f64,
+    pub current_freq: f64,
+}
+
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub race: Arc<Mutex<RaceState>>,
@@ -329,6 +345,8 @@ pub struct AppState {
     /// GENERAL-section config items (Python keeps these in config.json; the
     /// Rust build holds runtime-set values here for Phase 1)
     pub config_items: Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
+    /// Per-seat scan state for the frequency-test page (one entry per node)
+    pub scan: Mutex<Vec<ScanState>>,
     /// Mock-node simulation state (one entry per node)
     pub mock: Mutex<Vec<crate::state::MockNodeState>>,
     /// Active mock signal provider (name + state), per MockSignal.py

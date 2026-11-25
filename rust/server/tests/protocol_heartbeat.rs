@@ -207,14 +207,10 @@ fn test_heartbeat_frequency_follows_seat_frequency() {
 }
 
 /// The frequency-test page sweeps by enabling a scan on the seat: the server
-/// advances that node's frequency itself on each heartbeat. The Rust server has
-/// no scan support yet -- no `set_scan` handler and no scan fields on the node
-/// -- so `scanner.html` cannot produce a spectrogram against it.
-///
-/// Left as an ignored test so it becomes the acceptance check when the feature
-/// is ported: run with `cargo test --release -- --ignored`.
+/// advances that node's frequency itself on each heartbeat, wrapping inside the
+/// band and narrowing the step by the zoom factor. Without this the page shows
+/// a single column instead of a spectrum.
 #[test]
-#[ignore = "scan/sweep is not implemented in the Rust server (no set_scan handler)"]
 fn test_heartbeat_sweeps_frequency_when_scan_enabled() {
     let mut server = spawn_server();
     let mut client = SocketClient::connect(&server.base_url);
@@ -240,6 +236,12 @@ fn test_heartbeat_sweeps_frequency_when_scan_enabled() {
     for _ in 0..10 {
         let hb = heartbeat(&client);
         let freq = hb["frequency"][0].as_i64().unwrap_or(-1);
+        assert!(
+            (5645..=5945).contains(&freq),
+            "scan left the requested band: {} not in 5645..=5945 ({})",
+            freq,
+            hb
+        );
         if freq != start {
             advanced = true;
             break;
@@ -247,10 +249,49 @@ fn test_heartbeat_sweeps_frequency_when_scan_enabled() {
     }
     assert!(
         advanced,
-        "frequency never advanced after set_scan (stuck at {}); the scan sweep \
-         the frequency-test page depends on is not implemented",
+        "frequency never advanced after set_scan (stuck at {}); the frequency \
+         sweep the scanner page depends on is not working",
         start
     );
+
+    client.disconnect();
+    server.stop();
+}
+
+/// Python's set_scan_interval() refuses out-of-range parameters and clears the
+/// scan, which restores the seat's profile frequency. Accepting them instead
+/// would leave a node stuck sweeping a nonsense band.
+#[test]
+fn test_set_scan_invalid_parameters_leaves_frequency_alone() {
+    let mut server = spawn_server();
+    let mut client = SocketClient::connect(&server.base_url);
+    std::thread::sleep(Duration::from_millis(300));
+    client.drain();
+
+    let before = heartbeat(&client)["frequency"][0].as_i64().unwrap_or(-1);
+
+    // min > max is invalid
+    client.emit(
+        "set_scan",
+        &json!({
+            "node": 0,
+            "min_scan_frequency": 5945,
+            "max_scan_frequency": 5645,
+            "max_scan_interval": 80,
+            "min_scan_interval": 5,
+            "scan_zoom": 2,
+        }),
+    );
+
+    for _ in 0..4 {
+        let hb = heartbeat(&client);
+        assert_eq!(
+            hb["frequency"][0].as_i64().unwrap_or(-1),
+            before,
+            "an invalid scan must not move the seat frequency: {}",
+            hb
+        );
+    }
 
     client.disconnect();
     server.stop();

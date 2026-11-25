@@ -197,6 +197,18 @@ pub fn get_config_string(state: &SharedState, section: &str, key: &str) -> Strin
     String::new()
 }
 
+/// Reads a raw config.json value. get_config_string only returns scalars, so
+/// array-valued keys (LED.seatColors) were unreadable.
+pub fn get_config_value(
+    state: &SharedState,
+    section: &str,
+    key: &str,
+) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(format!("{}/config.json", state.data_dir)).ok()?;
+    let cfg: serde_json::Value = serde_json::from_str(&text).ok()?;
+    cfg.get(section)?.get(key).cloned()
+}
+
 /// Reads a config.json value as f64 with a fallback.
 pub fn get_config_number(state: &SharedState, section: &str, key: &str, fallback: f64) -> f64 {
     if let Ok(text) = std::fs::read_to_string(format!("{}/config.json", state.data_dir)) {

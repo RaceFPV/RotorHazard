@@ -293,13 +293,37 @@ pub fn build_current_heat(conn: &Connection, race: &RaceState) -> Value {
     })
 }
 
-pub fn build_seat_data(_conn: &Connection) -> Value {
-    let seat_colors: Vec<String> = [
-        "#0022ff", "#ff5500", "#00ff22", "#ff0055", "#ddff00", "#7700ff", "#00ffdd", "#aaaaaa",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+pub const DEFAULT_SEAT_COLORS: [&str; 8] = [
+    "#0022ff", "#ff5500", "#00ff22", "#ff0055", "#ddff00", "#7700ff", "#00ffdd", "#aaaaaa",
+];
+
+/// Seat colours as stored in LED.seatColors, falling back to the defaults.
+/// The colours were hardcoded, so a saved palette never reached the UI.
+pub fn seat_colors(state: &crate::state::SharedState) -> Vec<String> {
+    let stored = crate::db::get_config_value(state, "LED", "seatColors")
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .map(|c| c.as_str().unwrap_or("").to_string())
+                .collect::<Vec<String>>()
+        })
+        .filter(|v| v.len() >= DEFAULT_SEAT_COLORS.len());
+
+    match stored {
+        Some(mut colors) => {
+            for (i, default) in DEFAULT_SEAT_COLORS.iter().enumerate() {
+                if colors[i].is_empty() {
+                    colors[i] = default.to_string();
+                }
+            }
+            colors
+        }
+        None => DEFAULT_SEAT_COLORS.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+pub fn build_seat_data(state: &crate::state::SharedState) -> Value {
+    let seat_colors: Vec<String> = seat_colors(state);
     let seats: Vec<Value> = seat_colors
         .iter()
         .enumerate()
@@ -310,11 +334,21 @@ pub fn build_seat_data(_conn: &Connection) -> Value {
     })
 }
 
-pub fn build_min_lap(conn: &Connection) -> Value {
+pub fn build_min_lap(state: &crate::state::SharedState) -> Value {
+    let (min_lap, min_first_crossing) = {
+        let conn = state.db.lock().unwrap();
+        (
+            db::get_option_int(&conn, "MinLapSec", 10),
+            db::get_option_int(&conn, "MinFirstCrossingSec", 0),
+        )
+    };
+    // Python reads TIMING.MinLapBehavior; reporting a constant 0 meant the UI
+    // could show "off" while the server was discarding short laps.
+    let behavior = crate::db::get_config_number(state, "TIMING", "MinLapBehavior", 0.0) as i64;
     json!({
-        "min_lap": db::get_option_int(conn, "MinLapSec", 10),
-        "min_first_crossing": db::get_option_int(conn, "MinFirstCrossingSec", 0),
-        "min_lap_behavior": 0,
+        "min_lap": min_lap,
+        "min_first_crossing": min_first_crossing,
+        "min_lap_behavior": behavior,
     })
 }
 
@@ -374,11 +408,35 @@ pub fn build_current_laps(conn: &Connection, race: &RaceState) -> Value {
                 "late_lap": false,
             }));
         }
+        // Both were hardcoded. Python picks the quickest completed lap
+        // (index > 0, so the first crossing does not count) and marks a node
+        // finished once it reaches the format's lap limit.
+        let mut fastest_lap_index = Value::Null;
+        let mut fastest = f64::INFINITY;
+        let mut live_laps: i64 = 0;
+        for (lap_index, lap) in race.node_laps[idx].iter().enumerate() {
+            if !lap.deleted {
+                live_laps += 1;
+            }
+            if lap_index > 0 && lap.lap_time > 0.0 && lap.lap_time < fastest {
+                fastest = lap.lap_time;
+                fastest_lap_index = json!(lap_index);
+            }
+        }
+        let lap_limit: i64 = conn
+            .query_row(
+                "SELECT number_laps_win FROM race_format WHERE id = ?1",
+                [race.format_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let finished_flag = lap_limit > 0 && live_laps >= lap_limit;
+
         nodes.push(json!({
             "laps": laps,
-            "fastest_lap_index": Value::Null,
+            "fastest_lap_index": fastest_lap_index,
             "pilot": pilot,
-            "finished_flag": false,
+            "finished_flag": finished_flag,
         }));
     }
     json!({

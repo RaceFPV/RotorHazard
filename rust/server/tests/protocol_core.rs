@@ -663,3 +663,175 @@ fn test_seat_data_shape() {
         }
     });
 }
+
+// ---- Config-backed payloads ----
+// These pin behaviour that used to be hardcoded: a saved seat palette, the
+// min-lap behaviour flag, and where the start-threshold value is stored.
+
+#[test]
+fn test_min_lap_behavior_reflects_config() {
+    with_server(|_server, client, observer| {
+        client.emit("set_config", &json!({
+            "section": "TIMING", "key": "MinLapBehavior", "value": 1,
+        }));
+        std::thread::sleep(Duration::from_millis(500));
+
+        client.emit("set_min_lap", &json!({"min_lap": 5}));
+        let resp = observer.wait_for("min_lap", T);
+        assert_eq!(resp["min_lap"].as_i64().unwrap_or(-1), 5, "payload: {}", resp);
+        assert_eq!(
+            resp["min_lap_behavior"].as_i64().unwrap_or(-1),
+            1,
+            "min_lap_behavior must come from TIMING.MinLapBehavior, not a constant: {}",
+            resp
+        );
+    });
+}
+
+#[test]
+fn test_seat_color_persists_and_broadcasts() {
+    let mut server = spawn_server();
+    let mut client = SocketClient::connect(&server.base_url);
+    std::thread::sleep(Duration::from_millis(300));
+    client.drain();
+
+    client.emit("set_seat_color", &json!({"seat_id": 2, "color": "#123456"}));
+    let resp = client.wait_for("seat_data", T);
+    assert_eq!(
+        resp["seats"][2]["color"].as_str(),
+        Some("#123456"),
+        "seat_data broadcast did not carry the new colour: {}",
+        resp
+    );
+
+    // A reload must read it back from config.json, not the hardcoded defaults.
+    let resp = client.emit_and_wait(
+        "load_data",
+        &json!({"load_types": ["seat_data"]}),
+        "seat_data",
+        T,
+    );
+    assert_eq!(resp["seats"][2]["color"].as_str(), Some("#123456"), "payload: {}", resp);
+
+    // Resetting restores the default palette everywhere.
+    client.emit("reset_seat_color", &json!(null));
+    let resp = client.wait_for("seat_data", T);
+    assert_eq!(
+        resp["seats"][2]["color"].as_str(),
+        Some("#00ff22"),
+        "reset did not restore the default colour: {}",
+        resp
+    );
+
+    let config_path = server.data_dir.join("config.json");
+    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap())
+        .unwrap_or(json!({}));
+    assert_eq!(
+        cfg["LED"]["seatColors"][2].as_str(),
+        Some("#00ff22"),
+        "config.json did not persist the palette: {}",
+        cfg
+    );
+
+    client.disconnect();
+    server.stop();
+}
+
+#[test]
+fn test_start_thresh_lower_amount_persists_to_config() {
+    let mut server = spawn_server();
+    let mut client = SocketClient::connect(&server.base_url);
+    std::thread::sleep(Duration::from_millis(300));
+    client.drain();
+
+    let resp = client.emit_and_wait(
+        "set_start_thresh_lower_amount",
+        &json!({"start_thresh_lower_amount": 5}),
+        "start_thresh_lower_amount",
+        T,
+    );
+    assert_eq!(
+        resp["start_thresh_lower_amount"].as_i64(),
+        Some(5),
+        "payload: {}",
+        resp
+    );
+
+    // Python keeps this in config.json TIMING; a DB-only copy is invisible to
+    // every page that reads the config.
+    let config_path = server.data_dir.join("config.json");
+    let deadline = std::time::Instant::now() + T;
+    loop {
+        let cfg: Value = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(json!({}));
+        if cfg["TIMING"]["startThreshLowerAmount"].as_i64() == Some(5) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "config.json TIMING.startThreshLowerAmount was never written: {}",
+            cfg
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    client.disconnect();
+    server.stop();
+}
+
+// ---- Lap statistics in the current_laps payload ----
+
+#[test]
+fn test_fastest_lap_index_and_finished_flag() {
+    with_server(|_server, client, observer| {
+        setup_heat_with_pilots(client, 1);
+        client.emit("stage_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_RACING, LONG, false);
+
+        let mut resp = json!(null);
+        for _ in 0..3 {
+            resp = client.emit_and_wait("simulate_lap", &json!({"node": 0}), "current_laps", T);
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+
+        let node = &resp["current"]["node_index"][0];
+        let laps = node["laps"].as_array().expect("laps array");
+
+        // Python picks the quickest completed lap, skipping index 0 (the first
+        // crossing is not a lap time).
+        let mut expected: Option<(usize, f64)> = None;
+        for (i, lap) in laps.iter().enumerate().skip(1) {
+            let t = lap["lap_time"].as_f64().unwrap_or(0.0);
+            if t > 0.0 && expected.map(|(_, b)| t < b).unwrap_or(true) {
+                expected = Some((i, t));
+            }
+        }
+
+        let fastest = node["fastest_lap_index"].as_i64();
+        assert!(
+            fastest.is_some(),
+            "fastest_lap_index stayed null with laps recorded: {}",
+            node
+        );
+        assert_eq!(
+            Some(fastest.unwrap() as usize),
+            expected.map(|(i, _)| i),
+            "fastest_lap_index does not point at the quickest lap: {}",
+            node
+        );
+
+        // The default format has no lap limit, so nothing is finished yet.
+        assert_eq!(
+            node["finished_flag"].as_bool(),
+            Some(false),
+            "finished_flag should be false without a lap limit: {}",
+            node
+        );
+
+        client.emit("stop_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_DONE, Duration::from_secs(20), true);
+        client.emit("discard_laps", &json!(null));
+    });
+}
