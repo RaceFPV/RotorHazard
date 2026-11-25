@@ -18,6 +18,9 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 mime_guess = "2"
 serialport = "4"
 rust_socketio = "0.6"
+# vendored: rust_engineio hard-depends on native-tls/openssl; building openssl
+# from source removes the pkg-config/system-libssl requirement for all targets
+openssl = { version = "0.10", features = ["vendored"] }
 base64 = "0.22"
 minijinja = { version = "2", features = ["urlencode", "json"] }
 
