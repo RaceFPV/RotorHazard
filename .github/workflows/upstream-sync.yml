@@ -36,6 +36,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write   # the sync opens a PR instead of pushing to rust
 
 concurrency:
   group: upstream-sync
@@ -121,6 +122,10 @@ jobs:
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_MAX_TOKENS: ${{ vars.LLM_MAX_TOKENS }}
           LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT }}
+          # PR delivery: needs pull-requests: write. SYNC_MODE=push
+          # commits straight to rust instead (empty/undefined = pr).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_MODE: ${{ vars.SYNC_MODE }}
           SYNC_ARGS: ${{ inputs.dry_run && '--dry-run' || '' }}
         run: |
           chmod +x rust/tools/upstream-sync.sh

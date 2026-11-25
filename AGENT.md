@@ -179,7 +179,11 @@ dispatch):
    ported file changed, merges upstream and pushes without a port
 4. Checks the contributor allowlist (line-wise; display names and logins)
 5. Sanitizes the diff (strips *comment lines only*; string literals are kept
-   deliberately, because event names and message texts live in them)
+   deliberately, because event names and message texts live in them) and
+   appends the **entire current Rust tree** (`rust/server/src` +
+   `rust/server/tests`, ~219k tokens, about three cents) to the prompt. The
+   model can only quote anchors from text it has been shown; without this
+   every `old` block was a guess.
 6. Sends it to the configured LLM provider and validates the reply. The call
    lives in `rust/tools/llm_call.py`; OpenRouter and Anthropic share one body
    shape and differ only in URL and auth headers. Config: `LLM_API_KEY`
@@ -189,8 +193,20 @@ dispatch):
    from the URL). With no `LLM_API_KEY` the run merges and pushes unported.
 7. Gates: `cargo test --release` by **exit status**, then the Python protocol
    suite against the built release binary
-8. Stages everything (`git add -A`) and pushes; any failure resets the branch
-   to the pre-merge SHA
+8. Stages everything (`git add -A`) and, by default, commits to
+   `upstream-sync/<sha>` and opens a **pull request** against `rust` — nothing
+   lands unreviewed. `SYNC_MODE=push` reverts to a direct push. Any gate
+   failure resets the branch to the pre-merge SHA.
+
+A port that produces no usable edits (`no_edits`, `parse_error`) FAILS the
+run rather than committing a green merge-only commit: silence is
+indistinguishable from a real sync in the history. `ACCEPT_NO_PORT=1`
+accepts one deliberately. An LLM API error also fails and reverts.
+
+PRs opened with `GITHUB_TOKEN` do not trigger `rust-ci.yml` (a GitHub
+limitation, not a config error). The script's own gates — `cargo test` and
+the protocol suite — are what vouch for the port; add a fine-grained PAT as
+`SYNC_PAT` if you want CI checks on the PR itself.
 
 Placement rule: GitHub only loads `schedule` and `workflow_dispatch` from the
 **default branch**, which here is `main` (a 1:1 upstream mirror) while all work

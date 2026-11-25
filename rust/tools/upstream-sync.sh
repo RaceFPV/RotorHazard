@@ -9,6 +9,14 @@
 #   LLM_MODEL      default deepseek/deepseek-v4.1-flash-1017
 #   LLM_MAX_TOKENS default 64000
 #   LLM_STYLE      openai | anthropic (inferred from the URL otherwise)
+#
+# Delivery:
+#   SYNC_MODE=pr     (default) commit to upstream-sync/<sha>, open a PR to rust
+#   SYNC_MODE=push   commit straight to rust (old behaviour)
+#   GITHUB_TOKEN     required for PR mode (needs pull-requests: write)
+#
+# A port that produces no usable edits is a FAILURE, not a silent no-op:
+# set ACCEPT_NO_PORT=1 to accept one deliberately.
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -22,6 +30,35 @@ MAX_OUTPUT_RATIO="${MAX_OUTPUT_RATIO:-20}"
 
 log() { echo "$LOG_PREFIX $*"; }
 die() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
+
+# Publish the current work.
+#
+# SYNC_MODE=pr commits on upstream-sync/<sha> and opens a pull request against
+# `rust`, so nothing lands unreviewed. SYNC_MODE=push commits straight to rust.
+# PR mode needs GITHUB_TOKEN with pull-requests:write; if it is missing we fall
+# back to a direct push rather than throw the work away, and say so.
+publish() {
+    local message="$1"
+    git add -A
+    git commit --allow-empty -m "$message"
+
+    if [ "${SYNC_MODE:-pr}" != "pr" ]; then
+        log "SYNC_MODE=push — committing directly to rust"
+        git push origin rust
+        return $?
+    fi
+
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+        log "GITHUB_TOKEN absent — cannot open a PR, pushing directly to rust"
+        git push origin rust
+        return $?
+    fi
+
+    local branch="upstream-sync/${UPSTREAM_SHA:0:8}"
+    git checkout -B "$branch"
+    git push -u origin "$branch"
+    python3 rust/tools/open_sync_pr.py --branch "$branch" --title "$message"
+}
 
 log "fetching $UPSTREAM_REMOTE..."
 git fetch "$UPSTREAM_REMOTE" 2>/dev/null || die "fetch failed"
@@ -54,7 +91,7 @@ if [ -z "$PY_DIFF" ]; then
         git merge --abort 2>/dev/null || true
         die "merge conflict — manual resolution required"
     }
-    git push origin rust
+    publish "Upstream sync ($UPSTREAM_SHA): merged, no ported-file changes"
     exit 0
 fi
 
@@ -81,8 +118,7 @@ if [ "$ALL_TRUSTED" = "false" ]; then
         git merge --abort 2>/dev/null || true
         die "merge conflict — manual resolution required"
     }
-    git commit --allow-empty -m "Upstream sync ($UPSTREAM_SHA): untrusted contributor, manual port needed"
-    git push origin rust
+    publish "Upstream sync ($UPSTREAM_SHA): untrusted contributor, manual port needed"
     exit 0
 fi
 
@@ -107,8 +143,7 @@ log "merge clean"
 # --- LLM port ---
 if [ "${SKIP_LLM_PORT:-0}" = "1" ] || [ -z "${LLM_API_KEY:-}" ]; then
     log "LLM port skipped (no LLM_API_KEY or SKIP_LLM_PORT set)"
-    git commit --allow-empty -m "Upstream sync ($UPSTREAM_SHA): merged, LLM port skipped"
-    git push origin rust
+    publish "Upstream sync ($UPSTREAM_SHA): merged, LLM port skipped"
     exit 0
 fi
 
@@ -168,6 +203,27 @@ PROMPT_EOF
 
 echo "$SANITIZED_DIFF" >> "$PROMPT_FILE"
 echo "---END DIFF---" >> "$PROMPT_FILE"
+# The model can only quote what it has been shown. Without the current Rust
+# source every anchor is a guess, so send the whole tree: ~220k tokens, about
+# three cents at current pricing, against a 1M-token context window.
+log "collecting rust context..."
+RUST_CONTEXT=$(mktemp)
+find rust/server/src rust/server/tests -name '*.rs' -print0 \
+  | sort -z \
+  | while IFS= read -r -d '' f; do
+        printf '\n=== FILE: %s ===\n' "$f"
+        cat "$f"
+    done > "$RUST_CONTEXT"
+RUST_CONTEXT_SIZE=$(wc -c < "$RUST_CONTEXT")
+RUST_CONTEXT_FILES=$(find rust/server/src rust/server/tests -name '*.rs' | wc -l)
+log "rust context: $RUST_CONTEXT_SIZE bytes from $RUST_CONTEXT_FILES files"
+{
+    echo "---CURRENT RUST SOURCE (authoritative; copy anchors from here verbatim)---"
+    cat "$RUST_CONTEXT"
+    echo "---END RUST SOURCE---"
+} >> "$PROMPT_FILE"
+rm -f "$RUST_CONTEXT"
+
 cat >> "$PROMPT_FILE" << 'PROMPT_END2'
 Port the behavioral changes to Rust. Output ONLY a JSON array. Each element
 is ONE file, in either shape:
@@ -182,6 +238,8 @@ rewrite, or a file under ~400 lines. socket.rs is ~3000 lines: a full-file
 element for it will be rejected.
 
 Rules for "edits":
+- The CURRENT RUST SOURCE above is the real content of every file. Copy "old"
+  from it character for character; do not reconstruct it from memory.
 - "old" must match the file EXACTLY -- indentation, blank lines included -- and
   must occur exactly once in the file. Include at least three lines of
   surrounding context so it cannot match twice.
@@ -214,11 +272,10 @@ set -e
 [ -z "$HTTP_CODE" ] && HTTP_CODE="000"
 
 if [ "$LLM_RC" != "0" ] || [ "$HTTP_CODE" != "200" ]; then
-    log "LLM API failed (HTTP $HTTP_CODE, rc $LLM_RC)"
-    git commit --allow-empty -m "Upstream sync ($UPSTREAM_SHA): LLM API error"
-    git push origin rust
+    log "LLM API failed (HTTP $HTTP_CODE, rc $LLM_RC) — reverting"
     rm -f "$PROMPT_FILE" "$LLM_OUT"
-    exit 0
+    git reset --hard "$PRE_MERGE_SHA"
+    die "LLM API failed (HTTP $HTTP_CODE)"
 fi
 
 # Validation lives in rust/tools/validate_port.py so it can be tested
@@ -237,11 +294,17 @@ case "$PORT_RESULT" in
         log "LLM port OK: $PORT_RESULT"
         ;;
     no_edits|parse_error|script_error)
-        log "LLM port: $PORT_RESULT — no changes applied"
-        git add -A
-        git commit -m "Upstream sync ($UPSTREAM_SHA): merged, no port applied ($PORT_RESULT)" --allow-empty
-        git push origin rust
-        exit 0
+        if [ "${ACCEPT_NO_PORT:-0}" = "1" ]; then
+            log "LLM port: $PORT_RESULT — accepted as a deliberate no-op"
+            publish "Upstream sync ($UPSTREAM_SHA): merged, no port applied ($PORT_RESULT)"
+            exit 0
+        fi
+        # Silence is not success: a merge-only commit here looks identical to a
+        # real sync in the history, so the run fails and retries next time.
+        log "LLM port produced no usable edits ($PORT_RESULT) — reverting"
+        log "if this change genuinely has no Rust counterpart, re-run with ACCEPT_NO_PORT=1"
+        git reset --hard "$PRE_MERGE_SHA"
+        die "port produced no edits ($PORT_RESULT)"
         ;;
     truncated_response)
         log "LLM OUTPUT CAPPED (truncated_response) — reverting; raise LLM_MAX_TOKENS or split the change"
@@ -312,19 +375,8 @@ else
 fi
 
 log "tests passed"
-# The ported edits are unstaged working-tree changes. Staging only the marker
-# (as this used to) reported success while shipping none of the port -- the
-# work lived and died in the runner.
-git add -A
-if git diff --cached --quiet; then
-    log "nothing staged — merge already committed"
-else
-    git commit -m "Upstream sync: merged + ported $UPSTREAM_SHA [auto]"
-fi
-
-if git push origin rust 2>/dev/null; then
-    log "pushed — sync complete"
-else
-    log "push failed — committed locally"
-fi
+# publish() stages everything: the ported edits are unstaged working-tree
+# changes, and staging only a marker (as this used to) reported success while
+# shipping none of the port.
+publish "Upstream sync: merged + ported $UPSTREAM_SHA [auto]"
 log "done"
