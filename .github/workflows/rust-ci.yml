@@ -6,9 +6,10 @@ name: Rust CI
 
 on:
   push:
-    branches: [rust, main]
-    # Only Rust code (or this workflow) is worth a runner. Path filters are NOT
-    # evaluated for tag pushes, so tags are handled by rust-release.yml anyway.
+    # rust only: `main` is a mirror that carries workflow files and no Rust
+    # tree, so a run there could only fail. Tags are rust-release.yml.
+    branches: [rust]
+    # Only Rust code (or this workflow) is worth a runner.
     paths: ['rust/**', '.github/workflows/rust-ci.yml']
   pull_request:
     paths: ['rust/**', '.github/workflows/rust-ci.yml']
