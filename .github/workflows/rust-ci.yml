@@ -112,6 +112,10 @@ jobs:
             curl -fsSL "$MIRROR/$fpath" -o /tmp/$pkg.deb
             dpkg-deb -x /tmp/$pkg.deb arm64-sysroot
           done
+          # also place the arm64 libudev where the cross linker looks by
+          # default, so -ludev resolves regardless of pkg-config -L output
+          # (pkgconf 2.x sysroot handling can emit a bogus -L)
+          sudo cp -a arm64-sysroot/usr/lib/aarch64-linux-gnu/libudev.so* /usr/aarch64-linux-gnu/lib/
           ls arm64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig/
 
       - name: Cache cargo
