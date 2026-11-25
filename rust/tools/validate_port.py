@@ -9,11 +9,15 @@ the token:
   applied_<n>              edits validated and written
   no_edits                 response held no JSON array
   parse_error              response or JSON array did not parse
+  truncated_response       the model hit its output cap; nothing was applied
   size_exceeded            output far larger than the Python diff
   bad_path:<p>             edit outside the Rust tree
   empty_content:<p>        edit blanked a file
   truncated:<p>            output lost most of an existing file (token cap)
   blocked:<kind>:<rule>:<p> an added line violated a rule
+
+Reads both provider response shapes: Anthropic (`content[].text`) and
+OpenAI/OpenRouter (`choices[].message.content`).
 
 Rules run on ADDED LINES ONLY. Scanning whole file bodies rejects files that
 legitimately contain a banned word -- auth modules say `PASSWORD`, asset
@@ -68,6 +72,9 @@ RULESETS = (
 TRUNCATION_RATIO = 0.5
 TRUNCATION_MIN_BYTES = 400
 
+# finish/stop reasons that mean the model ran out of output budget.
+CAP_REASONS = {"length", "max_tokens"}
+
 
 def added_lines(old_text, new_text):
     """Lines present in new_text that were not in old_text."""
@@ -81,15 +88,40 @@ def added_lines(old_text, new_text):
     return added
 
 
+def _block_text(block):
+    if isinstance(block, str):
+        return block
+    if isinstance(block, dict) and block.get("type") in (None, "text"):
+        return block.get("text") or block.get("content") or ""
+    return ""
+
+
 def response_text(response):
-    blocks = response.get("content") or []
+    """Extract assistant text from either provider's response shape."""
     parts = []
-    for block in blocks:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type", "text") == "text":
-            parts.append(block.get("text") or "")
+
+    # OpenAI / OpenRouter: choices[].message.content (string or block list)
+    for choice in response.get("choices") or []:
+        message = choice.get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(_block_text(block) for block in content)
+
+    # Anthropic: content[].text
+    for block in response.get("content") or []:
+        parts.append(_block_text(block))
+
     return "".join(parts)
+
+
+def response_hit_cap(response):
+    """True when the provider reports the response was cut at the output cap."""
+    for choice in response.get("choices") or []:
+        if str(choice.get("finish_reason") or "").lower() in CAP_REASONS:
+            return True
+    return str(response.get("stop_reason") or "").lower() in CAP_REASONS
 
 
 def main():
@@ -101,6 +133,15 @@ def main():
             response = json.load(handle)
     except Exception:
         print("parse_error")
+        return
+    if not isinstance(response, dict):
+        print("parse_error")
+        return
+
+    # Check the cap first: a cut-off array is indistinguishable from a
+    # malformed one, and the two need different words in the run log.
+    if response_hit_cap(response):
+        print("truncated_response")
         return
 
     text = response_text(response)

@@ -2,6 +2,13 @@
 # Upstream sync: fetch, merge, sanitize, LLM-port, test, auto-push.
 # Security: contributor allowlist, diff sanitization, output validation,
 #           size limits, rollback on failure. No secrets in the prompt.
+#
+# LLM stage is provider-agnostic (rust/tools/llm_call.py):
+#   LLM_API_KEY    required for the port; unset => merge-only run
+#   LLM_BASE_URL   default https://openrouter.ai/api/v1/chat/completions
+#   LLM_MODEL      default deepseek/deepseek-v4.1-flash-1017
+#   LLM_MAX_TOKENS default 64000
+#   LLM_STYLE      openai | anthropic (inferred from the URL otherwise)
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -98,8 +105,8 @@ git merge "$UPSTREAM_REMOTE/main" --no-edit --allow-unrelated-histories 2>/dev/n
 log "merge clean"
 
 # --- LLM port ---
-if [ "${SKIP_LLM_PORT:-0}" = "1" ] || [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    log "LLM port skipped (no key or SKIP_LLM_PORT set)"
+if [ "${SKIP_LLM_PORT:-0}" = "1" ] || [ -z "${LLM_API_KEY:-}" ]; then
+    log "LLM port skipped (no LLM_API_KEY or SKIP_LLM_PORT set)"
     git commit --allow-empty -m "Upstream sync ($UPSTREAM_SHA): merged, LLM port skipped"
     git push origin rust
     exit 0
@@ -179,24 +186,16 @@ suite fails if the port is wrong. Do not modify the harness. If the change
 is purely internal, output no test edits.
 PROMPT_END2
 
+log "calling LLM: ${LLM_MODEL:-deepseek/deepseek-v4.1-flash-1017} via ${LLM_BASE_URL:-https://openrouter.ai/api/v1/chat/completions}"
 LLM_OUT=$(mktemp)
-HTTP_CODE=$(curl -s -w '%{http_code}' -o "$LLM_OUT" \
-    'https://api.anthropic.com/v1/messages' \
-    -H 'Content-Type: application/json' \
-    -H "x-api-key: $ANTHROPIC_API_KEY" \
-    -H 'anthropic-version: 2023-06-01' \
-    -d "$(python3 -c "
-import json
-with open('$PROMPT_FILE') as f:
-    prompt = f.read()
-print(json.dumps({
-    'model': 'claude-sonnet-4-20250514',
-    'max_tokens': 16000,
-    'messages': [{'role': 'user', 'content': prompt}]
-}))" 2>/dev/null)") || HTTP_CODE="000"
+set +e
+HTTP_CODE=$(python3 rust/tools/llm_call.py "$PROMPT_FILE" "$LLM_OUT")
+LLM_RC=$?
+set -e
+[ -z "$HTTP_CODE" ] && HTTP_CODE="000"
 
-if [ "$HTTP_CODE" != "200" ]; then
-    log "LLM API failed (HTTP $HTTP_CODE)"
+if [ "$LLM_RC" != "0" ] || [ "$HTTP_CODE" != "200" ]; then
+    log "LLM API failed (HTTP $HTTP_CODE, rc $LLM_RC)"
     git commit --allow-empty -m "Upstream sync ($UPSTREAM_SHA): LLM API error"
     git push origin rust
     rm -f "$PROMPT_FILE" "$LLM_OUT"
@@ -219,6 +218,11 @@ case "$PORT_RESULT" in
         git commit -m "Upstream sync ($UPSTREAM_SHA): merged, no port applied ($PORT_RESULT)" --allow-empty
         git push origin rust
         exit 0
+        ;;
+    truncated_response)
+        log "LLM OUTPUT CAPPED (truncated_response) — reverting; raise LLM_MAX_TOKENS or split the change"
+        git reset --hard "$PRE_MERGE_SHA"
+        die "LLM response hit the output cap"
         ;;
     *)
         log "PORT REJECTED: $PORT_RESULT — reverting"
