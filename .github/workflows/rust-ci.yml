@@ -70,14 +70,14 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
 
-      - name: Build release bundle
-        run: ./rust/build-release.sh "${{ github.ref_name }}"
+      - name: Build release binary
+        run: ./rust/build-release.sh
 
-      - name: Upload bundle artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rh-server-rust-${{ github.ref_name }}-x86_64
-          path: dist/rh-server-rust-*.tar.gz
+          name: rh-server-linux-x86_64
+          path: dist/rh-server-linux-x86_64
           if-no-files-found: error
 
   bundle-aarch64:
@@ -128,7 +128,7 @@ jobs:
           key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-aarch64-
 
-      - name: Build aarch64 bundle
+      - name: Build aarch64 binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           PKG_CONFIG_ALLOW_CROSS: '1'
@@ -136,13 +136,13 @@ jobs:
           # native x86_64 build (same script) keeps using host pkg-config
           PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: ${{ github.workspace }}/arm64-sysroot
           PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: ${{ github.workspace }}/arm64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig
-        run: ./rust/build-release.sh "${{ github.ref_name }}-aarch64"
+        run: ./rust/build-release.sh
 
-      - name: Upload aarch64 bundle artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rh-server-rust-${{ github.ref_name }}-aarch64
-          path: dist/rh-server-rust-*-aarch64.tar.gz
+          name: rh-server-linux-aarch64
+          path: dist/rh-server-linux-aarch64
           if-no-files-found: error
 
   bundle-windows:
@@ -174,16 +174,14 @@ jobs:
       - name: Pack
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          New-Item -ItemType Directory -Force "dist/rh-server-rust-$tag-windows" | Out-Null
-          Copy-Item rust/target/release/rh-server.exe "dist/rh-server-rust-$tag-windows/"
-          Compress-Archive -Path "dist/rh-server-rust-$tag-windows" -DestinationPath "dist/rh-server-rust-$tag-windows.zip"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item rust/target/release/rh-server.exe dist/rh-server-windows-x64.exe
 
-      - name: Upload Windows bundle artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rh-server-rust-${{ github.ref_name }}-windows-x64
-          path: dist/rh-server-rust-*.zip
+          name: rh-server-windows-x64
+          path: dist/rh-server-windows-x64.exe
           if-no-files-found: error
 
   bundle-macos:
@@ -214,17 +212,15 @@ jobs:
 
       - name: Pack
         run: |
-          TAG="${{ github.ref_name }}"
-          mkdir -p "dist/rh-server-rust-${TAG}-macos-arm64"
-          cp rust/target/release/rh-server "dist/rh-server-rust-${TAG}-macos-arm64/"
-          tar -czf "dist/rh-server-rust-${TAG}-macos-arm64.tar.gz" -C dist "rh-server-rust-${TAG}-macos-arm64"
-          shasum -a 256 "dist/rh-server-rust-${TAG}-macos-arm64.tar.gz"
+          mkdir -p dist
+          cp rust/target/release/rh-server dist/rh-server-macos-arm64
+          shasum -a 256 dist/rh-server-macos-arm64
 
-      - name: Upload macOS bundle artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rh-server-rust-${{ github.ref_name }}-macos-arm64
-          path: dist/rh-server-rust-*-macos-arm64.tar.gz
+          name: rh-server-macos-arm64
+          path: dist/rh-server-macos-arm64
           if-no-files-found: error
 
   release:
@@ -242,7 +238,5 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/rh-server-rust-*.tar.gz
-            dist/rh-server-rust-*.zip
+          files: dist/rh-server-*
           generate_release_notes: true

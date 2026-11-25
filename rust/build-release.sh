@@ -1,11 +1,12 @@
 #!/bin/bash
-# Builds the release binary and packs a single-file distribution.
-# The rh-server binary embeds all assets (static, templates, language.json)
-# and resolves its own data directory (RH_DATA_DIR env, datapath.ini,
-# exe-dir data/, ~/rh-data), so no launcher script or payload files are
-# needed — the tarball contains only the binary.
+# Builds release binaries into dist/ as plain executables — no archives.
+#   dist/rh-server-linux-x86_64
+#   dist/rh-server-linux-aarch64   (when the aarch64 target is installed)
+# The binary embeds all assets (static, templates, language.json) and
+# resolves its own data directory (RH_DATA_DIR env, datapath.ini,
+# exe-dir data/, ~/rh-data), so a single file is the whole install.
 #
-# Usage: ./rust/build-release.sh [version-tag]
+# Usage: ./rust/build-release.sh
 set -eu
 
 cd "$(dirname "$0")/.."   # repo root
@@ -14,31 +15,20 @@ cd "$(dirname "$0")/.."   # repo root
 # know the Debian/Ubuntu system .pc directories; make sure they are searched
 export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 
-VERSION_TAG="${1:-$(git describe --tags --always 2>/dev/null || echo dev)}"
+mkdir -p dist
 
-echo "== building release binary =="
+echo "== building x86_64 release binary =="
 cargo build --release --manifest-path rust/server/Cargo.toml
+cp rust/target/release/rh-server dist/rh-server-linux-x86_64
+echo "Built: dist/rh-server-linux-x86_64"
 
-echo "== packing x86_64 =="
-OUT="dist/rh-server-rust-${VERSION_TAG}"
-rm -rf "$OUT" "dist/rh-server-rust-${VERSION_TAG}.tar.gz"
-mkdir -p "$OUT"
-cp rust/target/release/rh-server "$OUT/"
-tar -czf "dist/rh-server-rust-${VERSION_TAG}.tar.gz" -C dist "rh-server-rust-${VERSION_TAG}"
-echo "Bundle: dist/rh-server-rust-${VERSION_TAG}.tar.gz"
-du -sh "dist/rh-server-rust-${VERSION_TAG}.tar.gz"
-
-# Cross-compiled aarch64 (Pi) bundle when the target toolchain is
+# Cross-compiled aarch64 (Pi) binary when the target toolchain is
 # installed. Otherwise build natively on the Pi with this same script.
 if rustup target list --installed 2>/dev/null | grep -q '^aarch64-unknown-linux-gnu$'; then
     echo "== building aarch64 (Raspberry Pi) binary =="
     cargo build --release --manifest-path rust/server/Cargo.toml --target aarch64-unknown-linux-gnu
-    PI_OUT="dist/rh-server-rust-${VERSION_TAG}-aarch64"
-    rm -rf "$PI_OUT" "dist/rh-server-rust-${VERSION_TAG}-aarch64.tar.gz"
-    mkdir -p "$PI_OUT"
-    cp rust/target/aarch64-unknown-linux-gnu/release/rh-server "$PI_OUT/"
-    tar -czf "dist/rh-server-rust-${VERSION_TAG}-aarch64.tar.gz" -C dist "rh-server-rust-${VERSION_TAG}-aarch64"
-    echo "Bundle: dist/rh-server-rust-${VERSION_TAG}-aarch64.tar.gz"
+    cp rust/target/aarch64-unknown-linux-gnu/release/rh-server dist/rh-server-linux-aarch64
+    echo "Built: dist/rh-server-linux-aarch64"
 else
-    echo "(aarch64 target not installed; skipping Pi bundle)"
+    echo "(aarch64 target not installed; skipping Pi binary)"
 fi
