@@ -1,34 +1,63 @@
 name: Upstream Sync
 
-# Detects upstream changes to the ported Python files, merges them,
-# ports behavioral changes to Rust via LLM, tests, and auto-merges.
+# Detects upstream changes to the ported Python files, merges them, ports the
+# behavioral changes to Rust via an LLM, gates on tests, and pushes to `rust`.
+#
+# Placement matters: GitHub only loads `schedule` and `workflow_dispatch` from
+# the repository's DEFAULT branch, and the default here is `main` while all
+# work happens on `rust`. So this file lives on both branches and the job
+# checks out `rust` explicitly. Do not delete the copy on `main` -- without it
+# the schedule is never registered.
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # daily at 6am UTC
-  workflow_dispatch: {}  # manual trigger
+    - cron: '0 6 * * *'  # daily at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Show the ported-file diff only (no merge, no port, no push)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
-  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out rust branch
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for diffing
+          ref: rust
+          fetch-depth: 0  # full history: the port diff is computed from it
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure upstream remote
+      - name: Configure upstream remote and identity
         run: |
           git remote add upstream https://github.com/RotorHazard/RotorHazard.git || true
           git config user.name "upstream-sync-bot"
           git config user.email "sync@rotorhazard.local"
 
+      - name: Verify we are on the rust branch
+        run: |
+          branch="$(git branch --show-current)"
+          if [ "$branch" != "rust" ]; then
+            echo "::error::checked out '$branch', expected 'rust'"
+            exit 1
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system libraries (libudev for serialport)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -36,35 +65,24 @@ jobs:
           path: |
             ~/.cargo/registry
             rust/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/server/Cargo.lock') }}
-
-      - name: Restore upstream sync marker
-        uses: actions/cache/restore@v4
-        with:
-          path: .upstream-sync-sha
-          key: upstream-sync-sha-${{ github.run_id }}
-          restore-keys: upstream-sync-sha
+          key: ${{ runner.os }}-cargo-sync-${{ hashFiles('rust/server/Cargo.lock') }}
 
       - name: Install python client deps (cross-validation gate)
         run: python3 -m pip install --quiet 'python-socketio[client]' requests websocket-client
 
+      - name: Build server (the protocol suite runs the release binary)
+        run: cargo build --release --manifest-path rust/server/Cargo.toml
+
       - name: Run upstream sync
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SYNC_ARGS: ${{ inputs.dry_run && '--dry-run' || '' }}
         run: |
           chmod +x rust/tools/upstream-sync.sh
-          ./rust/tools/upstream-sync.sh
-
-      - name: Save upstream sync marker
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .upstream-sync-sha
-          key: upstream-sync-sha-${{ github.run_id }}
+          ./rust/tools/upstream-sync.sh ${SYNC_ARGS:-}
 
       - name: Report failure
         if: failure()
         run: |
-          echo "::error::Upstream sync failed — check the log for details"
-          echo "The sync was rolled back to the pre-merge state."
-          echo "Port the upstream changes manually."
+          echo "::error::Upstream sync failed — the rust branch was rolled back to its pre-merge state"
+          echo "Check the log for the failing gate: fetch, merge, validation, cargo test, or the protocol suite."

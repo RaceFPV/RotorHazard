@@ -38,8 +38,10 @@ cargo build --release --manifest-path rust/server/Cargo.toml
 # unit tests (62, <1s)
 cargo test --release --manifest-path rust/server/Cargo.toml
 
-# protocol integration tests (26, ~20s — spawns real server processes)
-cargo test --release --test protocol_core --test protocol_more \
+# protocol integration tests (33 = core 19 + more 7 + autoadjust 7, ~25s)
+# each test spawns a real server process
+cargo test --release \
+    --test protocol_core --test protocol_more --test protocol_autoadjust \
     --manifest-path rust/server/Cargo.toml
 ```
 
@@ -72,15 +74,10 @@ server startup is slower in debug mode and can cause timeouts.
 | `mock.rs` | `MockSignal.py` | Mock signal providers for testing |
 | `export_import.rs` | `rh_data_export/import_*` | JSON + CSV data export/import |
 | `fwupdate.rs` | `stm32loader.py` | STM32 AN3155 bootloader firmware flashing |
-| `heatgen.rs` | `rh_heatgenerator_*` | Heat generation (brackets, ladder, balanced) |
 | `phase3.rs` | `Language.py` etc. | Language/callout cleanup |
 | `pages.rs` | `PageCache.py` | HTML page rendering |
 | `util.rs` | `RHUtils.py` | Shared utilities |
 | `imdtabler.rs` | IMDTabler page | External Java tool integration |
-| `cluster.rs` | `ClusterNodeSet.py` | Multi-timer sync |
-| `sensor.rs` | `linux_sensor.py` | CPU temp + battery |
-| `pluginrpc.rs` | `RHAPI.py` | Plugin bridge RPC endpoint |
-| `fwupdate.rs` | `stm32loader.py` | Node firmware update (AN3155) |
 
 ## Critical protocol details (the contract)
 
@@ -149,22 +146,53 @@ that takes multiple locks, follow this order or you will deadlock.
 
 ## Upstream sync pipeline
 
-`.github/workflows/upstream-sync.yml` runs daily:
-1. Fetches `upstream` remote (RotorHazard/RotorHazard)
-2. Diffs `src/server/` + `src/interface/` since last sync
-3. If changes: merges, sanitizes the diff (strips comments/strings),
-   sends to Claude API for porting, validates output, runs tests
-4. Auto-pushes on success, rolls back + creates issue on failure
+`.github/workflows/upstream-sync.yml` runs daily at 06:00 UTC (and on manual
+dispatch):
 
-Security:
-- Contributor allowlist (44 RotorHazard contributors) — unknown
-  contributors get flagged instead of auto-ported
-- Diff sanitization strips comments/strings before the LLM sees them
-- Output validation rejects `unsafe`, network I/O, new deps, secrets
-- Size limit: output >20× the Python diff is rejected
+1. Fetches `upstream` (RotorHazard/RotorHazard)
+2. **Sync cursor is ancestry, not a marker file.** If `upstream/main` is
+   already an ancestor of `HEAD`, the branch has absorbed that upstream state
+   and the run exits. There is no `.upstream-sync-sha` any more: a marker
+   could be lost (cache eviction, fresh checkout) and a lost marker silently
+   widened the port window to merge-base..HEAD.
+3. Diffs `src/server/` + `src/interface/` across the unported range; if no
+   ported file changed, merges upstream and pushes without a port
+4. Checks the contributor allowlist (line-wise; display names and logins)
+5. Sanitizes the diff (strips *comment lines only*; string literals are kept
+   deliberately, because event names and message texts live in them)
+6. Sends it to the Anthropic API and validates the reply
+7. Gates: `cargo test --release` by **exit status**, then the Python protocol
+   suite against the built release binary
+8. Stages everything (`git add -A`) and pushes; any failure resets the branch
+   to the pre-merge SHA
+
+Placement rule: GitHub only loads `schedule` and `workflow_dispatch` from the
+**default branch**, which here is `main` (a 1:1 upstream mirror) while all work
+happens on `rust`. The workflow file therefore exists on both branches and the
+job checks out `ref: rust`. Deleting the copy on `main` silently disables the
+schedule.
+
+Security (`rust/tools/validate_port.py`, called by the script):
+- Rules run on **added lines only**. Whole-file scanning rejected real code:
+  auth modules say `PASSWORD`, `db.rs`/`heatgen.rs` say `include_str!`,
+  `imdtabler.rs` says `std::process::Command`.
+- Structural bans: `unsafe {`, process spawn, raw TCP/UDP, `include_*!`,
+  `extern crate`, shell paths, new URLs
+- Secret bans: key prefixes (`sk-`, `ghp_`, `AKIA`, `xox*`) and
+  `name = "<12+ char literal>"` assignments; a bare `password` identifier is
+  fine
+- Injection bans on instruction-shaped added text
+- Truncation guard: a re-emit shorter than 50% of an existing file is refused
+  before it lands (full-file responses are capped by max_tokens)
+- Size limit: output over 20x the Python diff is rejected
 
 Run manually: `./rust/tools/upstream-sync.sh [--dry-run]`
-Regenerate the script: `python3 rust/tools/generate_sync.py`
+Escape hatches: `SKIP_LLM_PORT=1`, `SKIP_PY_SUITE=1`, `TRUSTED_CONTRIBUTORS`.
+The script is the source of truth: `generate_sync.py` (which regenerated it
+from an embedded template) has been deleted.
+
+`github.com/RaceFPV/RustHazard` is a point-in-time snapshot of the port, not an
+active remote — do not push there.
 
 ## Plugin bridge (third-party plugins)
 
@@ -193,9 +221,12 @@ Without the bridge: no plugins, no problem. The server is pure Rust.
 ## Known gaps / TODO
 
 - [ ] Remaining protocol test files (lifecycle 15, phase2 5, phase3 11,
-       auth 3, export 2, results 3, ui 2, new_features 5 = 46 tests) —
-       the pattern is established in `protocol_core.rs`, each file is
-       a mechanical conversion
+      auth 3, export 2, results 3, ui 2, new_features 5 = 46 tests) —
+      optional while the Python suite gates CI; each is a mechanical
+      conversion following `protocol_core.rs`
+- [ ] Upstream sync: anchored block edits instead of full-file rewrites.
+      `socket.rs` is ~3,000 lines, larger than a 16k-token response, so any
+      upstream change touching it can only fail (safely) today.
 - [ ] ws281x GPIO LED backend (classic Pi 4 PWM/DMA; SPI backend works
        on Pi 5 and Pi 4 with GPIO10 wiring)
 - [ ] Node firmware update UI flow (`/updatenodes` page renders but
