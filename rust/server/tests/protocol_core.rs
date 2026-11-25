@@ -466,3 +466,200 @@ fn test_http_api_options() {
         assert!(opts.get("options").is_some());
     });
 }
+
+// ---- Marshal lap editing and scheduling (test_protocol_lifecycle.py) ----
+// Ported from the Python suite: these flows go through the same marshal and
+// management events the UI uses, and none of them had Rust coverage.
+
+#[test]
+fn test_delete_and_restore_lap() {
+    with_server(|_server, client, observer| {
+        setup_heat_with_pilots(client, 1);
+        client.emit("stage_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_RACING, LONG, false);
+
+        let mut laps: Vec<Value> = Vec::new();
+        for _ in 0..3 {
+            let resp = client.emit_and_wait("simulate_lap", &json!({"node": 0}), "current_laps", T);
+            laps = resp["current"]["node_index"][0]["laps"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+        assert_eq!(laps.len(), 3, "expected three laps, got {:?}", laps);
+        assert_eq!(
+            laps.iter().filter(|l| !l["deleted"].as_bool().unwrap_or(false)).count(),
+            3,
+            "all three laps should be live before deletion: {:?}",
+            laps
+        );
+
+        let target = laps
+            .iter()
+            .filter(|l| !l["deleted"].as_bool().unwrap_or(false))
+            .nth(1)
+            .and_then(|l| l["lap_index"].as_i64())
+            .expect("middle lap has a lap_index");
+
+        // A deleted lap stays in the list but leaves the live count; the UI
+        // renders it struck through rather than removing the row.
+        let resp = client.emit_and_wait(
+            "delete_lap",
+            &json!({"node": 0, "lap_index": target}),
+            "current_laps",
+            T,
+        );
+        let laps = resp["current"]["node_index"][0]["laps"].as_array().unwrap();
+        let deleted: Vec<&Value> = laps
+            .iter()
+            .filter(|l| l["deleted"].as_bool().unwrap_or(false))
+            .collect();
+        assert_eq!(deleted.len(), 1, "expected exactly one deleted lap: {:?}", laps);
+        assert_eq!(deleted[0]["lap_index"].as_i64().unwrap(), target);
+        assert_eq!(
+            laps.iter().filter(|l| !l["deleted"].as_bool().unwrap_or(false)).count(),
+            2,
+            "a deleted lap must not count as live"
+        );
+
+        let resp = client.emit_and_wait(
+            "restore_deleted_lap",
+            &json!({"node": 0, "lap_index": target}),
+            "current_laps",
+            T,
+        );
+        let laps = resp["current"]["node_index"][0]["laps"].as_array().unwrap();
+        assert_eq!(
+            laps.iter().filter(|l| !l["deleted"].as_bool().unwrap_or(false)).count(),
+            3,
+            "restored lap should be live again"
+        );
+
+        client.emit("stop_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_DONE, Duration::from_secs(20), true);
+        client.emit("discard_laps", &json!(null));
+    });
+}
+
+#[test]
+fn test_delete_last_lap_and_undo() {
+    with_server(|_server, client, observer| {
+        setup_heat_with_pilots(client, 1);
+        client.emit("stage_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_RACING, LONG, false);
+
+        for _ in 0..2 {
+            client.emit_and_wait("simulate_lap", &json!({"node": 0}), "current_laps", T);
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+
+        let resp = client.emit_and_wait("delete_last_lap", &json!({"node": 0}), "current_laps", T);
+        let live = resp["current"]["node_index"][0]["laps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| !l["deleted"].as_bool().unwrap_or(false))
+            .count();
+        assert_eq!(live, 1, "delete_last_lap should remove exactly one live lap");
+
+        let resp = client.emit_and_wait(
+            "restore_last_deleted_lap",
+            &json!({"node": 0}),
+            "current_laps",
+            T,
+        );
+        let live = resp["current"]["node_index"][0]["laps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| !l["deleted"].as_bool().unwrap_or(false))
+            .count();
+        assert_eq!(live, 2, "undo should restore the lap");
+
+        client.emit("stop_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_DONE, Duration::from_secs(20), true);
+        client.emit("discard_laps", &json!(null));
+    });
+}
+
+#[test]
+fn test_min_lap_roundtrip() {
+    with_server(|_server, client, observer| {
+        // min_lap is broadcast to every socket EXCEPT the one that set it: the
+        // requester already knows, the rest of the pit needs telling.
+        client.emit("set_min_lap", &json!({"min_lap": 7}));
+        let resp = observer.wait_for("min_lap", T);
+        assert_eq!(resp["min_lap"].as_i64().unwrap_or(-1), 7, "bare payload: {}", resp);
+        assert!(resp.get("min_first_crossing").is_some(), "payload: {}", resp);
+        assert!(resp.get("min_lap_behavior").is_some(), "payload: {}", resp);
+
+        observer.drain();
+        client.emit("set_min_lap", &json!({"min_lap": 0}));
+        let resp = observer.wait_for("min_lap", T);
+        assert_eq!(resp["min_lap"].as_i64().unwrap_or(-1), 0);
+    });
+}
+
+#[test]
+fn test_set_enter_exit_at_levels() {
+    with_server(|_server, client, _| {
+        // Responses go only to the requesting socket and carry the full
+        // per-node level lists from the active profile.
+        let resp = client.emit_and_wait(
+            "set_enter_at_level",
+            &json!({"node": 0, "enter_at_level": 95}),
+            "enter_and_exit_at_levels",
+            T,
+        );
+        assert_eq!(resp["enter_at_levels"][0].as_i64().unwrap_or(-1), 95, "payload: {}", resp);
+
+        let resp = client.emit_and_wait(
+            "set_exit_at_level",
+            &json!({"node": 0, "exit_at_level": 85}),
+            "enter_and_exit_at_levels",
+            T,
+        );
+        assert_eq!(resp["exit_at_levels"][0].as_i64().unwrap_or(-1), 85, "payload: {}", resp);
+    });
+}
+
+#[test]
+fn test_schedule_and_cancel_race() {
+    with_server(|_server, client, _| {
+        let resp = client.emit_and_wait("schedule_race", &json!({"m": 30, "s": 0}), "race_scheduled", T);
+        assert_eq!(resp["scheduled"].as_bool(), Some(true), "payload: {}", resp);
+        assert!(
+            resp["scheduled_at"].as_f64().unwrap_or(0.0) > 0.0,
+            "scheduled_at should be a timestamp: {}",
+            resp
+        );
+
+        let resp = client.emit_and_wait("cancel_schedule_race", &json!(null), "race_scheduled", T);
+        assert_eq!(resp["scheduled"].as_bool(), Some(false), "payload: {}", resp);
+
+        // get_race_scheduled answers the requester directly (no broadcast).
+        let resp = client.emit_and_wait("get_race_scheduled", &json!(null), "race_scheduled", T);
+        assert!(resp.get("scheduled").is_some(), "payload: {}", resp);
+        assert!(resp.get("scheduled_at").is_some(), "payload: {}", resp);
+    });
+}
+
+#[test]
+fn test_seat_data_shape() {
+    with_server(|_server, client, _| {
+        let resp = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["seat_data"]}),
+            "seat_data",
+            T,
+        );
+        let seats = resp["seats"].as_array().expect("seat_data.seats is an array");
+        assert_eq!(seats.len(), 8, "expected one seat per node: {:?}", seats);
+        for seat in seats {
+            assert!(seat.get("seat_id").is_some(), "seat missing seat_id: {:?}", seat);
+            let color = seat["color"].as_str().unwrap_or("");
+            assert!(color.starts_with('#'), "seat color is not a hex string: {:?}", seat);
+        }
+    });
+}
