@@ -187,6 +187,9 @@ Security (`rust/tools/validate_port.py`, called by the script):
 - Size limit: output over 20x the Python diff is rejected
 
 Run manually: `./rust/tools/upstream-sync.sh [--dry-run]`
+Validator tests: `python3 rust/tools/test_validate_port.py` (copies real
+modules into a temp tree; covers unchanged re-emits of files containing banned
+words, added-line rejections, truncation, path escape, size limits).
 Escape hatches: `SKIP_LLM_PORT=1`, `SKIP_PY_SUITE=1`, `TRUSTED_CONTRIBUTORS`.
 The script is the source of truth: `generate_sync.py` (which regenerated it
 from an embedded template) has been deleted.
