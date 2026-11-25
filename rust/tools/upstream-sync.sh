@@ -14,6 +14,9 @@
 #   SYNC_MODE=pr     (default) commit to upstream-sync/<sha>, open a PR to rust
 #   SYNC_MODE=push   commit straight to rust (old behaviour)
 #   GITHUB_TOKEN     required for PR mode (needs pull-requests: write)
+#   PYTHON_BIN       interpreter for the cross-validation suite
+#                    (default python3; use ~/.venvs/rh/bin/python locally,
+#                    whose socketio version is the one the suite expects)
 #
 # A port that produces no usable edits is a FAILURE, not a silent no-op:
 # set ACCEPT_NO_PORT=1 to accept one deliberately.
@@ -23,7 +26,11 @@ cd "$(git rev-parse --show-toplevel)"
 
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 DRY_RUN="${1:-}"
+# Translated line-for-line by the model.
 PORTED_DIRS="src/server src/interface"
+# Watched: a change here is a reason to merge and run the gates. src/tests is
+# fed to the model as the specification, never translated into Rust.
+WATCH_DIRS="${WATCH_DIRS:-src/server src/interface src/tests}"
 LOG_PREFIX="[upstream-sync]"
 TRUSTED_CONTRIBUTORS="${TRUSTED_CONTRIBUTORS:-2Turbulent,Alessandro Fiorillo,Andrey Zhereshchin,Arnaud M,Bryce Gruber,Dan Vogel,David Just,Diez B. Roggisch,E Thomas,Eduardo,Glenn Pringle,Hazard Creative,HazardCreative,J Ro,Jens Hofmann,JosepBC,KennyVDSypt,Klaas Schoute,Klaus Michael,Licardo,Louis Hitchcock,Mark Hale,Master92,Nandox7,Paulo Jesus,RaceFPV,Ramon Hernandez Roldan,Rodrigo Cardenas,ScorpionTDL,Vigneswara Baarathi,Viki Baarathi,Vlad Kolotoff,bob9,callmeyagr,eedok,husky-koglhof,kestux75,mac@multiprotocol,pamjesus,pulquero,ryaniftron,skyfpv,szafranski,まっく まるちぷろとこる,ethomas997,i-am-grub,jrwrodgers,klaasnicolaas,rodcar125,LouisHitchcock,vkolotov}"
 MAX_OUTPUT_RATIO="${MAX_OUTPUT_RATIO:-20}"
@@ -70,6 +77,70 @@ publish() {
     python3 rust/tools/open_sync_pr.py --branch "$branch" --title "$message"
 }
 
+# Both gates. Returns non-zero on failure; the caller decides about reverting,
+# because the merge-only path and the ported path start from different states.
+run_gates() {
+    log "running tests..."
+    set +e
+    local test_out
+    test_out=$(cargo test --release --manifest-path rust/server/Cargo.toml 2>&1)
+    local test_rc=$?
+    set -e
+    if [ "$test_rc" != "0" ]; then
+        log "TESTS FAILED"
+        log "Test output: $test_out"
+        return 1
+    fi
+
+    local py="${PYTHON_BIN:-python3}"
+    log "running python protocol suite (cross-validation gate) with $py..."
+    if [ "${SKIP_PY_SUITE:-0}" = "1" ]; then
+        log "python suite skipped (SKIP_PY_SUITE=1)"
+        return 0
+    fi
+    if ! "$py" -c "import socketio, requests" 2>/dev/null; then
+        log "python socketio/requests missing -- skipping cross-validation suite"
+        return 0
+    fi
+
+    # The suite drives the real binary, and `cargo test` builds the test harness
+    # rather than target/release/rh-server (the artifact's mtime is untouched by
+    # it), so build here instead of relying on the caller.
+    log "building server binary for the protocol suite..."
+    if ! cargo build --release --manifest-path rust/server/Cargo.toml; then
+        log "server build failed"
+        return 1
+    fi
+
+    local suite_dir suite_port suite_data suite_pid suite_rc suite_out i
+    suite_dir="$(git rev-parse --show-toplevel)/src/tests/protocol"
+    suite_port=5877
+    suite_data=$(mktemp -d /tmp/rh-sync-suite.XXXXXX)
+    printf '%s' '{"SECRETS":{"ADMIN_USERNAME":"","ADMIN_PASSWORD":""},"GENERAL":{"HTTP_PORT":5877,"DEBUG":false,"MOCK_NODE_SIGNAL":"2"}}' > "$suite_data/config.json"
+    RH_DATA_DIR="$suite_data" ./rust/target/release/rh-server > "$suite_data/server.log" 2>&1 &
+    suite_pid=$!
+    suite_rc=1
+    for i in $(seq 1 25); do
+        sleep 0.4
+        curl -sf "http://127.0.0.1:$suite_port/api/status" >/dev/null 2>&1 && break
+    done
+    suite_out="$suite_data/suite.out"
+    if (cd "$suite_dir" && RH_TEST_URL="http://127.0.0.1:$suite_port" \
+        "$py" -m unittest discover -s . -p 'test_protocol*.py') > "$suite_out" 2>&1; then
+        suite_rc=0
+    fi
+    tail -5 "$suite_out"
+    kill "$suite_pid" 2>/dev/null || true
+    wait "$suite_pid" 2>/dev/null || true
+    rm -rf "$suite_data"
+    if [ "$suite_rc" != "0" ]; then
+        log "PROTOCOL SUITE FAILED"
+        return 1
+    fi
+    log "protocol suite passed"
+    return 0
+}
+
 log "fetching $UPSTREAM_REMOTE..."
 git fetch "$UPSTREAM_REMOTE" 2>/dev/null || die "fetch failed"
 
@@ -94,13 +165,27 @@ log "unported range: $LAST_SHA..$UPSTREAM_SHA"
 PY_DIFF=$(git diff "$LAST_SHA..$UPSTREAM_SHA" -- $PORTED_DIRS 2>/dev/null || true)
 PY_DIFF_FILES=$(git diff --name-only "$LAST_SHA..$UPSTREAM_SHA" -- $PORTED_DIRS 2>/dev/null || true)
 PY_DIFF_SIZE=$(echo "$PY_DIFF" | wc -c)
+WATCH_DIFF=$(git diff "$LAST_SHA..$UPSTREAM_SHA" -- $WATCH_DIRS 2>/dev/null || true)
+TESTS_DIFF=$(git diff "$LAST_SHA..$UPSTREAM_SHA" -- src/tests 2>/dev/null || true)
 
 if [ -z "$PY_DIFF" ]; then
-    log "no ported-file changes — merging upstream without a port"
+    PRE_MERGE_SHA=$(git rev-parse HEAD)
+    log "nothing translatable changed — merging upstream without a port"
     git merge "$UPSTREAM_REMOTE/main" --no-edit --allow-unrelated-histories || {
         git merge --abort 2>/dev/null || true
         die "merge conflict — manual resolution required"
     }
+    # Upstream test edits change what the suite expects, so the gates run even
+    # when there is nothing to translate: otherwise a spec change merges
+    # silently and the divergence surfaces at the next real port, far from its
+    # cause.
+    if [ -n "$WATCH_DIFF" ]; then
+        log "watched files changed — running the gates on the merged tree"
+        if ! run_gates; then
+            git reset --hard "$PRE_MERGE_SHA"
+            die "gates failed on a merge-only sync — reverted"
+        fi
+    fi
     publish_merge "Upstream sync ($UPSTREAM_SHA): merged, no ported-file changes"
     exit 0
 fi
@@ -234,6 +319,18 @@ log "rust context: $RUST_CONTEXT_SIZE bytes from $RUST_CONTEXT_FILES files"
 } >> "$PROMPT_FILE"
 rm -f "$RUST_CONTEXT"
 
+if [ -n "$TESTS_DIFF" ]; then
+    {
+        echo ""
+        echo "---UPSTREAM TEST CHANGES (the specification for the new behavior."
+        echo "   Do NOT translate these into Rust; use them to decide what the"
+        echo "   Rust code must now do.)---"
+        printf '%s\n' "$TESTS_DIFF"
+        echo "---END TEST CHANGES---"
+    } >> "$PROMPT_FILE"
+    log "test changes included as context"
+fi
+
 cat >> "$PROMPT_FILE" << 'PROMPT_END2'
 Port the behavioral changes to Rust. Output ONLY a JSON array. Each element
 is ONE file, in either shape:
@@ -328,62 +425,11 @@ case "$PORT_RESULT" in
         ;;
 esac
 
-log "running tests..."
-set +e
-TEST_OUT=$(cargo test --release --manifest-path rust/server/Cargo.toml 2>&1)
-TEST_RC=$?
-set -e
-if [ "$TEST_RC" != "0" ]; then
-    log "TESTS FAILED — reverting"
+log "running gates..."
+if ! run_gates; then
     git reset --hard "$PRE_MERGE_SHA"
-    log "Test output: $TEST_OUT"
-    die "tests failed — reverted"
+    die "gates failed — reverted"
 fi
-
-log "running python protocol suite (cross-validation gate)..."
-if [ "${SKIP_PY_SUITE:-0}" = "1" ]; then
-    log "python suite skipped (SKIP_PY_SUITE=1)"
-elif ! python3 -c "import socketio, requests" 2>/dev/null; then
-    log "python socketio/requests missing -- skipping cross-validation suite"
-else
-    # The suite drives the real binary, and `cargo test` builds the test
-    # harness rather than target/release/rh-server (the artifact's mtime is
-    # untouched by it), so build here instead of relying on the caller.
-    log "building server binary for the protocol suite..."
-    if ! cargo build --release --manifest-path rust/server/Cargo.toml; then
-        log "server build failed — reverting"
-        git reset --hard "$PRE_MERGE_SHA"
-        die "server build failed"
-    fi
-
-    SUITE_DIR="$(git rev-parse --show-toplevel)/src/tests/protocol"
-    SUITE_PORT=5877
-    SUITE_DATA=$(mktemp -d /tmp/rh-sync-suite.XXXXXX)
-    printf '%s' '{"SECRETS":{"ADMIN_USERNAME":"","ADMIN_PASSWORD":""},"GENERAL":{"HTTP_PORT":5877,"DEBUG":false,"MOCK_NODE_SIGNAL":"2"}}' > "$SUITE_DATA/config.json"
-    RH_DATA_DIR="$SUITE_DATA" ./rust/target/release/rh-server > "$SUITE_DATA/server.log" 2>&1 &
-    SUITE_PID=$!
-    SUITE_RC=1
-    for i in $(seq 1 25); do
-        sleep 0.4
-        curl -sf "http://127.0.0.1:$SUITE_PORT/api/status" >/dev/null 2>&1 && break
-    done
-    SUITE_OUT="$SUITE_DATA/suite.out"
-    if (cd "$SUITE_DIR" && RH_TEST_URL="http://127.0.0.1:$SUITE_PORT" \
-        python3 -m unittest discover -s . -p 'test_protocol*.py') > "$SUITE_OUT" 2>&1; then
-        SUITE_RC=0
-    fi
-    tail -5 "$SUITE_OUT"
-    kill "$SUITE_PID" 2>/dev/null || true
-    wait "$SUITE_PID" 2>/dev/null || true
-    rm -rf "$SUITE_DATA"
-    if [ "$SUITE_RC" != "0" ]; then
-        log "PROTOCOL SUITE FAILED -- reverting"
-        git reset --hard "$PRE_MERGE_SHA"
-        die "cross-validation suite failed -- reverted"
-    fi
-    log "protocol suite passed"
-fi
-
 log "tests passed"
 # publish() stages everything: the ported edits are unstaged working-tree
 # changes, and staging only a marker (as this used to) reported success while
