@@ -233,7 +233,7 @@ async fn main() {
         num_nodes: std::sync::atomic::AtomicUsize::new(num_nodes),
         io: std::sync::OnceLock::new(),
         info: ServerInfo {
-            release_version: "4.6.0-dev.1-rust".to_string(),
+            release_version: state::RELEASE_VERSION.to_string(),
             server_api: 50,
             node_api_best: 36,
             json_api: 3,

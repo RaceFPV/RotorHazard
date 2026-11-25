@@ -96,7 +96,7 @@ pub fn init() -> Result<(), String> {
     env.add_global(
         "serverInfo",
         Value::from_serialize(json!({
-            "release_version": "4.6.0-dev.1",
+            "release_version": crate::state::RELEASE_VERSION,
             "server_api": 50,
             "node_api_best": 36,
         })),
