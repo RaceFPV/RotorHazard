@@ -1,6 +1,8 @@
 name: Rust CI
 
-# Test gate: every push to rust/main and every PR touching rust/.
+# Test gate: pushes to rust/main and PRs that touch rust/ or this workflow.
+# A docs- or Python-only commit runs nothing; path filters do not apply to tag
+# pushes, so a release tag always builds.
 # Binaries: only on tag pushes (and on manual dispatch with build_bundles),
 # because four packaging runners per branch commit -- one of them macOS at
 # 10x minutes -- is pure waste. A tagged run builds all platforms and
@@ -10,6 +12,9 @@ on:
   push:
     branches: [rust, main]
     tags: ['rh-server-rust-v*']
+    # Only Rust code (or this workflow) is worth a runner. Path filters are NOT
+    # evaluated for tag pushes, so releases still build from any tag.
+    paths: ['rust/**', '.github/workflows/rust-ci.yml']
   pull_request:
     paths: ['rust/**', '.github/workflows/rust-ci.yml']
   workflow_dispatch:
