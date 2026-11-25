@@ -75,12 +75,16 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
 
       - name: Cache cargo
+        if: ${{ !inputs.smoke_llm }}
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             rust/target
-          key: ${{ runner.os }}-cargo-sync-${{ hashFiles('rust/server/Cargo.lock') }}
+          # rust/Cargo.lock is the workspace lockfile; rust/server/Cargo.lock
+          # does not exist, which hashed to an empty key and shared one
+          # cache across every dependency change.
+          key: ${{ runner.os }}-cargo-sync-${{ hashFiles('rust/Cargo.lock') }}
 
       - name: Install python client deps (cross-validation gate)
         run: python3 -m pip install --quiet 'python-socketio[client]' requests websocket-client
