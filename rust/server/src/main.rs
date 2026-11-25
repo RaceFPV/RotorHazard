@@ -639,7 +639,7 @@ fn resolve_data_dir(exe_dir: &Option<std::path::PathBuf>) -> String {
     }
 
     // 5: ~/rh-data if it exists
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home_dir();
     let rh_data = format!("{}/rh-data", home);
     if std::path::Path::new(&rh_data).is_dir() {
         return rh_data;
@@ -659,14 +659,21 @@ fn resolve_data_dir(exe_dir: &Option<std::path::PathBuf>) -> String {
 }
 
 /// Expands a leading '~' to the user home directory.
+/// The user's home directory, on either platform.
+fn home_dir() -> String {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default()
+}
+
 fn expanduser(path: &str) -> String {
     if path == "~" {
-        return std::env::var("HOME").unwrap_or_default();
+        return home_dir();
     }
     if let Some(rest) = path.strip_prefix("~/") {
         return format!(
             "{}/{}",
-            std::env::var("HOME").unwrap_or_default(),
+            home_dir(),
             rest
         );
     }

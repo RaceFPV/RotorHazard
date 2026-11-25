@@ -61,7 +61,8 @@ impl HardwareInterface {
             .port_names
             .iter()
             .map(|p| {
-                if p.starts_with("/dev/") {
+                if p.starts_with("/dev/") || cfg!(windows) {
+                    // Windows port names (e.g. "COM3") are used as-is
                     p.clone()
                 } else {
                     format!("/dev/{}", p)
@@ -161,10 +162,6 @@ impl HardwareInterface {
     /// ports are ttyUSB*/ttyACM* devices not already managed; `exclude`
     /// filters configured/other-service ports.
     pub fn hotplug_scan(&mut self, state: &SharedState, exclude: &[String]) {
-        let dir = match std::fs::read_dir("/dev") {
-            Ok(d) => d,
-            Err(_) => return,
-        };
         let managed: std::collections::HashSet<String> = self
             .port_names
             .iter()
@@ -172,15 +169,41 @@ impl HardwareInterface {
             .map(|p| p.trim_start_matches("/dev/").to_string())
             .collect();
         let mut candidates: Vec<String> = Vec::new();
-        for entry in dir.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !(name.starts_with("ttyUSB") || name.starts_with("ttyACM")) {
-                continue;
+        if cfg!(windows) {
+            // Windows: enumerate USB serial adapters via the serialport API
+            let ports = match serialport::available_ports() {
+                Ok(ports) => ports,
+                Err(_) => return,
+            };
+            for port in ports {
+                if !matches!(
+                    port.port_type,
+                    serialport::SerialPortType::UsbPort(_)
+                ) {
+                    continue;
+                }
+                if managed.contains(&port.port_name)
+                    || exclude.iter().any(|e| e.contains(&port.port_name))
+                {
+                    continue;
+                }
+                candidates.push(port.port_name);
             }
-            if managed.contains(&name) || exclude.iter().any(|e| e.contains(&name)) {
-                continue;
+        } else {
+            let dir = match std::fs::read_dir("/dev") {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            for entry in dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !(name.starts_with("ttyUSB") || name.starts_with("ttyACM")) {
+                    continue;
+                }
+                if managed.contains(&name) || exclude.iter().any(|e| e.contains(&name)) {
+                    continue;
+                }
+                candidates.push(name);
             }
-            candidates.push(name);
         }
         if candidates.is_empty() {
             return;
@@ -191,7 +214,13 @@ impl HardwareInterface {
         }
         let port_paths: Vec<String> = candidates
             .iter()
-            .map(|c| format!("/dev/{}", c))
+            .map(|c| {
+                if cfg!(windows) {
+                    c.clone()
+                } else {
+                    format!("/dev/{}", c)
+                }
+            })
             .collect();
         tracing::info!("New serial port(s) detected: {:?}", port_paths);
         let found = serial::discover_nodes(&port_paths, None);
