@@ -169,8 +169,27 @@ PROMPT_EOF
 echo "$SANITIZED_DIFF" >> "$PROMPT_FILE"
 echo "---END DIFF---" >> "$PROMPT_FILE"
 cat >> "$PROMPT_FILE" << 'PROMPT_END2'
-Port the behavioral changes to Rust. Output ONLY a JSON array of
-{"path": "rust/server/src/<file>.rs", "new_content": "<full file>"}.
+Port the behavioral changes to Rust. Output ONLY a JSON array. Each element
+is ONE file, in either shape:
+
+  {"path": "rust/server/src/<file>.rs",
+   "edits": [{"old": "<exact existing text>", "new": "<replacement text>"}]}
+
+  {"path": "rust/server/src/<file>.rs", "new_content": "<entire file>"}
+
+PREFER the "edits" shape. Use "new_content" only for a new file, a whole-file
+rewrite, or a file under ~400 lines. socket.rs is ~3000 lines: a full-file
+element for it will be rejected.
+
+Rules for "edits":
+- "old" must match the file EXACTLY -- indentation, blank lines included -- and
+  must occur exactly once in the file. Include at least three lines of
+  surrounding context so it cannot match twice.
+- Anchors are applied in order; a later anchor sees the result of the earlier
+  ones in the same element.
+- "new" may be empty to delete the matched block.
+- One element per file; put every change to that file in its "edits" array.
+
 Skip changes that dont apply to Rust. Match existing patterns.
 
 TESTS (required for behavior changes): if the diff changes anything

@@ -6,24 +6,40 @@ Usage: validate_port.py <response.json> <sanitized_diff_bytes>
 Always exits 0 and prints exactly one result token; upstream-sync.sh keys off
 the token:
 
-  applied_<n>              edits validated and written
+  applied_<n>              n files validated and written
   no_edits                 response held no JSON array
   parse_error              response or JSON array did not parse
   truncated_response       the model hit its output cap; nothing was applied
   size_exceeded            output far larger than the Python diff
   bad_path:<p>             edit outside the Rust tree
-  empty_content:<p>        edit blanked a file
-  truncated:<p>            output lost most of an existing file (token cap)
+  empty_content:<p>        full-file edit blanked a file
+  bad_edits:<p>            element had neither new_content nor a usable edits[]
+  anchor_missing:<p>       an "old" block does not occur in the file
+  anchor_ambiguous:<p>     an "old" block occurs more than once
+  anchor_too_short:<p>     an "old" block is too small to be unique
+  anchor_malformed:<p>     an edits[] entry is not {old, new} strings
+  truncated:<p>            result lost most of an existing file
   blocked:<kind>:<rule>:<p> an added line violated a rule
+
+Two element shapes are accepted, and may be mixed in one response:
+
+  {"path": P, "new_content": "<entire file>"}
+  {"path": P, "edits": [{"old": "<exact existing text>", "new": "<replacement>"}]}
+
+Anchored edits exist because a full-file re-emit is only bounded by the output
+cap: `socket.rs` is ~3,000 lines / ~39k output tokens, so a five-line upstream
+change costs a whole-file regeneration and any cosmetic drift the model
+introduces lands in the commit. Anchors keep the payload proportional to the
+change and the diff equal to the intent.
+
+Rules run on ADDED LINES ONLY -- for a full-file element by diffing against the
+file on disk, for an anchored element by diffing each old/new block pair.
+Scanning whole file bodies rejects files that legitimately contain a banned
+word: auth modules say `PASSWORD`, asset loaders say `include_str!`, the Java
+bridge says `std::process::Command`.
 
 Reads both provider response shapes: Anthropic (`content[].text`) and
 OpenAI/OpenRouter (`choices[].message.content`).
-
-Rules run on ADDED LINES ONLY. Scanning whole file bodies rejects files that
-legitimately contain a banned word -- auth modules say `PASSWORD`, asset
-loaders say `include_str!`, the Java bridge says `std::process::Command` -- so
-a body-wide scan can never pass on real modules. Comparing old and new file
-content keeps the same teeth without the false positives.
 """
 
 import difflib
@@ -67,13 +83,24 @@ RULESETS = (
     ("injection", INJECTION),
 )
 
-# A re-emit shorter than this fraction of the original almost always means the
-# response was cut off by max_tokens, which silently mangles big modules.
+# A result shorter than this fraction of the original almost always means the
+# response was cut off, which silently mangles big modules.
 TRUNCATION_RATIO = 0.5
 TRUNCATION_MIN_BYTES = 400
 
+# Shortest block accepted as an anchor; anything smaller cannot be unique.
+MIN_ANCHOR_CHARS = 12
+
 # finish/stop reasons that mean the model ran out of output budget.
 CAP_REASONS = {"length", "max_tokens"}
+
+
+class Rejected(Exception):
+    """Validation failure carrying the result token to print."""
+
+    def __init__(self, token):
+        super().__init__(token)
+        self.token = token
 
 
 def added_lines(old_text, new_text):
@@ -124,6 +151,43 @@ def response_hit_cap(response):
     return str(response.get("stop_reason") or "").lower() in CAP_REASONS
 
 
+def apply_anchors(path, base_text, anchors):
+    """Apply [{old,new}] to base_text. Returns (text, added_lines)."""
+    if not isinstance(anchors, list) or not anchors:
+        raise Rejected("bad_edits:" + path)
+
+    text = base_text
+    added = []
+    for anchor in anchors:
+        if not isinstance(anchor, dict):
+            raise Rejected("anchor_malformed:" + path)
+        old = anchor.get("old")
+        new = anchor.get("new")
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise Rejected("anchor_malformed:" + path)
+        if len(old.strip()) < MIN_ANCHOR_CHARS:
+            raise Rejected("anchor_too_short:" + path)
+
+        occurrences = text.count(old)
+        if occurrences == 0:
+            raise Rejected("anchor_missing:" + path)
+        if occurrences > 1:
+            raise Rejected("anchor_ambiguous:" + path)
+
+        text = text.replace(old, new, 1)
+        added.extend(added_lines(old, new))
+
+    return text, added
+
+
+def scan(path, lines):
+    for kind, ruleset in RULESETS:
+        for pattern, rule in ruleset:
+            for line in lines:
+                if re.search(pattern, line):
+                    raise Rejected("blocked:%s:%s:%s" % (kind, rule, path))
+
+
 def main():
     response_path = sys.argv[1]
     sanitized_size = int(sys.argv[2] or 0)
@@ -162,52 +226,62 @@ def main():
     for edit in edits:
         if isinstance(edit, dict):
             total_size += len(edit.get("new_content") or "")
+            for anchor in edit.get("edits") or []:
+                if isinstance(anchor, dict):
+                    total_size += len(anchor.get("new") or "")
     if sanitized_size > 0 and total_size > sanitized_size * 20:
         print("size_exceeded")
         return
 
+    # Base content per path, so two elements for one file compose in order.
+    current = {}
     staged = []
-    for edit in edits:
-        if not isinstance(edit, dict):
-            print("parse_error")
-            return
-        path = (edit.get("path") or "").replace("\\", "/")
-        content = edit.get("new_content") or ""
+    try:
+        for edit in edits:
+            if not isinstance(edit, dict):
+                raise Rejected("bad_edits:<element>")
+            path = (edit.get("path") or "").replace("\\", "/")
 
-        if not path.startswith(ALLOWED_PREFIXES) or ".." in path:
-            print("bad_path:" + path)
-            return
-        if not content.strip():
-            print("empty_content:" + path)
-            return
+            if not path.startswith(ALLOWED_PREFIXES) or ".." in path:
+                raise Rejected("bad_path:" + path)
 
-        old_text = ""
-        if os.path.exists(path):
-            with open(path, encoding="utf-8", errors="replace") as handle:
-                old_text = handle.read()
-            if (len(old_text) > TRUNCATION_MIN_BYTES
-                    and len(content) < len(old_text) * TRUNCATION_RATIO):
-                print("truncated:" + path)
-                return
+            if path in current:
+                base = current[path]
+            elif os.path.exists(path):
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    base = handle.read()
+            else:
+                base = ""
 
-        lines = added_lines(old_text, content)
-        for kind, ruleset in RULESETS:
-            for pattern, rule in ruleset:
-                for line in lines:
-                    if re.search(pattern, line):
-                        print("blocked:%s:%s:%s" % (kind, rule, path))
-                        return
+            if "new_content" in edit:
+                result = edit.get("new_content") or ""
+                if not result.strip():
+                    raise Rejected("empty_content:" + path)
+                added = added_lines(base, result)
+            elif "edits" in edit:
+                result, added = apply_anchors(path, base, edit.get("edits"))
+            else:
+                raise Rejected("bad_edits:" + path)
 
-        staged.append((path, content))
+            if (len(base) > TRUNCATION_MIN_BYTES
+                    and len(result) < len(base) * TRUNCATION_RATIO):
+                raise Rejected("truncated:" + path)
 
-    for path, content in staged:
+            scan(path, added)
+            current[path] = result
+            staged.append(path)
+    except Rejected as rejection:
+        print(rejection.token)
+        return
+
+    for path in dict.fromkeys(staged):
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(content)
+            handle.write(current[path])
 
-    print("applied_%d" % len(staged))
+    print("applied_%d" % len(set(staged)))
 
 
 if __name__ == "__main__":
