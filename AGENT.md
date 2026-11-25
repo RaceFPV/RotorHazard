@@ -38,8 +38,8 @@ cargo build --release --manifest-path rust/server/Cargo.toml
 # unit tests (62, <1s)
 cargo test --release --manifest-path rust/server/Cargo.toml
 
-# protocol integration tests (59: core 39 + more 7 + autoadjust 7
-# + heartbeat 6, ~45s)
+# protocol integration tests (62: core 42 + more 7 + autoadjust 7
+# + heartbeat 6, ~50s)
 # each test spawns a real server process
 cargo test --release \
     --test protocol_core --test protocol_more --test protocol_autoadjust \
