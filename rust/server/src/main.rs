@@ -1,4 +1,4 @@
-//! RustHazard server.
+//! RotorHazard server (Rust implementation).
 //!
 //! Serves the existing static frontend, the /api JSON endpoints, and the
 //! Socket.IO event surface, against the same database.db schema and seed
@@ -120,7 +120,7 @@ async fn main() {
                 "MinLapBehavior": "0",
             },
             "UI": {
-                "timerName": "RustHazard",
+                "timerName": "RotorHazard",
                 "timerLogo": "",
                 "hue_0": "212", "sat_0": "55",
                 "lum_0_low": "29.2", "lum_0_high": "46.7",
@@ -209,7 +209,7 @@ async fn main() {
     }
 
     tracing::info!(
-        "RustHazard starting: data dir {}, port {}, {} nodes",
+        "RotorHazard starting: data dir {}, port {}, {} nodes",
         data_dir, http_port_cfg, num_nodes
     );
     tracing::info!("assets: templates and static are embedded (debug builds read the source tree)");

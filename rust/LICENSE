@@ -1,12 +1,12 @@
-RustHazard is a Rust rewrite of RotorHazard.
+This project is a Rust implementation of the RotorHazard drone
+racing server.
 
 RotorHazard is Copyright (c) 2018— Michael Niggel and other contributors.
 https://github.com/RotorHazard/RotorHazard
 
 The RotorHazard name, RotorHazard logo, and other RotorHazard branding elements
-are copyright 2018 Michael Niggel/Hazard Creative, LLC. These elements are not
-used by this project. This project uses the name "RustHazard" which is separate
-and distinct from RotorHazard branding.
+are copyright 2018 Michael Niggel/Hazard Creative, LLC and are used here solely
+to identify this compatible implementation of the RotorHazard server.
 
 -----------
 

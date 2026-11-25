@@ -1663,7 +1663,7 @@ fn register_export_import_handlers(socket: SocketRef, _state: SharedState) {
             });
             match result {
                 Some(csv_text) => {
-                    let filename = format!("RustHazard Export {} {}.csv", stamp, exporter.replace("CSV__", "CSV / "));
+                    let filename = format!("RotorHazard Export {} {}.csv", stamp, exporter.replace("CSV__", "CSV / "));
                     let _ = sock.emit("exported_data", &json!({
                         "filename": filename,
                         "encoding": "text/csv",
@@ -1679,7 +1679,7 @@ fn register_export_import_handlers(socket: SocketRef, _state: SharedState) {
         let result = db::with_db(&state, |conn| crate::export_import::assemble(conn, exporter));
         match result {
             Some(payload) => {
-                let filename = format!("RustHazard Export {} {}.json", stamp, exporter);
+                let filename = format!("RotorHazard Export {} {}.json", stamp, exporter);
                 let _ = sock.emit("exported_data", &json!({
                     "filename": filename,
                     "encoding": "application/json",

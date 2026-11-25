@@ -1,7 +1,7 @@
 //! Cluster node management — port of ClusterNodeSet.py (primary side)
 //! plus the secondary-side socket handlers it pairs with.
 //!
-//! A "primary" timer connects to secondary RustHazard servers listed in
+//! A "primary" timer connects to secondary RotorHazard servers listed in
 //! the SECONDARIES config; their passes become split/speed records, event
 //! triggers, or mirrored state depending on the entry's mode.
 

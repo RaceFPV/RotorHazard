@@ -1,4 +1,4 @@
-# RustHazard
+# RotorHazard — Rust server
 
 A Rust drone racing server.
 
@@ -11,10 +11,8 @@ The Python source in `src/server/` and `src/interface/` is kept as the
 reference specification — the sync pipeline tracks upstream changes to
 it and ports behavioral differences to Rust.
 
-## Why RustHazard
-
-The name is a pun: RotorHazard → RustHazard. Both rotors and rust are
-hazards.
+This is a Rust implementation of the RotorHazard server, maintained
+as part of the RotorHazard project.
 
 ## Status
 
@@ -81,7 +79,7 @@ config.json keys); unknown config keys are ignored.
 
 ```ini
 [Unit]
-Description=RustHazard Server
+Description=RotorHazard Server (Rust)
 After=network.target
 
 [Service]
