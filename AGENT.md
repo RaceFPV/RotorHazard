@@ -38,10 +38,12 @@ cargo build --release --manifest-path rust/server/Cargo.toml
 # unit tests (62, <1s)
 cargo test --release --manifest-path rust/server/Cargo.toml
 
-# protocol integration tests (33 = core 19 + more 7 + autoadjust 7, ~25s)
+# protocol integration tests (37 active: core 19 + more 7 + autoadjust 7
+# + heartbeat 4, plus 1 ignored scan test, ~30s)
 # each test spawns a real server process
 cargo test --release \
     --test protocol_core --test protocol_more --test protocol_autoadjust \
+    --test protocol_heartbeat \
     --manifest-path rust/server/Cargo.toml
 ```
 
@@ -283,6 +285,11 @@ Without the bridge: no plugins, no problem. The server is pure Rust.
       auth 3, export 2, results 3, ui 2, new_features 5 = 46 tests) —
       optional while the Python suite gates CI; each is a mechanical
       conversion following `protocol_core.rs`
+- [ ] Frequency scan / spectrum sweep (`set_scan` + node scan fields). The
+      Python server advances a scanning node's frequency on every heartbeat
+      and boosts the heartbeat rate; the Rust server has neither, so
+      `scanner.html` cannot plot a spectrogram. Covered by an `#[ignore]`d
+      test in `protocol_heartbeat.rs`.
 - [ ] ws281x GPIO LED backend (classic Pi 4 PWM/DMA; SPI backend works
        on Pi 5 and Pi 4 with GPIO10 wiring)
 - [ ] Node firmware update UI flow (`/updatenodes` page renders but

@@ -103,15 +103,22 @@ fn build_handle(bin: &str, port: u16, data_dir: std::path::PathBuf) -> ServerHan
         port
     ));
     std::fs::create_dir_all(&data_dir).unwrap();
-    std::fs::write(
-        data_dir.join("config.json"),
-        json!({
-            "SECRETS": {"ADMIN_USERNAME": "", "ADMIN_PASSWORD": ""},
-            "GENERAL": {"HTTP_PORT": port, "DEBUG": false, "MOCK_NODE_SIGNAL": "0"},
-        })
-        .to_string(),
-    )
-    .unwrap();
+    // Only write a default config when the caller did not supply one.
+    // Overwriting unconditionally silently discarded every custom config --
+    // mock signal provider, admin credentials -- so those tests ran against the
+    // defaults while appearing to set them.
+    let config_path = data_dir.join("config.json");
+    if !config_path.exists() {
+        std::fs::write(
+            &config_path,
+            json!({
+                "SECRETS": {"ADMIN_USERNAME": "", "ADMIN_PASSWORD": ""},
+                "GENERAL": {"HTTP_PORT": port, "DEBUG": false, "MOCK_NODE_SIGNAL": "0"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
 
     let log_file = std::fs::File::create(&log_path).unwrap();
     let child = Command::new(bin)
