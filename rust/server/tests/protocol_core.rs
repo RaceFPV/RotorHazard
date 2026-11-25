@@ -835,3 +835,125 @@ fn test_fastest_lap_index_and_finished_flag() {
         client.emit("discard_laps", &json!(null));
     });
 }
+
+// ---- Heat management, backups, time (test_protocol_lifecycle.py) ----
+
+#[test]
+fn test_duplicate_heat_copies_slots() {
+    with_server(|_server, client, _| {
+        let source = setup_heat_with_pilots(client, 2);
+        let before = max_heat_id(client);
+
+        let duplicated = client.wait_for_new_id(
+            "duplicate_heat",
+            &json!({"heat": source}),
+            "heat_data",
+            "id",
+            "heats",
+            before,
+            T,
+        );
+        assert_ne!(duplicated, source, "duplicate must get a fresh id");
+
+        let resp = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["heat_data"]}),
+            "heat_data",
+            T,
+        );
+        let heats = resp["heats"].as_array().unwrap();
+        let pilot_ids = |heat: &Value| -> Vec<Value> {
+            heat["slots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["pilot"].clone())
+                .collect()
+        };
+        let original = heats.iter().find(|h| h["id"] == source).unwrap();
+        let copy = heats.iter().find(|h| h["id"] == duplicated).unwrap();
+        assert_eq!(
+            pilot_ids(original),
+            pilot_ids(&copy),
+            "duplicated heat should carry the same slot pilots"
+        );
+    });
+}
+
+#[test]
+fn test_activate_and_deactivate_heat() {
+    with_server(|_server, client, _| {
+        let heat = setup_heat_with_pilots(client, 1);
+
+        let resp = client.emit_and_wait(
+            "deactivate_heat",
+            &json!({"heat": heat}),
+            "heat_data",
+            T,
+        );
+        let h = resp["heats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["id"] == heat)
+            .cloned()
+            .expect("heat present after deactivate");
+        assert_eq!(h["active"].as_bool(), Some(false), "heat still active: {}", h);
+
+        let resp = client.emit_and_wait(
+            "activate_heat",
+            &json!({"heat": heat}),
+            "heat_data",
+            T,
+        );
+        let h = resp["heats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["id"] == heat)
+            .cloned()
+            .expect("heat present after activate");
+        assert_eq!(h["active"].as_bool(), Some(true), "heat still inactive: {}", h);
+    });
+}
+
+#[test]
+fn test_database_backup_and_list() {
+    let mut server = spawn_server();
+    let mut client = SocketClient::connect(&server.base_url);
+    std::thread::sleep(Duration::from_millis(300));
+    client.drain();
+
+    client.emit("backup_database", &json!(null));
+    client.wait_for("database_bkp_done", Duration::from_secs(20));
+
+    let resp = client.emit_and_wait("list_backups", &json!(null), "backups_list", T);
+    let files = resp["backup_files"]
+        .as_array()
+        .expect("backups_list.backup_files is an array");
+    assert!(!files.is_empty(), "no backup listed after backup_database: {}", resp);
+
+    // The listing must name real files, else a restore picks a phantom.
+    for name in files {
+        let name = name.as_str().unwrap_or("");
+        let path = server.data_dir.join("db_bkp").join(name);
+        assert!(path.exists(), "listed backup {} does not exist at {:?}", name, path);
+    }
+
+    client.disconnect();
+    server.stop();
+}
+
+#[test]
+fn test_server_time_via_ack() {
+    with_server(|_server, client, _| {
+        let resp = client.emit_ack("get_server_time", &json!(null), T);
+        // An ack arrives as the argument list, so the payload is element 0.
+        let payload = resp.get(0).cloned().unwrap_or_else(|| resp.clone());
+        assert!(
+            payload["server_time_s"].as_f64().unwrap_or(0.0) > 0.0,
+            "get_server_time ack carried no timestamp: {}",
+            resp
+        );
+    });
+}
