@@ -957,3 +957,257 @@ fn test_server_time_via_ack() {
         );
     });
 }
+
+// ---- Export listings, callouts, language, marshal, saved-race editing ----
+
+/// Depth-first search for the first value under `key`. The race_list payload is
+/// nested (heats -> rounds -> pilotraces), so this keeps the tests from
+/// hardcoding a shape the server is free to rearrange.
+fn find_key(value: &Value, key: &str) -> Option<Value> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key) {
+                return Some(found.clone());
+            }
+            map.values().find_map(|v| find_key(v, key))
+        }
+        Value::Array(items) => items.iter().find_map(|v| find_key(v, key)),
+        _ => None,
+    }
+}
+
+/// Stage, run `laps` simulap passes, stop, save. Returns the heat id.
+fn save_race_with_laps(client: &SocketClient, observer: &SocketClient, laps: usize) -> i64 {
+    let heat = setup_heat_with_pilots(client, 1);
+    client.emit("stage_race", &json!(null));
+    wait_race_status_any(client, observer, RACE_STATUS_RACING, LONG, false);
+    for _ in 0..laps {
+        client.emit_and_wait("simulate_lap", &json!({"node": 0}), "current_laps", T);
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+    client.emit("stop_race", &json!(null));
+    wait_race_status_any(client, observer, RACE_STATUS_DONE, Duration::from_secs(20), true);
+    client.emit("save_laps", &json!(null));
+    SocketClient::wait_any([client, observer], "race_saved", Duration::from_secs(20));
+    heat
+}
+
+#[test]
+fn test_exporter_and_importer_listings() {
+    with_server(|_server, client, _| {
+        let exporters = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["exporter_list"]}),
+            "exporter_list",
+            T,
+        );
+        let names: Vec<String> = exporters["exporters"]
+            .as_array()
+            .expect("exporters array")
+            .iter()
+            .filter_map(|e| e["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains("JSON") && n.contains("Complete")),
+            "JSON complete exporter missing from {:?}",
+            names
+        );
+
+        let importers = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["importer_list"]}),
+            "importer_list",
+            T,
+        );
+        let names: Vec<String> = importers["importers"]
+            .as_array()
+            .expect("importers array")
+            .iter()
+            .filter_map(|e| e["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains("RotorHazard")),
+            "RotorHazard importer missing from {:?}",
+            names
+        );
+    });
+}
+
+#[test]
+fn test_callout_save_reload_and_expansion() {
+    with_server(|_server, client, observer| {
+        let callouts = json!(["%LAP_COUNT% is live", "Next heat %HEAT_NAME%"]);
+        // save is noself: it goes to every other socket.
+        client.emit("save_callouts", &json!({"callouts": callouts}));
+        std::thread::sleep(Duration::from_millis(500));
+        observer.drain();
+
+        let resp = observer.emit_and_wait("reload_callouts", &json!(null), "callouts", T);
+        // The ack carries the list as its arguments, so either [..] or [[..]].
+        let got = match resp.get(0) {
+            Some(first) if first.is_array() => first.clone(),
+            _ => resp.clone(),
+        };
+        assert_eq!(got, callouts, "callouts did not survive a save/reload: {}", resp);
+
+        // Recognised tokens expand to nothing without race data; unknown ones
+        // are left alone (characterised behaviour from the Python suite).
+        let resp = client.emit_and_wait(
+            "get_callout_text",
+            &json!({"callout": "%LAP_COUNT% %EVENT_NAME%"}),
+            "callout_text",
+            T,
+        );
+        let payload = resp.get(0).cloned().unwrap_or_else(|| resp.clone());
+        assert_eq!(
+            payload["callout"].as_str(),
+            Some("%LAP_COUNT% %EVENT_NAME%"),
+            "payload: {}",
+            payload
+        );
+        assert_eq!(
+            payload["text"].as_str(),
+            Some(" %EVENT_NAME%"),
+            "token expansion changed: {}",
+            payload
+        );
+    });
+}
+
+#[test]
+fn test_language_switch_persists() {
+    with_server(|_server, client, _| {
+        client.emit("set_language", &json!({"language": "de"}));
+        std::thread::sleep(Duration::from_millis(400));
+
+        let resp = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["language"]}),
+            "language",
+            T,
+        );
+        assert_eq!(resp["language"].as_str(), Some("de"), "payload: {}", resp);
+
+        client.emit("set_language", &json!({"language": "en"}));
+        std::thread::sleep(Duration::from_millis(400));
+        let resp = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["language"]}),
+            "language",
+            T,
+        );
+        assert_eq!(resp["language"].as_str(), Some("en"), "payload: {}", resp);
+    });
+}
+
+#[test]
+fn test_current_race_marshal_after_stop() {
+    with_server(|_server, client, observer| {
+        setup_heat_with_pilots(client, 1);
+        client.emit("stage_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_RACING, LONG, false);
+        client.emit_and_wait("simulate_lap", &json!({"node": 0}), "current_laps", T);
+        client.emit("stop_race", &json!(null));
+        wait_race_status_any(client, observer, RACE_STATUS_DONE, Duration::from_secs(20), true);
+
+        // The marshal view exists only for a stopped, unsaved race.
+        let resp = client.emit_and_wait(
+            "current_race_marshal",
+            &json!(null),
+            "current_marshal_data",
+            T,
+        );
+        let seats = find_key(&resp, "seats").expect("marshal payload has seats");
+        assert!(
+            seats.is_object() || seats.is_array(),
+            "seats is neither object nor array: {}",
+            resp
+        );
+        let laps = find_key(&resp, "laps").expect("marshal payload has laps");
+        assert!(
+            laps.as_array().map(|a| !a.is_empty()).unwrap_or(false),
+            "marshal payload carries no laps: {}",
+            resp
+        );
+
+        client.emit("discard_laps", &json!(null));
+    });
+}
+
+#[test]
+fn test_get_pilotrace_after_save() {
+    with_server(|_server, client, observer| {
+        save_race_with_laps(client, observer, 2);
+
+        let list = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["race_list"]}),
+            "race_list",
+            T,
+        );
+        let pilotrace_id = find_key(&list, "pilotrace_id")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| panic!("no pilotrace in race_list: {}", list));
+
+        let details = client.emit_and_wait(
+            "get_pilotrace",
+            &json!({"pilotrace_id": pilotrace_id}),
+            "race_details",
+            T,
+        );
+        assert_eq!(
+            find_key(&details, "pilotrace_id").and_then(|v| v.as_i64()),
+            Some(pilotrace_id),
+            "race_details for the wrong pilotrace: {}",
+            details
+        );
+        let laps = find_key(&details, "laps")
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_else(|| panic!("no laps in race_details: {}", details));
+        assert!(
+            laps.len() >= 2,
+            "pilotrace {} reports {} laps: {}",
+            pilotrace_id,
+            laps.len(),
+            details
+        );
+    });
+}
+
+#[test]
+fn test_delete_race_round() {
+    with_server(|_server, client, observer| {
+        save_race_with_laps(client, observer, 1);
+
+        let list = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["race_list"]}),
+            "race_list",
+            T,
+        );
+        let race_id = find_key(&list, "race_id")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| panic!("no race_id in race_list: {}", list));
+
+        let resp = client.emit_and_wait(
+            "delete_race_round",
+            &json!({"race_id": race_id}),
+            "race_round_deleted",
+            T,
+        );
+        assert_eq!(resp["ok"].as_bool(), Some(true), "delete refused: {}", resp);
+
+        let list = client.emit_and_wait(
+            "load_data",
+            &json!({"load_types": ["race_list"]}),
+            "race_list",
+            T,
+        );
+        assert!(
+            find_key(&list, "race_id").and_then(|v| v.as_i64()) != Some(race_id),
+            "race {} still present after delete: {}",
+            race_id,
+            list
+        );
+    });
+}
