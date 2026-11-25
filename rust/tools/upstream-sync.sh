@@ -35,6 +35,14 @@ LOG_PREFIX="[upstream-sync]"
 TRUSTED_CONTRIBUTORS="${TRUSTED_CONTRIBUTORS:-2Turbulent,Alessandro Fiorillo,Andrey Zhereshchin,Arnaud M,Bryce Gruber,Dan Vogel,David Just,Diez B. Roggisch,E Thomas,Eduardo,Glenn Pringle,Hazard Creative,HazardCreative,J Ro,Jens Hofmann,JosepBC,KennyVDSypt,Klaas Schoute,Klaus Michael,Licardo,Louis Hitchcock,Mark Hale,Master92,Nandox7,Paulo Jesus,RaceFPV,Ramon Hernandez Roldan,Rodrigo Cardenas,ScorpionTDL,Vigneswara Baarathi,Viki Baarathi,Vlad Kolotoff,bob9,callmeyagr,eedok,husky-koglhof,kestux75,mac@multiprotocol,pamjesus,pulquero,ryaniftron,skyfpv,szafranski,まっく まるちぷろとこる,ethomas997,i-am-grub,jrwrodgers,klaasnicolaas,rodcar125,LouisHitchcock,vkolotov}"
 MAX_OUTPUT_RATIO="${MAX_OUTPUT_RATIO:-20}"
 
+# The suite needs python-socketio, and its version matters: Linuxbrew's
+# python3 satisfies the import but breaks six tests, while the project venv
+# passes all 68. Prefer the venv when it exists locally; CI has none and
+# installs the deps into python3.
+if [ -z "${PYTHON_BIN:-}" ] && [ -x "$HOME/.venvs/rh/bin/python" ]; then
+    PYTHON_BIN="$HOME/.venvs/rh/bin/python"
+fi
+
 log() { echo "$LOG_PREFIX $*"; }
 die() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
