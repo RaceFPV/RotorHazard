@@ -227,6 +227,11 @@ PORT_RESULT=$(python3 rust/tools/validate_port.py "$LLM_OUT" "$SANITIZED_SIZE") 
 
 rm -f "$PROMPT_FILE" "$LLM_OUT"
 
+# Drop the credential from the environment before anything is built or tested:
+# the gates compile and run merged upstream code, and a build script or test
+# could read its parent environment. The key is only needed for the call above.
+unset LLM_API_KEY 2>/dev/null || true
+
 case "$PORT_RESULT" in
     applied_*)
         log "LLM port OK: $PORT_RESULT"
