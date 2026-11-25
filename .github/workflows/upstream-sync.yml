@@ -45,6 +45,9 @@ jobs:
           key: upstream-sync-sha-${{ github.run_id }}
           restore-keys: upstream-sync-sha
 
+      - name: Install python client deps (cross-validation gate)
+        run: python3 -m pip install --quiet 'python-socketio[client]' requests websocket-client
+
       - name: Run upstream sync
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -45,12 +45,16 @@ log "upstream changed $CHANGED_COUNT file(s), $PY_DIFF_SIZE bytes"
 # --- contributor allowlist ---
 UNTRUSTED=$(git log "$LAST_SHA..$UPSTREAM_SHA" --format='%an' -- $PORTED_DIRS 2>/dev/null | sort -u)
 ALL_TRUSTED=true
-for author in $UNTRUSTED; do
-    if ! echo "$TRUSTED_CONTRIBUTORS" | tr ',' '\n' | grep -qi "^${author}$"; then
+# read line-wise: author names contain spaces ("Alessandro Fiorillo")
+while IFS= read -r author; do
+    [ -z "$author" ] && continue
+    if ! printf '%s\n' "$TRUSTED_CONTRIBUTORS" | tr ',' '\n' | grep -qiF -- "$author"; then
         ALL_TRUSTED=false
         log "UNTRUSTED contributor: $author"
     fi
-done
+done <<EOF
+$UNTRUSTED
+EOF
 
 if [ "$ALL_TRUSTED" = "false" ]; then
     log "untrusted contributor — merging but NOT auto-porting"
@@ -150,6 +154,18 @@ cat >> "$PROMPT_FILE" << 'PROMPT_END2'
 Port the behavioral changes to Rust. Output ONLY a JSON array of
 {"path": "rust/server/src/<file>.rs", "new_content": "<full file>"}.
 Skip changes that dont apply to Rust. Match existing patterns.
+
+TESTS (required for behavior changes): if the diff changes anything
+externally visible -- socket event names or payload shapes, HTTP endpoint
+responses, DB schema or seeded data, config keys -- you MUST also output
+one or more test edits with paths under rust/server/tests/. Follow the
+existing patterns: the shared harness is rust/server/tests/common/mod.rs
+(spawn_server, SocketClient with emit/wait_for, http_get_json) and the
+suites are protocol_core.rs / protocol_more.rs / protocol_autoadjust.rs.
+Add a focused test to the matching suite file (create protocol_upstream.rs
+for unrelated areas). Tests must assert the NEW upstream behavior so the
+suite fails if the port is wrong. Do not modify the harness. If the change
+is purely internal, output no test edits.
 PROMPT_END2
 
 LLM_OUT=$(mktemp)
@@ -209,7 +225,8 @@ SUSPICIOUS = [
 for e in edits:
     path = e.get("path", "")
     content = e.get("new_content", "")
-    if not path.startswith("rust/server/src/"):
+    if not (path.startswith("rust/server/src/")
+            or path.startswith("rust/server/tests/")):
         print("bad_path:" + path); sys.exit(0)
     for pat in SUSPICIOUS:
         if re.search(pat, content, re.IGNORECASE):
@@ -249,6 +266,38 @@ if ! echo "$TEST_OUT" | grep -q 'test result: ok'; then
     git reset --hard "$PRE_MERGE_SHA"
     log "Test output: $TEST_OUT"
     die "tests failed — reverted"
+fi
+
+log "running python protocol suite (cross-validation gate)..."
+if [ "${SKIP_PY_SUITE:-0}" = "1" ]; then
+    log "python suite skipped (SKIP_PY_SUITE=1)"
+elif ! python3 -c "import socketio, requests" 2>/dev/null; then
+    log "python socketio/requests missing -- skipping cross-validation suite"
+else
+    SUITE_DIR="$(git rev-parse --show-toplevel)/src/tests/protocol"
+    SUITE_PORT=5877
+    SUITE_DATA=$(mktemp -d /tmp/rh-sync-suite.XXXXXX)
+    printf '%s' '{"SECRETS":{"ADMIN_USERNAME":"","ADMIN_PASSWORD":""},"GENERAL":{"HTTP_PORT":5877,"DEBUG":false,"MOCK_NODE_SIGNAL":"2"}}' > "$SUITE_DATA/config.json"
+    RH_DATA_DIR="$SUITE_DATA" ./rust/target/release/rh-server > "$SUITE_DATA/server.log" 2>&1 &
+    SUITE_PID=$!
+    SUITE_RC=1
+    for i in $(seq 1 25); do
+        sleep 0.4
+        curl -sf "http://127.0.0.1:$SUITE_PORT/api/status" >/dev/null 2>&1 && break
+    done
+    if (cd "$SUITE_DIR" && RH_TEST_URL="http://127.0.0.1:$SUITE_PORT" \
+        python3 -m unittest discover -s . -p 'test_protocol*.py' 2>&1 | tail -5); then
+        SUITE_RC=0
+    fi
+    kill "$SUITE_PID" 2>/dev/null || true
+    wait "$SUITE_PID" 2>/dev/null || true
+    rm -rf "$SUITE_DATA"
+    if [ "$SUITE_RC" != "0" ]; then
+        log "PROTOCOL SUITE FAILED -- reverting"
+        git reset --hard "$PRE_MERGE_SHA"
+        die "cross-validation suite failed -- reverted"
+    fi
+    log "protocol suite passed"
 fi
 
 log "tests passed"
