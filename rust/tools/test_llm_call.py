@@ -50,6 +50,11 @@ def main():
     check("model forwarded", body["model"], "deepseek/deepseek-v4.1-flash-1017")
     check("max_tokens is an int", body["max_tokens"], 64000)
     check("single user message", body["messages"], [{"role": "user", "content": "hello"}])
+    check("reasoning_effort omitted unless configured", "reasoning_effort" in body, False)
+
+    body = llm_call.build_payload("openai", "deepseek/deepseek-v4.1-flash-1017", "hello",
+                                  64000, reasoning_effort="high")
+    check("reasoning_effort forwarded when set", body.get("reasoning_effort"), "high")
 
     # Defaults documented in the module match the intended target.
     check("default model", llm_call.DEFAULT_MODEL, "deepseek/deepseek-v4.1-flash-1017")

@@ -8,6 +8,10 @@ Configuration (environment):
   LLM_BASE_URL     default https://openrouter.ai/api/v1/chat/completions
   LLM_MODEL        default deepseek/deepseek-v4.1-flash-1017
   LLM_MAX_TOKENS   default 64000
+  LLM_REASONING_EFFORT
+                   optional; forwarded as `reasoning_effort` when set.
+                   deepseek-v4.1-flash-1017 defaults to "high" already and
+                   accepts max|high|low|none. Left unset = provider default.
   LLM_STYLE        "openai" or "anthropic"; inferred from the URL when unset
   LLM_TIMEOUT      default 900 seconds
   LLM_RETRIES      default 3 attempts (network errors, 429 and 5xx)
@@ -43,13 +47,19 @@ def resolve_style(base_url, explicit=None):
     return "anthropic" if "anthropic" in base_url.lower() else "openai"
 
 
-def build_payload(style, model, prompt, max_tokens):
+def build_payload(style, model, prompt, max_tokens, reasoning_effort=None):
     """Both provider shapes accept this body today."""
-    return {
+    payload = {
         "model": model,
         "max_tokens": int(max_tokens),
         "messages": [{"role": "user", "content": prompt}],
     }
+    if reasoning_effort:
+        # Only sent when explicitly configured: models that do not understand
+        # the field would reject the request, and the provider default is
+        # already "high" for the model this pipeline targets.
+        payload["reasoning_effort"] = reasoning_effort
+    return payload
 
 
 def build_headers(style, api_key):
@@ -99,7 +109,8 @@ def main():
         prompt = handle.read()
 
     headers = build_headers(style, api_key)
-    body = build_payload(style, model, prompt, max_tokens)
+    body = build_payload(style, model, prompt, max_tokens,
+                         reasoning_effort=(os.environ.get("LLM_REASONING_EFFORT") or "").strip() or None)
 
     status = "000"
     for attempt in range(1, attempts + 1):
