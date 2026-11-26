@@ -1,5 +1,5 @@
 '''RotorHazard server script'''
-RELEASE_VERSION = "4.6.0-dev.1" # Public release version code
+RELEASE_VERSION = "4.6.0-dev.2" # Public release version code
 SERVER_API = 50 # Server API version
 NODE_API_SUPPORTED = 18 # Minimum supported node version
 NODE_API_BEST = 36 # Most recent node API
@@ -169,7 +169,6 @@ Database.initialize(_DB_URI)
 
 import socket
 import random
-import string
 import json
 import html
 from pathlib import Path
@@ -313,7 +312,9 @@ if __name__ == '__main__' and len(sys.argv) > 1:
             sys.exit(1)
 
 # start SocketIO service
-SOCKET_IO = SocketIO(APP, async_mode='gevent', cors_allowed_origins=RaceContext.serverconfig.get_item('GENERAL', 'CORS_ALLOWED_HOSTS'), max_http_buffer_size=5e7)
+CORS_ALLOWED_HOSTS_VAL = RaceContext.serverconfig.get_item('GENERAL', 'CORS_ALLOWED_HOSTS')
+# need to pass an empty 'CORS_ALLOWED_HOSTS' value as None for "same-origin only" (empty = disable check)
+SOCKET_IO = SocketIO(APP, async_mode='gevent', cors_allowed_origins=(CORS_ALLOWED_HOSTS_VAL if CORS_ALLOWED_HOSTS_VAL else None), max_http_buffer_size=5e7)
 
 # this is the moment where we can forward log-messages to the frontend, and
 # thus set up logging for good.
@@ -505,6 +506,13 @@ def render_template(template_name_or_list, **context):
 def shutdown_session(exception=None):
     if Database.DB_session:
         Database.DB_session.remove()
+
+@APP.after_request
+def add_security_headers(response):
+    '''Adds response headers that harden the pages without changing how they are used.'''
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('Referrer-Policy', 'same-origin')
+    return response
 
 #
 # Routes
@@ -1089,7 +1097,10 @@ def on_load_data(data):
         elif load_type == 'cluster_status':
             RaceContext.rhui.emit_cluster_status()
         elif load_type == 'hardware_log_init':
-            log.emit_current_log_file_to_socket(Current_log_path_name, SOCKET_IO)
+            if AdminAuth.socketio_auth_ok(RaceContext):  # log contents and forwarding are admin-only
+                log.emit_current_log_file_to_socket(Current_log_path_name, SOCKET_IO)
+            else:
+                logger.warning("Ignoring 'hardware_log_init' request from unauthenticated client")
         else:
             logger.warning('Called undefined load type: {}'.format(load_type))
 
@@ -1791,6 +1802,13 @@ def on_backup_database(*args):
             })
     on_list_backups()
 
+def get_db_bkp_file_path(file_name):
+    '''Returns the path to the given file in the database-backup directory, or None if the name is not a plain file name.'''
+    if not file_name or file_name in ('.', '..') or os.path.basename(file_name) != file_name:
+        logger.warning("Ignoring database-backup file name that is not a plain file name: {0}".format(file_name))
+        return None
+    return os.path.join(DB_BKP_DIR_NAME, file_name)
+
 @SOCKET_IO.on('download_database')
 @requires_socketio_auth
 @catchLogExcWithDBWrapper
@@ -1799,7 +1817,9 @@ def on_download_database(data):
     if type(data) is dict:
         db_file = data.get('event_file')
         if db_file and db_file!= '-':
-            download_database(os.path.join(DB_BKP_DIR_NAME, db_file))
+            bkp_path = get_db_bkp_file_path(db_file)
+            if bkp_path:
+                download_database(bkp_path)
 
 def download_database(db_file):
     # read DB data and convert to Base64
@@ -1867,9 +1887,9 @@ def on_restore_database(data):
     success = None
     if 'backup_file' in data:
         backup_file = data['backup_file']
-        backup_path = DB_BKP_DIR_NAME + '/' + backup_file
+        backup_path = get_db_bkp_file_path(backup_file)
 
-        if os.path.exists(backup_path):
+        if backup_path and os.path.exists(backup_path):
             logger.info('Found {0}: starting restoration...'.format(backup_file))
             success = restore_database_file(backup_path)
             Events.trigger(Evt.DATABASE_RESTORE, {
@@ -1892,9 +1912,9 @@ def on_delete_database_file(data):
     '''Restore database.'''
     if 'backup_file' in data:
         backup_file = data['backup_file']
-        backup_path = DB_BKP_DIR_NAME + '/' + backup_file
+        backup_path = get_db_bkp_file_path(backup_file)
 
-        if os.path.exists(backup_path):
+        if backup_path and os.path.exists(backup_path):
             logger.info('Deleting backup file {0}'.format(backup_file))
             os.remove(backup_path)
 
@@ -4546,7 +4566,7 @@ def start(port_val=RaceContext.serverconfig.get_item('GENERAL', 'HTTP_PORT'), ar
         RaceContext.serverconfig.save_config()
     with RaceContext.rhdata.get_db_session_handle():  # make sure DB session/connection is cleaned up
         if not RaceContext.serverconfig.get_item('SECRETS', 'SECRET_KEY'):
-            new_key = ''.join(random.choice(string.ascii_letters) for _ in range(50))
+            new_key = RHUtils.generateSecretKeyStr()
             RaceContext.serverconfig.set_item('SECRETS', 'SECRET_KEY', new_key)
 
         APP.config['SECRET_KEY'] = RaceContext.serverconfig.get_item('SECRETS', 'SECRET_KEY')
@@ -4583,7 +4603,8 @@ def start(port_val=RaceContext.serverconfig.get_item('GENERAL', 'HTTP_PORT'), ar
 
     try:
         # the following fn does not return until the server is shutting down
-        SOCKET_IO.run(APP, host='0.0.0.0', port=port_val, debug=True, use_reloader=False)
+        SOCKET_IO.run(APP, host='0.0.0.0', port=port_val, \
+                      debug=RaceContext.serverconfig.get_item('GENERAL', 'DEBUG'), use_reloader=False)
         logger.info("Server is shutting down")
     except KeyboardInterrupt:
         logger.info("Server terminated by keyboard interrupt")
