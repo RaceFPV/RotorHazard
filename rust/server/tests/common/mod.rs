@@ -136,8 +136,10 @@ fn build_handle(bin: &str, port: u16, data_dir: std::path::PathBuf) -> ServerHan
         log_path,
     };
 
-    // wait for readiness
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // wait for readiness. Tests spawn servers in parallel (and CI runners are
+    // small); 30s was reached once under load, reddening the gate for a server
+    // that was merely slow to bind. This changes only how long we wait.
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let exited = {
             let mut child_guard = handle.child.lock().unwrap();

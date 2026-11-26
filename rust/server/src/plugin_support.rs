@@ -39,41 +39,110 @@ pub fn bridge_dir(data_dir: &str) -> PathBuf {
 pub fn materialise(data_dir: &str) -> std::io::Result<PathBuf> {
     let dir = bridge_dir(data_dir);
     fs::create_dir_all(&dir)?;
-    let marker = dir.join(".revision");
-    let current = fs::read_to_string(&marker).unwrap_or_default();
-    let mut wrote = 0usize;
 
-    if current.trim() != BRIDGE_REVISION {
-        for (rel, contents) in BRIDGE_FILES {
-            let path = dir.join(rel);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let same = fs::read_to_string(&path)
-                .map(|existing| existing == *contents)
-                .unwrap_or(false);
-            if !same {
-                // Write-then-rename so a half-written module can never be imported.
-                let tmp = path.with_extension("tmp");
-                {
-                    let mut file = fs::File::create(&tmp)?;
-                    file.write_all(contents.as_bytes())?;
-                    file.sync_all()?;
-                }
-                let _ = fs::remove_file(&path);
-                fs::rename(&tmp, &path)?;
-                wrote += 1;
+    // Compare content, not a marker. The marker alone cannot tell us that a file
+    // was edited, truncated by a full disk or replaced by an older binary's
+    // leftover, and trusting it would leave a broken bridge in place. Ten small
+    // files cost nothing to read.
+    let mut updated = 0usize;
+    for (rel, contents) in BRIDGE_FILES {
+        let path = dir.join(rel);
+        let same = fs::read(&path)
+            .map(|existing| existing == contents.as_bytes())
+            .unwrap_or(false);
+        if same {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Write-then-rename so a half-written module can never be imported, and
+        // so a crashed upgrade leaves either the old file or the new one.
+        let tmp = path.with_extension("tmp");
+        {
+            let mut file = fs::File::create(&tmp)?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+        }
+        // Windows refuses a rename over an existing file; a file the interpreter
+        // still has mapped is left alone and the error propagates, which skips
+        // autostart rather than running a mixed tree.
+        let _ = fs::remove_file(&path);
+        fs::rename(&tmp, &path)?;
+        updated += 1;
+    }
+
+    // A module dropped from a newer bridge must not linger: Python would happily
+    // import the stale copy and the two versions would disagree. Only ever
+    // deletes .py/.pyc inside plugin-bridge/, never anything the user owns.
+    let mut removed = 0usize;
+    for rel in walk_files(&dir) {
+        let shipped = BRIDGE_FILES.iter().any(|(known, _)| *known == rel);
+        let stale = rel.ends_with(".py") || rel.ends_with(".pyc");
+        if !shipped && stale {
+            if fs::remove_file(dir.join(&rel)).is_ok() {
+                removed += 1;
             }
         }
+    }
+    prune_empty_dirs(&dir);
+
+    // Diagnostics only; the content comparison above is what decides.
+    let marker = dir.join(".revision");
+    if fs::read_to_string(&marker).unwrap_or_default().trim() != BRIDGE_REVISION {
         fs::write(&marker, BRIDGE_REVISION)?;
+    }
+
+    if updated > 0 || removed > 0 {
         tracing::info!(
-            "plugin bridge: wrote {} file(s) to {} (revision {})",
-            wrote,
+            "plugin bridge: installed {} file(s), removed {} stale file(s) in {} (revision {})",
+            updated,
+            removed,
             dir.display(),
             BRIDGE_REVISION
         );
     }
     Ok(dir)
+}
+
+/// Relative paths of every file under `root`.
+fn walk_files(root: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else if let Ok(rel) = path.strip_prefix(base) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// Remove directories that became empty after pruning, deepest first.
+fn prune_empty_dirs(root: &Path) {
+    fn walk(dir: &Path) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut children = Vec::new();
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                children.push(entry.path());
+            }
+        }
+        for child in children {
+            walk(&child);
+            let _ = fs::remove_dir(&child); // fails unless empty, which is what we want
+        }
+    }
+    walk(root);
 }
 
 /// A Python that can load the bridge's only third-party dependency.
@@ -272,6 +341,76 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+
+
+    #[test]
+    fn upgrading_replaces_changed_files_and_removes_dropped_ones() {
+        let dir = temp_dir("upgrade");
+        let out = materialise(dir.to_str().unwrap()).unwrap();
+
+        // What an older binary left behind: an outdated entry point and a module
+        // that no longer ships.
+        fs::write(out.join("rhapi_bridge.py"), "# version 1\n").unwrap();
+        fs::create_dir_all(out.join("rh_compat")).unwrap();
+        fs::write(out.join("rh_compat/dropped_module.py"), "# gone in v2\n").unwrap();
+        fs::create_dir_all(out.join("rh_compat/__pycache__")).unwrap();
+        fs::write(out.join("rh_compat/__pycache__/dropped.cpython-312.pyc"), "x").unwrap();
+        // A file we do not ship must survive: it is the user's, not ours.
+        fs::write(out.join("notes.txt"), "mine").unwrap();
+
+        materialise(dir.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(out.join("rhapi_bridge.py")).unwrap(),
+            BRIDGE_FILES
+                .iter()
+                .find(|(rel, _)| *rel == "rhapi_bridge.py")
+                .map(|(_, c)| *c)
+                .unwrap(),
+            "the outdated entry point was not replaced"
+        );
+        assert!(
+            !out.join("rh_compat/dropped_module.py").exists(),
+            "a module the new bridge no longer ships was left behind"
+        );
+        assert!(
+            !out.join("rh_compat/__pycache__").exists(),
+            "an empty __pycache__ directory was left behind"
+        );
+        assert_eq!(fs::read_to_string(out.join("notes.txt")).unwrap(), "mine");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupted_file_is_repaired_without_an_upgrade() {
+        let dir = temp_dir("repair-content");
+        let out = materialise(dir.to_str().unwrap()).unwrap();
+        // Same revision marker, damaged payload: a marker-only check would skip it.
+        fs::write(out.join("rhapi_bridge.py"), "def oops(\n").unwrap();
+        materialise(dir.to_str().unwrap()).unwrap();
+        let expected = BRIDGE_FILES
+            .iter()
+            .find(|(rel, _)| *rel == "rhapi_bridge.py")
+            .map(|(_, c)| *c)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(out.join("rhapi_bridge.py")).unwrap(),
+            expected
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unchanged_tree_is_not_rewritten() {
+        let dir = temp_dir("idempotent");
+        let out = materialise(dir.to_str().unwrap()).unwrap();
+        let before = fs::metadata(out.join("rhapi_bridge.py")).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        materialise(dir.to_str().unwrap()).unwrap();
+        let after = fs::metadata(out.join("rhapi_bridge.py")).unwrap().modified().unwrap();
+        assert_eq!(before, after, "an unchanged bridge was rewritten");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// The data directory may already hold a Python RotorHazard install. Nothing
     /// outside `plugin-bridge/` may be created, changed or removed - not on first
