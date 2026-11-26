@@ -222,6 +222,82 @@ class Db(Rpc):
         return self.call('db', 'pilotrun_alter', pilotrun_id=pilotrun_id,
                          enter_at=enter_at, exit_at=exit_at, laps=laps)
 
+    @property
+    def options(self):
+        return self.call('db', 'options') or []
+
+    @property
+    def races(self):
+        return self.call('db', 'races') or []
+
+    @property
+    def raceclasses(self):
+        return self.call('db', 'raceclasses') or []
+
+    @property
+    def raceformats(self):
+        return self.call('db', 'raceformats') or []
+
+    @property
+    def frequencysets(self):
+        return self.call('db', 'frequencysets') or []
+
+    @property
+    def laps(self):
+        return self.call('db', 'laps') or []
+
+    @property
+    def pilotruns(self):
+        return self.call('db', 'pilotruns') or []
+
+    @property
+    def deleted_races(self):
+        return self.call('db', 'deleted_races') or []
+
+    @property
+    def backup_dir(self):
+        return self.call('db', 'backup_dir')
+
+    @property
+    def backup_list(self):
+        return self.call('db', 'backup_list') or []
+
+    def pilot_delete(self, pilot_id):
+        return self.call('db', 'pilot_delete', pilot_id=pilot_id)
+
+    def heat_duplicate(self, heat_id):
+        return self.call('db', 'heat_duplicate', heat_id=heat_id)
+
+    def heat_max_round(self, heat_id):
+        return self.call('db', 'heat_max_round', heat_id=heat_id)
+
+    def heat_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'heat_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def raceclass_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'raceclass_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def raceformat_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'raceformat_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def race_delete(self, race_id):
+        return self.call('db', 'race_delete', race_id=race_id)
+
+    def races_by_heat(self, heat_id):
+        return self.call('db', 'races_by_heat', heat_id=heat_id) or []
+
+    def races_by_raceclass(self, class_id):
+        return self.call('db', 'races_by_raceclass', class_id=class_id) or []
+
+    def slot_alter(self, slot_id, pilot=None, **kwargs):
+        return self.call('db', 'slot_alter', slot_id=slot_id, pilot=pilot, **kwargs)
+
+    def options_reset(self):
+        return self.call('db', 'options_reset')
+
     def heat_delete(self, heat_id):
         return self.call('db', 'heat_delete', heat_id=heat_id)
 
@@ -287,6 +363,102 @@ class Race(Rpc):
     def update_colors(self):
         return self.call('race', 'update_colors')
 
+    # ---- the rest of RaceAPI, served by one snapshot call ----
+    def _snap(self):
+        return self.call('race', 'snapshot') or {}
+
+    @property
+    def pilots(self):
+        return self._snap().get('pilots')
+
+    @property
+    def teams(self):
+        return self._snap().get('teams')
+
+    @property
+    def slots(self):
+        return self._snap().get('slots')
+
+    @property
+    def seat_colors(self):
+        return self._snap().get('seat_colors')
+
+    @property
+    def round(self):
+        return self._snap().get('next_round')
+
+    @property
+    def raceformat(self):
+        return Obj({'id': self._snap().get('format_id')})
+
+    @property
+    def status_message(self):
+        return self._snap().get('status_message')
+
+    @property
+    def phonetic_status_msg(self):
+        return self._snap().get('phonetic_status_msg')
+
+    @property
+    def race_time_sec(self):
+        return self._snap().get('race_time_sec')
+
+    @property
+    def unlimited_time(self):
+        return self._snap().get('unlimited_time')
+
+    @property
+    def win_status(self):
+        return self._snap().get('win_status')
+
+    @property
+    def stage_time_internal(self):
+        return self._snap().get('stage_time_internal')
+
+    @property
+    def start_time(self):
+        return self._snap().get('start_time')
+
+    @property
+    def start_time_internal(self):
+        return self._snap().get('start_time_internal')
+
+    @property
+    def end_time_internal(self):
+        return self._snap().get('end_time_internal')
+
+    @property
+    def seats_finished(self):
+        return self._snap().get('seats_finished')
+
+    @property
+    def laps(self):
+        return self._snap().get('laps')
+
+    @property
+    def laps_raw(self):
+        return self._snap().get('laps_raw')
+
+    @property
+    def laps_active_raw(self):
+        return self._snap().get('laps_raw')
+
+    @property
+    def scheduled(self):
+        return self._snap().get('scheduled')
+
+    @property
+    def results(self):
+        return self._snap().get('results')
+
+    @property
+    def coop_results(self):
+        return self._snap().get('coop_results')
+
+    @property
+    def team_results(self):
+        return self._snap().get('team_results')
+
     @property
     def laps(self):
         return self.call('race', 'laps')
@@ -297,17 +469,61 @@ class Race(Rpc):
 
 
 class Fields(Rpc):
+    def _remember(self, kind, field):
+        self._host.fields.setdefault(kind, []).append(field_payload(field))
+
+    @property
+    def options(self):
+        return self._host.fields.get('options', [])
+
+    @property
+    def heat_attributes(self):
+        return self._host.fields.get('heat', [])
+
+    @property
+    def pilot_attributes(self):
+        return self._host.fields.get('pilot', [])
+
+    @property
+    def race_attributes(self):
+        return self._host.fields.get('race', [])
+
+    @property
+    def raceclass_attributes(self):
+        return self._host.fields.get('raceclass', [])
+
+    @property
+    def raceformat_attributes(self):
+        return self._host.fields.get('raceformat', [])
+
     def register_race_attribute(self, field):
+        self._remember('race', field)
         return self.call('fields', 'register_race_attribute',
                          field=field_payload(field))
 
     def register_pilot_attribute(self, field):
+        self._remember('pilot', field)
         return self.call('fields', 'register_pilot_attribute',
                          field=field_payload(field))
 
     def register_option(self, field, panel):
+        self._remember('options', field)
         return self.call('fields', 'register_option',
                          field=field_payload(field), panel=panel)
+
+    def register_heat_attribute(self, field):
+        return self.call('fields', 'register_heat_attribute', field=field_payload(field))
+
+    def register_raceclass_attribute(self, field):
+        return self.call('fields', 'register_raceclass_attribute',
+                         field=field_payload(field))
+
+    def register_raceformat_attribute(self, field):
+        return self.call('fields', 'register_raceformat_attribute',
+                         field=field_payload(field))
+
+    def register_function_binding(self, field, getter_fn, panel=None, args=None):
+        return True
 
 
 class Config(Rpc):
@@ -325,24 +541,67 @@ class Config(Rpc):
     def set(self, section, key, value):
         return self.call('config', 'set', section=section, key=key, value=value)
 
+    def get_item(self, section, key, default=None):
+        return self.get(section, key, default)
+
+    def set_item(self, section, key, value):
+        return self.set(section, key, value)
+
+    @property
+    def get_all(self):
+        return self.call('config', 'all') or {}
+
+    @property
+    def config(self):
+        return self.call('config', 'all') or {}
+
+    def register_section(self, section, items=None):
+        return self.call('ui', 'register_config_section', section=section, items=items)
+
 
 class Utils:
-    def format_time_to_str(self, millis, timeformat='{m}:{s}.{d}'):
-        '''RHUtils.format_time_to_str: milliseconds -> 0:00.000.'''
-        if not isinstance(millis, (int, float)):
-            return ''
-        millis = int(round(millis, 0))
-        sign = '-' if millis < 0 else ''
-        millis = abs(millis)
-        minutes = millis // 60000
-        over = millis % 60000
-        seconds = over // 1000
-        milliseconds = over % 1000
-        if not timeformat:
-            timeformat = '{m}:{s}.{d}'
-        return sign + timeformat.format(m=str(minutes),
-                                        s=str(seconds).zfill(2),
-                                        d=str(milliseconds).zfill(3))
+    '''RHAPI.utils: delegates to the real RHUtils/frequencies, shipped in
+    rh_compat, so formatting and band lookups cannot drift.'''
+
+    def __init__(self):
+        import RHUtils as rh_utils
+        import frequencies
+        self._u = rh_utils
+        self._f = frequencies
+
+    def format_time_to_str(self, millis, time_format=None):
+        return self._u.format_time_to_str(
+            millis, timeformat=time_format or '{m}:{s}.{d}')
+
+    def format_split_time_to_str(self, millis, time_format=None):
+        return self._u.format_split_time_to_str(
+            millis, timeformat=time_format or '{m}:{s}.{d}')
+
+    def format_phonetic_time_to_str(self, millis, time_format=None):
+        return self._u.format_phonetic_time_to_str(
+            millis, timeformat=time_format or '{m} {s}.{d}')
+
+    def generate_unique_name(self, desired_name, other_names):
+        return self._u.uniqueName(desired_name, other_names)
+
+    def generate_unique_name_from_base(self, base_name, other_names):
+        return self._u.unique_name_from_base(base_name, other_names)
+
+    def color_hsl_to_hexstring(self, h, s, l):
+        return self._u.hslToHex(h, s, l)
+
+    def color_hexstring_to_int(self, hex_color):
+        return self._u.hexToColor(hex_color)
+
+    @property
+    def band_channel_frequencies(self):
+        return dict(self._f.BAND_CHANNEL_FREQUENCIES)
+
+    def band_channel_for_frequency(self, frequency):
+        return self._f.band_channel_for(frequency)
+
+    def frequency_for_band_channel(self, band, channel):
+        return self._f.frequency_for(band, channel)
 
 
 class ServerInfo(dict):
@@ -376,7 +635,9 @@ class UI(Rpc):
     def broadcast_ui(self, panel=None):
         return self.call('ui', 'broadcast', what='ui', panel=panel)
 
-    def register_panel(self, domain, name, location, order=0):
+    def register_panel(self, domain, name, location, order=0, open=False):
+        self._host.panels[domain] = {'name': name, 'page': location,
+                                     'order': order, 'open': open}
         return self.call('ui', 'register_panel', domain=domain, name=name,
                          location=location, order=order)
 
@@ -396,6 +657,52 @@ class UI(Rpc):
         return self.call('ui', 'register_config_section', section=section,
                          items=items)
 
+    @property
+    def panels(self):
+        return dict(self._host.panels)
+
+    def broadcast_frequencies(self):
+        return self.call('ui', 'broadcast', what='frequencies')
+
+    def broadcast_frequencyset(self):
+        return self.call('ui', 'broadcast', what='frequencyset')
+
+    def broadcast_race_status(self):
+        return self.call('ui', 'broadcast', what='race_status')
+
+    def broadcast_raceclasses(self):
+        return self.call('ui', 'broadcast', what='raceclasses')
+
+    def broadcast_raceformats(self):
+        return self.call('ui', 'broadcast', what='raceformats')
+
+    def register_markdown(self, markdown, panel=None):
+        return self.call('ui', 'register_markdown', markdown=markdown, panel=panel)
+
+    def register_quickbutton(self, button, panel=None):
+        return self.call('ui', 'register_quickbutton', button=button, panel=panel)
+
+    def register_script(self, path):
+        return self.call('ui', 'register_script', path=path)
+
+    def register_stylesheet(self, path):
+        return self.call('ui', 'register_stylesheet', path=path)
+
+    def update_field(self, field):
+        return self.call('ui', 'update_field', field=field)
+
+    def update_markdown(self, markdown):
+        return self.call('ui', 'update_markdown', markdown=markdown)
+
+    def socket_send(self, event, payload):
+        return self.call('ui', 'socket_send', event=event, payload=payload)
+
+    def socket_send_to(self, sid, event, payload):
+        return self.call('ui', 'socket_send_to', sid=sid, event=event, payload=payload)
+
+    def blueprint_add(self, blueprint, **kwargs):
+        return self.call('ui', 'blueprint_add', blueprint=blueprint, kwargs=kwargs)
+
 
 class Events:
     '''Event registration: plugins register hooks by event name; server
@@ -408,6 +715,22 @@ class Events:
     def on(self, event, handler):
         self._handlers.setdefault(event, []).append(handler)
         return handler
+
+    def off(self, event, handler=None):
+        if handler is None:
+            self._handlers.pop(event, None)
+            return True
+        handlers = self._handlers.get(event, [])
+        if handler in handlers:
+            handlers.remove(handler)
+        return True
+
+    def trigger(self, event, args=None):
+        '''Python triggers the server's event bus; plugins see the same hooks,
+        so dispatch locally (the server does not need a round trip).'''
+        self.dispatch(event, args or {})
+        return True
+
 
     def dispatch(self, event, args):
         # Python hands plugins a dict of args with objects inside it
@@ -425,6 +748,244 @@ class Events:
                 import traceback
                 traceback.print_exc()
 
+class Filters:
+    '''RHAPI filters: callables applied to a payload before it is emitted.'''
+
+    def __init__(self):
+        self._filters = []
+
+    def add(self, fn):
+        self._filters.append(fn)
+        return True
+
+    def remove(self, fn):
+        if fn in self._filters:
+            self._filters.remove(fn)
+        return True
+
+    def run(self, data, args=None):
+        for fn in list(self._filters):
+            try:
+                data = fn(data, args or {})
+            except Exception:
+                import traceback
+                traceback.print_exc()
+        return data
+
+
+class Sensors:
+    '''The Rust build has no sensors (BME280 dropped), so the API is empty.'''
+
+    @property
+    def sensor_names(self):
+        return []
+
+    @property
+    def sensors_dict(self):
+        return {}
+
+    @property
+    def sensor_objs(self):
+        return []
+
+    def sensor_obj(self, name):
+        return None
+
+
+class Server:
+    def __init__(self, host, server_info):
+        self._host = host
+        self._info = server_info
+        self._start_monotonic = time.monotonic()
+        self._start_epoch = time.time()
+
+    @property
+    def data_dir(self):
+        return self.call('server', 'data_dir')
+
+    @property
+    def program_dir(self):
+        return self.call('server', 'program_dir')
+
+    @property
+    def info(self):
+        return dict(self._info)
+
+    @property
+    def plugins(self):
+        return list(self._host._plugins)
+
+    @property
+    def seat_color_defaults(self):
+        return self.call('server', 'seat_color_defaults')
+
+    @property
+    def program_start_mtonic(self):
+        return self._start_monotonic
+
+    @property
+    def program_start_epoch_time(self):
+        return self._start_epoch
+
+    @property
+    def program_start_time_formatted(self):
+        return time.strftime('%H:%M:%S', time.localtime(self._start_epoch))
+
+    @property
+    def program_start_epoch_formatted(self):
+        return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self._start_epoch))
+
+    @property
+    def mtonic_to_epoch_millis_offset(self):
+        return (time.time() - time.monotonic()) * 1000.0
+
+    def monotonic_to_epoch_millis(self, value):
+        return value * 1000.0 + self.mtonic_to_epoch_millis_offset
+
+    def epoch_millis_to_monotonic(self, value):
+        return (value - self.mtonic_to_epoch_millis_offset) / 1000.0
+
+    def enable_heartbeat_event(self, enabled=True):
+        return True
+
+    def set_min_mocks(self, count):
+        return True
+
+    def set_restart_required(self, required=True):
+        return True
+
+    def call(self, obj, method, **args):
+        return wrap(self._host.call(RPC_OBJECT,
+                                    {'object': obj, 'method': method, 'args': args}))
+
+
+class Language:
+    def __init__(self, host):
+        self._host = host
+
+    @property
+    def languages(self):
+        return self.call('language', 'languages') or []
+
+    @property
+    def dictionary(self):
+        return {}
+
+    def __call__(self, text):
+        return text
+
+    def call(self, obj, method, **args):
+        return wrap(self._host.call(RPC_OBJECT,
+                                    {'object': obj, 'method': method, 'args': args}))
+
+
+class Led:
+    def __init__(self, host):
+        self._host = host
+
+    def _call(self, method, **args):
+        return wrap(self._host.call(RPC_OBJECT,
+                                    {'object': 'led', 'method': method, 'args': args}))
+
+    @property
+    def enabled(self):
+        return bool(self._call('enabled'))
+
+    @property
+    def effects(self):
+        return self._call('effects') or {}
+
+    def activate_effect(self, effect, args=None):
+        return self._call('activate_effect', effect=effect, args=args or {})
+
+    def effect_set(self, event, effect):
+        return self._call('effect_set', event=event, effect=effect)
+
+    def effect_by_event(self, event):
+        return self._call('effect_by_event', event=event)
+
+    def display_color(self, color, **kwargs):
+        return self._call('display_color', color=color, **kwargs)
+
+    def clear(self):
+        return self._call('clear')
+
+
+class VRxControl:
+    def __init__(self, host):
+        self._host = host
+
+    def _call(self, method, **args):
+        return wrap(self._host.call(RPC_OBJECT,
+                                    {'object': 'vrx', 'method': method, 'args': args}))
+
+    @property
+    def enabled(self):
+        return bool(self._call('enabled'))
+
+    @property
+    def status(self):
+        return self._call('status')
+
+    @property
+    def devices(self):
+        return self._call('devices') or {}
+
+    def devices_by_pilot(self, seat=0, pilot_id=None):
+        return self._call('devices_by_pilot', seat=seat, pilot_id=pilot_id) or []
+
+    def kill(self):
+        return self._call('kill')
+
+
+class Registry:
+    """classrank / points: a read-only list of the implementations the server
+    offers (plugins pick one by name)."""
+
+    def __init__(self, host, obj):
+        self._host = host
+        self._obj = obj
+
+    @property
+    def methods(self):
+        return wrap(self._host.call(RPC_OBJECT, {
+            'object': self._obj, 'method': 'methods', 'args': {}})) or []
+
+
+class HeatGen:
+    def __init__(self, host):
+        self._host = host
+
+    @property
+    def generators(self):
+        return wrap(self._host.call(RPC_OBJECT, {
+            'object': 'heatgen', 'method': 'generators', 'args': {}})) or []
+
+    def generate(self, generator, params=None):
+        raise NotImplementedError(
+            'rhapi.heatgen.generate is not bridged: run heat generation from the UI')
+
+
+class Io:
+    def __init__(self, host):
+        self._host = host
+
+    @property
+    def exporters(self):
+        return wrap(self._host.call(RPC_OBJECT, {
+            'object': 'io', 'method': 'exporters', 'args': {}})) or []
+
+    @property
+    def importers(self):
+        return wrap(self._host.call(RPC_OBJECT, {
+            'object': 'io', 'method': 'importers', 'args': {}})) or []
+
+    def run_export(self, *args, **kwargs):
+        raise NotImplementedError('rhapi.io.run_export is not bridged')
+
+    def run_import(self, *args, **kwargs):
+        raise NotImplementedError('rhapi.io.run_import is not bridged')
+
 
 class Rhapi:
     '''The object surface handed to plugins.'''
@@ -439,6 +1000,16 @@ class Rhapi:
         self.config = Config(host)
         self.utils = Utils()
         self.server_info = ServerInfo()
+        self.server = Server(host, self.server_info)
+        self.language = Language(host)
+        self.led = Led(host)
+        self.vrxcontrol = VRxControl(host)
+        self.classrank = Registry(host, 'classrank')
+        self.points = Registry(host, 'points')
+        self.heatgen = HeatGen(host)
+        self.io = Io(host)
+        self.filters = Filters()
+        self.sensors = Sensors()
         # rhapi.__ is RHAPI's translation helper; English is the identity.
         setattr(self, '__', lambda text: text)
         self._host = host
@@ -452,6 +1023,8 @@ class Bridge:
         self._acks = {}
         self._cond = threading.Condition()
         self.listeners = {}
+        self.panels = {}
+        self.fields = {}
 
         self.sio.on('rhapi_response', self._on_response)
         self.sio.on('rhapi_event', self._on_plugin_event)

@@ -44,6 +44,11 @@ HEADER = """# Generated from src/server/{src} by rust/tools/gen_rh_compat.py.
 # machine that has no Python server. Values are sliced, not retyped.
 """
 
+# Modules copied whole: RHUtils and frequencies are pure Python (no server
+# imports beyond util.RH_GPIO, which is stubbed) and RHAPI.utils delegates to
+# them, so shipping the real code is the only way to keep parity.
+WHOLE_MODULES = ["RHUtils.py", "frequencies.py"]
+
 MODULES = {
     "RHRace.py": ("RHRace.py", ["RaceStatus"], ""),
     "RHUtils.py": ("RHUtils.py", ["HEAT_ID_NONE"], ""),
@@ -63,6 +68,26 @@ for out_name, (src_name, symbols, prelude) in MODULES.items():
     with open(target, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n\n".join(body) + "\n")
     print("wrote", target)
+
+for name in WHOLE_MODULES:
+    src = open(os.path.join(SRC, name), encoding="utf-8").read()
+    target = os.path.join(OUT, name)
+    with open(target, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(HEADER.format(src=name) + "\n" + src)
+    print("wrote", target)
+
+# RHUtils imports util.RH_GPIO for the Pi GPIO helpers; those paths are not
+# used by the plugin-facing functions, so a stub keeps the import working.
+UTIL = os.path.join(OUT, "util")
+os.makedirs(UTIL, exist_ok=True)
+open(os.path.join(UTIL, "__init__.py"), "w").write("")
+open(os.path.join(UTIL, "RH_GPIO.py"), "w", encoding="utf-8", newline="\n").write(
+    '"""Stub: the Rust server has no GPIO backend; RHUtils only calls these\n'
+    'from hardware-specific helpers."""\n\n\n'
+    "def check_input_tied_low(pin):\n    return False\n\n\n"
+    "def is_real_hw_GPIO():\n    return False\n\n\n"
+    "def get_GPIO_type_str():\n    return 'none'\n")
+print("wrote util/RH_GPIO.py stub")
 
 open(os.path.join(OUT, "__init__.py"), "w").write(
     "# Server-internal shims for plugins loaded by rhapi_bridge.py.\n")

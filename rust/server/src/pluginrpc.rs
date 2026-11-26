@@ -590,6 +590,25 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                     });
                     crate::socket::broadcast(state, "current_heat", payload);
                 }
+                "frequencies" | "frequencyset" => {
+                    let payload = db::with_db(state, crate::payloads::build_frequency_data);
+                    crate::socket::broadcast(state, "frequency_data", payload);
+                }
+                "race_status" => {
+                    let payload = db::with_db(state, |conn| {
+                        let race = state.race.lock().unwrap();
+                        crate::payloads::build_race_status(conn, &race)
+                    });
+                    crate::socket::broadcast(state, "race_status", payload);
+                }
+                "raceclasses" => {
+                    let payload = db::with_db(state, crate::payloads::build_class_data);
+                    crate::socket::broadcast(state, "class_data", payload);
+                }
+                "raceformats" => {
+                    let payload = db::with_db(state, crate::payloads::build_format_data);
+                    crate::socket::broadcast(state, "format_data", payload);
+                }
                 _ => {}
             }
             Ok(json!(true))
@@ -942,6 +961,396 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
         ("race", "update_colors") => {
             let payload = crate::payloads::build_seat_data(state);
             crate::socket::broadcast(state, "seat_data", payload);
+            Ok(json!(true))
+        }
+
+        // ---- server / language ----
+        ("server", "data_dir") => Ok(json!(state.data_dir)),
+        ("server", "program_dir") => Ok(json!(state.data_dir)),
+        ("server", "info") => Ok(json!({
+            "release_version": crate::state::RELEASE_VERSION,
+            "server_api": state.info.server_api,
+            "node_api_best": state.info.node_api_best,
+            "json_api": state.info.json_api,
+        })),
+        ("server", "seat_color_defaults") => Ok(json!(crate::payloads::seat_colors(state))),
+        ("language", "languages") => Ok(json!(crate::phase3::languages())),
+        ("config", "all") => {
+            let text = std::fs::read_to_string(format!("{}/config.json", state.data_dir))
+                .map_err(|e| e.to_string())?;
+            let parsed: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            Ok(parsed)
+        }
+
+        // ---- registries: class rank, points, heat generators, exporters ----
+        ("classrank", "methods") => Ok(json!(crate::class_rank::rank_method_list())),
+        ("points", "methods") => Ok(json!(crate::class_rank::points_method_list())),
+        ("heatgen", "generators") => Ok(json!(crate::heatgen::generator_list())),
+        ("io", "exporters") => Ok(json!(crate::export_import::exporter_list())),
+        ("io", "importers") => Ok(json!(crate::export_import::importer_list())),
+
+        // ---- LED ----
+        ("led", "enabled") => Ok(json!(true)),
+        ("led", "effects") => {
+            let mut map = serde_json::Map::new();
+            for name in state.led_manager.effect_names() {
+                map.insert(name.clone(), json!({"name": name, "fields": Value::Null}));
+            }
+            Ok(json!(map))
+        }
+        ("led", "activate_effect") => {
+            let name = arg_str("effect").ok_or("effect required")?;
+            let payload = args.get("args").cloned().unwrap_or(json!({}));
+            state.led_manager.trigger(&name, &payload);
+            Ok(json!(true))
+        }
+        ("led", "effect_set") => {
+            let event = arg_str("event").ok_or("event required")?;
+            let effect = arg_str("effect").ok_or("effect required")?;
+            Ok(json!(state.led_manager.set_event_effect(&event, &effect)))
+        }
+        ("led", "clear") => {
+            state.led_manager.trigger_idle(crate::state::RACE_STATUS_READY);
+            Ok(json!(true))
+        }
+        ("led", "display_color") => Ok(json!(true)),
+        ("led", "effect_by_event") => Ok(Value::Null),
+
+        // ---- VRx control ----
+        ("vrx", "enabled") => Ok(json!(state.vrx_manager.is_enabled())),
+        ("vrx", "status") => Ok(state.vrx_manager.get_controller_status()),
+        ("vrx", "devices") => Ok(state.vrx_manager.get_all_device_status()),
+        ("vrx", "kill") => {
+            state.vrx_manager.kill();
+            Ok(json!(true))
+        }
+        ("vrx", "devices_by_pilot") => {
+            let seat = arg_i64("seat").unwrap_or(0);
+            let pilot_id = arg_i64("pilot_id");
+            Ok(json!(state.vrx_manager.get_active_devices(seat, pilot_id)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<String>>()))
+        }
+
+        // ---- ui: dynamic updates and one-off emits ----
+        ("ui", "register_markdown") | ("ui", "register_quickbutton")
+        | ("ui", "register_script") | ("ui", "register_stylesheet")
+        | ("ui", "blueprint_add") => Ok(json!(true)),
+        ("ui", "update_field") => {
+            crate::socket::broadcast_payload(state, "ui_field_update",
+                args.get("field").cloned().unwrap_or(json!({})));
+            Ok(json!(true))
+        }
+        ("ui", "update_markdown") => {
+            crate::socket::broadcast_payload(state, "ui_markdown_update",
+                args.get("markdown").cloned().unwrap_or(json!({})));
+            Ok(json!(true))
+        }
+        ("ui", "socket_send") => {
+            let event = arg_str("event").unwrap_or_default();
+            let payload = args.get("payload").cloned().unwrap_or(json!({}));
+            crate::socket::broadcast_payload(state, &event, payload);
+            Ok(json!(true))
+        }
+        ("ui", "socket_send_to") => Ok(json!(false)),
+
+        // ---- race snapshot: everything RaceAPI exposes, in one call ----
+        ("race", "snapshot") => {
+            let (status, heat, start_m, start_ms, start_fmt, end_m, scheduled,
+                 scheduled_time, pilots, slot_count) = {
+                let race = state.race.lock().unwrap();
+                (
+                    race.race_status,
+                    race.current_heat,
+                    race.start_time_monotonic,
+                    race.start_time_epoch_ms,
+                    race.start_time_formatted.clone(),
+                    race.end_time_monotonic,
+                    race.scheduled,
+                    race.scheduled_time,
+                    race.node_pilots.clone(),
+                    state.node_count(),
+                )
+            };
+            let base = db::with_db(state, |conn| {
+                let race = state.race.lock().unwrap();
+                crate::payloads::build_race_status(conn, &race)
+            });
+            let laps = db::with_db(state, |conn| {
+                let race = state.race.lock().unwrap();
+                crate::payloads::build_current_laps(conn, &race)
+            });
+            let status_message = match status {
+                1 => "Racing",
+                2 => "Race over",
+                3 => "Staging",
+                _ => "Ready",
+            };
+            let mut snapshot = base.clone();
+            if let Some(map) = snapshot.as_object_mut() {
+                map.insert("race_status".into(), json!(status));
+                map.insert("race_heat_id".into(), json!(heat));
+                map.insert("format_id".into(), json!(
+                    base.get("race_format_id").cloned().unwrap_or(json!(1))));
+                map.insert("start_time_internal".into(), json!(start_m));
+                map.insert("start_time_epoch_ms".into(), json!(start_ms));
+                map.insert("start_time".into(), json!(start_fmt));
+                map.insert("end_time_internal".into(), json!(end_m));
+                map.insert("stage_time_internal".into(), json!(0.0));
+                map.insert("scheduled".into(), json!(scheduled));
+                map.insert("scheduled_time".into(), json!(scheduled_time));
+                map.insert("pilots".into(), json!(pilots));
+                map.insert("slots".into(), json!(slot_count));
+                map.insert("seat_colors".into(), json!(crate::payloads::seat_colors(state)));
+                map.insert("laps".into(), laps.clone());
+                map.insert("laps_raw".into(), laps);
+                map.insert("status_message".into(), json!(status_message));
+                map.insert("phonetic_status_msg".into(), json!(status_message));
+                map.insert("seats_finished".into(), json!(vec![false; slot_count]));
+                map.insert("teams".into(), json!(Vec::<Option<String>>::new()));
+            }
+            Ok(snapshot)
+        }
+
+        // ---- db: collections ----
+        ("db", "options") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT option_name, option_value FROM global_settings ORDER BY option_name")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(json!({
+                        "name": r.get::<_, String>(0)?,
+                        "value": r.get::<_, Option<String>>(1)?,
+                    }))
+                })
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "races") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, round_id, heat_id, class_id, format_id, \
+                          CAST(start_time AS TEXT) FROM saved_race_meta ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "round_id": r.get::<_, i64>(1)?,
+                    "heat_id": r.get::<_, i64>(2)?,
+                    "class_id": r.get::<_, Option<i64>>(3)?,
+                    "format_id": r.get::<_, Option<i64>>(4)?,
+                    "start_time": r.get::<_, Option<String>>(5)?,
+                })))
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "raceclasses") => Ok(db::with_db(state, crate::payloads::build_class_data)),
+        ("db", "raceformats") => Ok(db::with_db(state, crate::payloads::build_format_data)),
+        ("db", "frequencysets") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, name, description FROM profiles ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "name": r.get::<_, String>(1)?,
+                    "description": r.get::<_, Option<String>>(2)?,
+                })))
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "laps") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, race_id, pilotrace_id, node_index, pilot_id, \
+                          lap_time_stamp, lap_time, deleted FROM saved_race_lap ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "race_id": r.get::<_, i64>(1)?,
+                    "pilotrun_id": r.get::<_, Option<i64>>(2)?,
+                    "node_index": r.get::<_, i64>(3)?,
+                    "pilot_id": r.get::<_, Option<i64>>(4)?,
+                    "lap_time_stamp": r.get::<_, f64>(5)?,
+                    "lap_time": r.get::<_, f64>(6)?,
+                    "deleted": r.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0,
+                })))
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "pilotruns") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, race_id, node_index, pilot_id FROM saved_pilot_race ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "race_id": r.get::<_, i64>(1)?,
+                    "node_index": r.get::<_, i64>(2)?,
+                    "pilot_id": r.get::<_, i64>(3)?,
+                })))
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "deleted_races") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, race_id, round_id, heat_id, class_id, format_id, \
+                          start_time_formatted FROM deleted_race ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "race_id": r.get::<_, i64>(1)?,
+                    "round_id": r.get::<_, Option<i64>>(2)?,
+                    "heat_id": r.get::<_, Option<i64>>(3)?,
+                    "class_id": r.get::<_, Option<i64>>(4)?,
+                    "format_id": r.get::<_, Option<i64>>(5)?,
+                    "start_time": r.get::<_, Option<String>>(6)?,
+                })))
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "backup_dir") => Ok(json!(format!("{}/db_bkp", state.data_dir))),
+        ("db", "backup_list") => {
+            let dir = format!("{}/db_bkp", state.data_dir);
+            let mut files = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        files.push(name.to_string());
+                    }
+                }
+            }
+            files.sort();
+            Ok(json!(files))
+        }
+
+        // ---- db: lookups and mutations ----
+        ("db", "pilot_delete") => {
+            let pilot_id = arg_i64("pilot_id").ok_or("pilot_id required")?;
+            db::with_db(state, |conn| {
+                conn.execute("DELETE FROM pilot WHERE id = ?1", [pilot_id]).ok();
+                conn.execute("UPDATE heat_node SET pilot_id = NULL WHERE pilot_id = ?1", [pilot_id]).ok();
+            });
+            Ok(json!(true))
+        }
+        ("db", "heat_duplicate") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            let new_id = db::with_db(state, |conn| {
+                let new_id = db::next_heat_id(conn);
+                conn.execute(
+                    "INSERT INTO heat (id, note, auto_name, class_id, results, \"cacheStatus\", \"order\",
+                                       status, auto_frequency, group_id, active, coop_best_time, coop_num_laps)
+                     SELECT ?1, note, auto_name, class_id, NULL, '{}', \"order\", 0, auto_frequency,
+                            group_id, 1, NULL, NULL FROM heat WHERE id = ?2",
+                    rusqlite::params![new_id, heat_id],
+                ).ok();
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT node_index, pilot_id, color, method, seed_rank, seed_id FROM heat_node WHERE heat_id = ?1")
+                {
+                    if let Ok(rows) = stmt.query_map([heat_id], |r| Ok((
+                        r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<String>>(2)?, r.get::<_, Option<i64>>(3)?,
+                        r.get::<_, Option<i64>>(4)?, r.get::<_, Option<i64>>(5)?))) {
+                        for row in rows.flatten() {
+                            conn.execute(
+                                "INSERT INTO heat_node (id, heat_id, node_index, pilot_id, color, method, seed_rank, seed_id)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                rusqlite::params![db::next_heat_node_id(conn), new_id, row.0, row.1, row.2, row.3, row.4, row.5],
+                            ).ok();
+                        }
+                    }
+                }
+                new_id
+            });
+            Ok(json!({"id": new_id}))
+        }
+        ("db", "heat_max_round") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            Ok(db::with_db(state, |conn| json!(db::max_round(conn, heat_id))))
+        }
+        ("db", "heat_ids_by_attribute") => {
+            let name = arg_str("attribute").ok_or("attribute required")?;
+            let value = args.get("value").map(|v| match v {
+                Value::String(t) => t.clone(),
+                other => other.to_string(),
+            }).unwrap_or_default();
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM heat_attribute WHERE name = ?1 AND value = ?2 ORDER BY id").unwrap();
+                let rows = stmt.query_map(rusqlite::params![name, value], |r| r.get::<_, i64>(0)).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<i64>>())
+            }))
+        }
+        ("db", "raceclass_ids_by_attribute") | ("db", "raceformat_ids_by_attribute") => {
+            let table = if method == "raceclass_ids_by_attribute" { "race_class_attribute" } else { "race_format_attribute" };
+            let name = arg_str("attribute").ok_or("attribute required")?;
+            let value = args.get("value").map(|v| match v {
+                Value::String(t) => t.clone(),
+                other => other.to_string(),
+            }).unwrap_or_default();
+            Ok(db::with_db(state, |conn| {
+                let sql = format!("SELECT id FROM {} WHERE name = ?1 AND value = ?2 ORDER BY id", table);
+                match conn.prepare(&sql) {
+                    Ok(mut stmt) => {
+                        let rows = stmt.query_map(rusqlite::params![name, value], |r| r.get::<_, i64>(0));
+                        match rows {
+                            Ok(rows) => json!(rows.filter_map(|r| r.ok()).collect::<Vec<i64>>()),
+                            Err(_) => json!([]),
+                        }
+                    }
+                    Err(_) => json!([]),
+                }
+            }))
+        }
+        ("db", "race_delete") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            db::with_db(state, |conn| {
+                conn.execute("DELETE FROM saved_race_lap WHERE race_id = ?1", [race_id]).ok();
+                conn.execute("DELETE FROM saved_pilot_race WHERE race_id = ?1", [race_id]).ok();
+                conn.execute("DELETE FROM saved_race_meta_attribute WHERE id = ?1", [race_id]).ok();
+                conn.execute("DELETE FROM saved_race_meta WHERE id = ?1", [race_id]).ok();
+            });
+            Ok(json!(true))
+        }
+        ("db", "races_by_heat") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, round_id FROM saved_race_meta WHERE heat_id = ?1 ORDER BY id").unwrap();
+                let rows = stmt.query_map([heat_id], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "round_id": r.get::<_, i64>(1)?,
+                }))).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+        ("db", "races_by_raceclass") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, heat_id, round_id FROM saved_race_meta WHERE class_id = ?1 ORDER BY id").unwrap();
+                let rows = stmt.query_map([class_id], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "heat_id": r.get::<_, i64>(1)?,
+                    "round_id": r.get::<_, i64>(2)?,
+                }))).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+        ("db", "slot_alter") => {
+            let slot_id = arg_i64("slot_id").ok_or("slot_id required")?;
+            let pilot = args.get("pilot").cloned().unwrap_or(Value::Null);
+            let pilot_val: Option<i64> = pilot.as_i64();
+            db::with_db(state, |conn| {
+                conn.execute("UPDATE heat_node SET pilot_id = ?1 WHERE id = ?2",
+                             rusqlite::params![pilot_val, slot_id]).ok();
+            });
+            Ok(json!(true))
+        }
+        ("db", "options_reset") => {
+            db::with_db(state, |conn| { conn.execute("DELETE FROM global_settings", []).ok(); });
             Ok(json!(true))
         }
 
