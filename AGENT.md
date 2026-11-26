@@ -300,7 +300,11 @@ single file outside it changes, and the child runs with
 `PYTHONDONTWRITEBYTECODE=1` so importing a plugin does not litter `plugins/`
 with `__pycache__`).
 The one host requirement is Python 3 with `python-socketio`; without it the
-server logs a clear warning and runs normally without plugins.
+server logs a clear warning and runs normally without plugins. That state is also
+surfaced where users look: the plugins page shows a banner naming the problem and
+the install command, and `plugin_list` (which used to emit an empty array) now
+lists installed plugins from their manifests plus a `bridge` object with the
+detected interpreter, its version and whether the bridge is running.
 
 **Tests that protect this**: `rust/plugin-bridge/test_plugin_fixture.sh` runs an
 in-repo fixture plugin (`tests/fixture_plugin`) that calls 42 representative

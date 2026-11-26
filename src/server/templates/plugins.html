@@ -73,6 +73,62 @@
 			display_plugin_list();
 		})
 
+		socket.on('plugin_list', function (msg) {
+			render_plugin_support(msg);
+		});
+
+		function render_plugin_support(msg) {
+			var bridge = (msg && msg.bridge) || {};
+			var panel = $('#plugin-support');
+			var title = '';
+			var text = '';
+
+			if (bridge.problem) {
+				title = __('Plugins cannot run');
+				text = bridge.problem;
+			} else if (!bridge.python) {
+				title = __('Python 3 not found');
+				text = __('Plugins need Python 3 with the python-socketio package, and no Python 3 interpreter was found on this computer.');
+			} else if (!bridge.has_socketio) {
+				title = __('python-socketio is missing');
+				text = __('Found ' + bridge.python + ' ' + (bridge.python_version || '') + ', but it cannot import the socketio module.');
+			}
+
+			if (title) {
+				$('#plugin-support-title').text(title);
+				$('#plugin-support-text').text(text);
+				$('#plugin-support-hint').show();
+				panel.show();
+			} else {
+				panel.hide();
+			}
+
+			var installed = (msg && msg.plugins) || [];
+			var list = $('#plugin-installed-list').empty();
+			if (installed.length) {
+				for (var i = 0; i < installed.length; i++) {
+					var p = installed[i];
+					var label = p.name || p.domain;
+					if (p.version) {
+						label += ' ' + p.version;
+					}
+					var item = $('<li>').text(label);
+					if (p.author) {
+						item.append($('<span>').addClass('muted').text(' — ' + p.author));
+					}
+					if (bridge.started) {
+						item.append($('<span>').addClass('muted').text(' (' + __('running') + ')'));
+					} else if (bridge.python && bridge.has_socketio) {
+						item.append($('<span>').addClass('muted').text(' (' + __('not started') + ')'));
+					}
+					list.append(item);
+				}
+				$('#plugin-installed').show();
+			} else {
+				$('#plugin-installed').hide();
+			}
+		}
+
 		function display_plugin_list() {
 			if (rotorhazard.plugins.remote) {
 				var directory_top_el = $('#plugin-list')
@@ -308,6 +364,16 @@
 
 <main class="page-plugins">
 
+<div id="plugin-support" class="panel" style="display: none;">
+	<div class="panel-content">
+		<h2 id="plugin-support-title"></h2>
+		<p id="plugin-support-text"></p>
+		<p id="plugin-support-hint" style="display: none;">
+			{{ __('The RotorHazard server is a single binary, but plugins are Python: it runs them through a bridge it carries internally. No plugin files need to be downloaded.') }}
+		</p>
+	</div>
+</div>
+
 <div class="panel">
 	<div class="panel-content">
 		<h1>{{ __('Community Plugins') }}</h1>
@@ -336,6 +402,14 @@
 				</select>
 			</li>
 		</ol>
+	</div>
+</div>
+
+
+<div id="plugin-installed" class="panel" style="display: none;">
+	<div class="panel-content">
+		<h2>{{ __('Installed Plugins') }}</h2>
+		<ul id="plugin-installed-list" class="plugin-list"></ul>
 	</div>
 </div>
 

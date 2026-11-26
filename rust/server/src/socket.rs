@@ -297,7 +297,8 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
             }
             "plugin_list" => {
-                let _ = socket.emit("plugin_list", &json!({"plugins": []}));
+                let payload = crate::plugin_support::plugin_list_payload(&state.data_dir);
+                let _ = socket.emit("plugin_list", &payload);
             }
             "action_setup" => {
                 let _ = socket.emit("action_setup", &json!({"enabled": false, "events": {}, "effects": {}}));

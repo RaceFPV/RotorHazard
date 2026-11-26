@@ -152,19 +152,37 @@ fn find_python() -> Option<String> {
     } else {
         &["python3", "python"]
     };
+    let mut found = None;
+    let mut without_socketio: Option<(String, String)> = None;
     for candidate in candidates {
-        let ok = Command::new(candidate)
-            .args(["-c", "import socketio"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            return Some((*candidate).to_string());
+        let Some((version, has_socketio)) = probe_python(candidate) else {
+            continue;
+        };
+        if has_socketio && found.is_none() {
+            set_status(|s| {
+                s.python = Some((*candidate).to_string());
+                s.python_version = Some(version.clone());
+                s.has_socketio = true;
+            });
+            found = Some((*candidate).to_string());
+            break;
+        }
+        if without_socketio.is_none() {
+            without_socketio = Some(((*candidate).to_string(), version));
         }
     }
-    None
+    if found.is_none() {
+        if let Some((name, version)) = without_socketio {
+            // Python exists but cannot load the bridge's dependency: report the
+            // interpreter, and let autostart name the missing module.
+            set_status(|s| {
+                s.python = Some(name);
+                s.python_version = Some(version);
+                s.has_socketio = false;
+            });
+        }
+    }
+    found
 }
 
 /// Plugin directories that would actually load (a subdirectory with __init__.py).
@@ -190,6 +208,7 @@ pub fn autostart(data_dir: &str, http_port: u16) {
 
     let plugins_dir = Path::new(data_dir).join("plugins");
     let plugins = plugin_dirs(&plugins_dir);
+    set_status(|s| s.installed = plugins.len());
     if plugins.is_empty() {
         tracing::info!(
             "plugin bridge: no plugins in {} -- not starting",
@@ -207,12 +226,22 @@ pub fn autostart(data_dir: &str, http_port: u16) {
     };
 
     let Some(python) = find_python() else {
-        tracing::warn!(
-            "plugin bridge: {} plugin(s) present but no Python with the 'socketio' \
-             module was found; install python3 and `pip install python-socketio` \
-             to enable plugins",
-            plugins.len()
-        );
+        let problem = match status().python {
+            Some(name) => format!(
+                "{} plugin(s) installed, but {} cannot import the 'socketio' module. \
+                 Install it with: {} -m pip install python-socketio",
+                plugins.len(),
+                name,
+                name
+            ),
+            None => format!(
+                "{} plugin(s) installed, but no Python 3 interpreter was found. \
+                 Install Python 3 and then run: python3 -m pip install python-socketio",
+                plugins.len()
+            ),
+        };
+        set_status(|s| s.problem = Some(problem.clone()));
+        tracing::warn!("plugin bridge: {}", problem);
         return;
     };
 
@@ -220,6 +249,10 @@ pub fn autostart(data_dir: &str, http_port: u16) {
     let url = format!("http://127.0.0.1:{}", http_port);
     let log_path = Path::new(data_dir).join("plugin-bridge.log");
 
+    set_status(|s| {
+        s.started = true;
+        s.problem = None;
+    });
     tracing::info!(
         "plugin bridge: starting {} plugin(s) with {} ({})",
         plugins.len(),
@@ -282,6 +315,118 @@ pub fn autostart(data_dir: &str, http_port: u16) {
         }
         tracing::error!("plugin bridge failed 5 times; plugins are offline");
     });
+}
+
+
+/// What the UI needs to explain plugin support to a user.
+#[derive(Clone, Debug, Default)]
+pub struct BridgeStatus {
+    /// The interpreter that will run the bridge, if one was found.
+    pub python: Option<String>,
+    /// Its version string, e.g. "3.12.3".
+    pub python_version: Option<String>,
+    /// Whether that interpreter can `import socketio`.
+    pub has_socketio: bool,
+    /// Whether this run started the bridge.
+    pub started: bool,
+    /// How many plugin directories are installed.
+    pub installed: usize,
+    /// Free-form explanation when plugins are installed but cannot run.
+    pub problem: Option<String>,
+}
+
+static STATUS: std::sync::OnceLock<std::sync::Mutex<BridgeStatus>> =
+    std::sync::OnceLock::new();
+
+fn status_cell() -> &'static std::sync::Mutex<BridgeStatus> {
+    STATUS.get_or_init(|| std::sync::Mutex::new(BridgeStatus::default()))
+}
+
+pub fn status() -> BridgeStatus {
+    status_cell().lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+fn set_status(update: impl FnOnce(&mut BridgeStatus)) {
+    if let Ok(mut guard) = status_cell().lock() {
+        update(&mut guard);
+    }
+}
+
+/// Ask an interpreter for its version and whether it can import socketio.
+fn probe_python(name: &str) -> Option<(String, bool)> {
+    let output = Command::new(name)
+        .args([
+            "-c",
+            "import sys\nprint(sys.version.split()[0])\ntry:\n import socketio; print('yes')\nexcept Exception:\n print('no')",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let version = lines.next()?.trim().to_string();
+    let has_socketio = lines.next().map(|l| l.trim() == "yes").unwrap_or(false);
+    Some((version, has_socketio))
+}
+
+/// Installed plugins, read from each manifest.json (the UI shows these).
+pub fn installed_plugins(data_dir: &str) -> Vec<serde_json::Value> {
+    let dir = Path::new(data_dir).join("plugins");
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for path in plugin_dirs(&dir) {
+        let domain = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let manifest = fs::read_to_string(path.join("manifest.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let field = |key: &str| manifest.get(key).cloned().unwrap_or(serde_json::Value::Null);
+        out.push(serde_json::json!({
+            "domain": domain,
+            "name": field("name"),
+            "author": field("author"),
+            "description": field("description"),
+            "version": field("version"),
+            "license": field("license"),
+            "required_rhapi_version": field("required_rhapi_version"),
+            "info_uri": field("info_uri"),
+            "is_bundled": false,
+        }));
+    }
+    out.sort_by(|a, b| {
+        a["domain"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["domain"].as_str().unwrap_or(""))
+    });
+    out
+}
+
+/// Payload for the frontend's `plugin_list` event.
+///
+/// Additive to the Python shape (`{"plugins": [...]}`): a `bridge` object tells
+/// the plugins page why nothing is running when Python is missing, which is the
+/// difference between "plugins are broken" and "install Python".
+pub fn plugin_list_payload(data_dir: &str) -> serde_json::Value {
+    let plugins = installed_plugins(data_dir);
+    let status = status();
+    serde_json::json!({
+        "plugins": plugins,
+        "bridge": {
+            "python": status.python,
+            "python_version": status.python_version,
+            "has_socketio": status.has_socketio,
+            "started": status.started,
+            "installed": plugins.len(),
+            "problem": status.problem,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -409,6 +554,51 @@ mod tests {
         materialise(dir.to_str().unwrap()).unwrap();
         let after = fs::metadata(out.join("rhapi_bridge.py")).unwrap().modified().unwrap();
         assert_eq!(before, after, "an unchanged bridge was rewritten");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn installed_plugins_reads_manifests_and_tolerates_junk() {
+        let dir = temp_dir("manifests");
+        let plugins = dir.join("plugins");
+
+        // A normal plugin.
+        fs::create_dir_all(plugins.join("beta_plugin")).unwrap();
+        fs::write(
+            plugins.join("beta_plugin/__init__.py"),
+            "def initialize(rhapi): pass\n",
+        )
+        .unwrap();
+        fs::write(
+            plugins.join("beta_plugin/manifest.json"),
+            r#"{"domain":"beta_plugin","name":"Beta","author":"Someone","version":"2.1"}"#,
+        )
+        .unwrap();
+
+        // One with no manifest at all (still installed), one with broken JSON.
+        fs::create_dir_all(plugins.join("alpha_plugin")).unwrap();
+        fs::write(plugins.join("alpha_plugin/__init__.py"), "").unwrap();
+        fs::create_dir_all(plugins.join("gamma_plugin")).unwrap();
+        fs::write(plugins.join("gamma_plugin/__init__.py"), "").unwrap();
+        fs::write(plugins.join("gamma_plugin/manifest.json"), "{not json").unwrap();
+
+        // A directory without __init__.py is not a plugin.
+        fs::create_dir_all(plugins.join("not_a_plugin")).unwrap();
+
+        let listed = installed_plugins(dir.to_str().unwrap());
+        let domains: Vec<&str> = listed
+            .iter()
+            .map(|p| p["domain"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(domains, vec!["alpha_plugin", "beta_plugin", "gamma_plugin"]);
+        assert_eq!(listed[1]["name"], "Beta");
+        assert_eq!(listed[1]["version"], "2.1");
+        assert!(listed[1]["author"].as_str().unwrap() == "Someone");
+        // Missing/broken manifests must not invent a plugin name.
+        assert!(listed[0]["name"].is_null());
+        assert!(listed[2]["name"].is_null());
+
         let _ = fs::remove_dir_all(&dir);
     }
 
