@@ -70,8 +70,8 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let callsign = arg_str("callsign").ok_or("callsign required")?;
             Ok(db::with_db(state, |conn| {
                 conn.execute(
-                    "INSERT INTO pilot (callsign, name, phonetic, team) \
-                     VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO pilot (callsign, name, phonetic, team, active) \
+                     VALUES (?1, ?2, ?3, ?4, 1)",
                     rusqlite::params![
                         callsign,
                         args.get("name").and_then(|v| v.as_str()).unwrap_or(""),
@@ -336,6 +336,231 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let section = arg_str("section").ok_or("section required")?;
             let key = arg_str("key").ok_or("key required")?;
             Ok(json!(db::get_config_string(state, &section, &key)))
+        }
+
+        // ---- race control (RHAPI parity for plugins) ----
+        ("race", "stage") => {
+            crate::race::stage_race(state);
+            Ok(json!(true))
+        }
+        ("race", "stop") => {
+            crate::race::stop_race(state);
+            Ok(json!(true))
+        }
+        ("race", "save") => Ok(json!(crate::race::save_laps(state))),
+        ("race", "clear") => {
+            crate::race::discard_laps(state);
+            Ok(json!(true))
+        }
+        ("race", "any_laps_recorded") => {
+            let race = state.race.lock().unwrap();
+            Ok(json!(race.node_laps.iter().any(|laps| !laps.is_empty())))
+        }
+        ("race", "heat") => {
+            let race = state.race.lock().unwrap();
+            Ok(json!(race.current_heat))
+        }
+        ("race", "set_heat") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            let pilots = db::with_db(state, |conn| {
+                let mut slots = vec![None; state.node_count()];
+                if let Ok(mut stmt) =
+                    conn.prepare("SELECT node_index, pilot_id FROM heat_node WHERE heat_id = ?1")
+                {
+                    if let Ok(rows) = stmt.query_map([heat_id], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+                    }) {
+                        for (index, pilot) in rows.flatten() {
+                            if let Some(slot) = slots.get_mut(index as usize) {
+                                *slot = pilot;
+                            }
+                        }
+                    }
+                }
+                slots
+            });
+            {
+                let mut race = state.race.lock().unwrap();
+                race.current_heat = Some(heat_id);
+                race.node_pilots = pilots;
+            }
+            let payload = db::with_db(state, |conn| {
+                let race = state.race.lock().unwrap();
+                crate::payloads::build_current_heat(conn, &race)
+            });
+            crate::socket::broadcast(state, "current_heat", payload);
+            Ok(json!(true))
+        }
+
+        // ---- db: heats, slots, attributes ----
+        ("db", "heat_add") => {
+            let name = arg_str("name");
+            let id = db::with_db(state, |conn| {
+                let id = db::next_heat_id(conn);
+                conn.execute(
+                    "INSERT INTO heat (id, note, auto_name, class_id, results, \"cacheStatus\", \"order\",
+                                       status, auto_frequency, group_id, active, coop_best_time, coop_num_laps)
+                     VALUES (?1, ?2, NULL, NULL, NULL, '{}', NULL, 0, 0, 0, 1, NULL, NULL)",
+                    rusqlite::params![id, name],
+                )
+                .ok();
+                for node_index in 0..state.node_count() as i64 {
+                    conn.execute(
+                        "INSERT INTO heat_node (id, heat_id, node_index, pilot_id, color, method, seed_rank, seed_id)
+                         VALUES (?1, ?2, ?3, NULL, NULL, 0, NULL, NULL)",
+                        rusqlite::params![db::next_heat_node_id(conn), id, node_index],
+                    )
+                    .ok();
+                }
+                id
+            });
+            Ok(json!({"id": id}))
+        }
+        ("db", "heat") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, COALESCE(NULLIF(note, ''), COALESCE(NULLIF(auto_name, ''), 'Heat ' || id))
+                     FROM heat WHERE id = ?1",
+                    [heat_id],
+                    |r| Ok(json!({"id": r.get::<_, i64>(0)?, "display_name": r.get::<_, String>(1)?})),
+                )
+                .unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "heat_alter") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            let name = arg_str("name");
+            let attributes = args.get("attributes").and_then(|v| v.as_object()).cloned();
+            db::with_db(state, |conn| {
+                if let Some(name) = &name {
+                    conn.execute(
+                        "UPDATE heat SET note = ?1 WHERE id = ?2",
+                        rusqlite::params![name, heat_id],
+                    )
+                    .ok();
+                }
+                if let Some(attributes) = &attributes {
+                    for (key, value) in attributes {
+                        conn.execute(
+                            "INSERT OR REPLACE INTO heat_attribute (heat_id, attribute, value)
+                             VALUES (?1, ?2, ?3)",
+                            rusqlite::params![heat_id, key, value.as_str().unwrap_or("")],
+                        )
+                        .ok();
+                    }
+                }
+            });
+            Ok(json!(true))
+        }
+        ("db", "slots_by_heat") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn
+                    .prepare("SELECT id, node_index, pilot_id FROM heat_node WHERE heat_id = ?1 ORDER BY node_index")
+                    .unwrap();
+                let rows = stmt
+                    .query_map([heat_id], |r| {
+                        Ok(json!({
+                            "id": r.get::<_, i64>(0)?,
+                            "node_index": r.get::<_, i64>(1)?,
+                            "pilot": r.get::<_, Option<i64>>(2)?,
+                        }))
+                    })
+                    .unwrap();
+                let out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+                json!(out)
+            }))
+        }
+        ("db", "slots_alter_fast") => {
+            let slots = args
+                .get("slots")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            db::with_db(state, |conn| {
+                for slot in slots {
+                    let slot_id = slot.get("slot_id").and_then(|v| v.as_i64());
+                    let pilot = slot.get("pilot").and_then(|v| v.as_i64());
+                    if let (Some(slot_id), Some(pilot)) = (slot_id, pilot) {
+                        conn.execute(
+                            "UPDATE heat_node SET pilot_id = ?1 WHERE id = ?2",
+                            rusqlite::params![pilot, slot_id],
+                        )
+                        .ok();
+                    }
+                }
+            });
+            Ok(json!(true))
+        }
+        ("db", "pilot_attribute_value") => {
+            let pilot_id = arg_i64("pilot_id").ok_or("pilot_id required")?;
+            let attribute = arg_str("attribute").ok_or("attribute required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT value FROM pilot_attribute WHERE pilot_id = ?1 AND attribute = ?2",
+                    rusqlite::params![pilot_id, attribute],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+                .map(|v| json!(v))
+                .unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "heat_attribute_value") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            let attribute = arg_str("attribute").ok_or("attribute required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT value FROM heat_attribute WHERE heat_id = ?1 AND attribute = ?2",
+                    rusqlite::params![heat_id, attribute],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+                .map(|v| json!(v))
+                .unwrap_or(Value::Null)
+            }))
+        }
+
+        // ---- ui: broadcasts and registration (no-ops where the Rust UI has
+        // no plugin panel host yet) ----
+        ("ui", "socket_broadcast") => {
+            let event = arg_str("event").unwrap_or_default();
+            let payload = args.get("payload").cloned().unwrap_or(json!({}));
+            crate::socket::broadcast_payload(state, &event, payload);
+            Ok(json!(true))
+        }
+        ("ui", "broadcast") => {
+            match arg_str("what").unwrap_or_default().as_str() {
+                "pilots" => {
+                    let payload = db::with_db(state, |conn| {
+                        crate::payloads::build_pilot_data(conn)
+                    });
+                    crate::socket::broadcast(state, "pilot_data", payload);
+                }
+                "heats" => {
+                    let payload = db::with_db(state, |conn| {
+                        let race = state.race.lock().unwrap();
+                        crate::payloads::build_heat_data(conn, &race)
+                    });
+                    crate::socket::broadcast(state, "heat_data", payload);
+                }
+                "current_heat" => {
+                    let payload = db::with_db(state, |conn| {
+                        let race = state.race.lock().unwrap();
+                        crate::payloads::build_current_heat(conn, &race)
+                    });
+                    crate::socket::broadcast(state, "current_heat", payload);
+                }
+                _ => {}
+            }
+            Ok(json!(true))
+        }
+        ("ui", "register_panel") | ("fields", "register_race_attribute")
+        | ("fields", "register_pilot_attribute") | ("fields", "register_option") => {
+            // No plugin panel host in the Rust UI yet; accepting the call lets
+            // plugins that only need registration finish initialising.
+            Ok(json!(true))
         }
 
         _ => Err(format!("Unknown RHAPI method: {}.{}", object, method)),

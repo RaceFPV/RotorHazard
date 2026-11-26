@@ -71,6 +71,17 @@ class Obj:
         return 'Obj(%r)' % (object.__getattribute__(self, '_data'),)
 
 
+def plain(value):
+    """Strip Obj wrappers before a payload goes over the wire."""
+    if isinstance(value, Obj):
+        return plain(object.__getattribute__(value, '_data'))
+    if isinstance(value, dict):
+        return {key: plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    return value
+
+
 class Rpc:
     '''Shared helper: one server call, unwrapped.'''
 
@@ -84,6 +95,9 @@ class Rpc:
             if 'error' in response:
                 raise RuntimeError('%s.%s: %s' % (obj, method, response['error']))
             response = response.get('result')
+        # Some server arms report failure inside the result envelope.
+        if isinstance(response, dict) and set(response) == {'error'}:
+            raise RuntimeError('%s.%s: %s' % (obj, method, response['error']))
         return wrap(response)
 
 
@@ -111,10 +125,12 @@ class Db(Rpc):
         return self.call('db', 'pilot', pilot_id=pilot_id)
 
     def pilot_add(self, name=None, callsign=None, **rest):
-        return self.call('db', 'pilot_add', callsign=callsign or name,
-                         name=name, **rest)
+        new_id = self.call('db', 'pilot_add', callsign=callsign or name,
+                           name=name, **rest)
+        return Obj({'id': new_id})
 
     def pilot_alter(self, pilot_id, attributes=None, **fields):
+        print("[bridge] pilot_alter(%r)" % (pilot_id,), file=sys.stderr)
         return self.call('db', 'pilot_alter', pilot_id=pilot_id,
                          attributes=attributes, **fields)
 
@@ -145,10 +161,10 @@ class Db(Rpc):
         return self.call('db', 'slots_alter_fast', slots=slots)
 
     def option(self, key):
-        return self.call('db', 'get_option', key=key)
+        return self.call('db', 'get_option', name=key)
 
     def option_set(self, key, value):
-        return self.call('db', 'set_option', key=key, value=value)
+        return self.call('db', 'set_option', name=key, value=value)
 
     def frequencyset_alter(self, frequencyset_id, frequencies=None):
         return self.call('db', 'frequencyset_alter',
@@ -158,11 +174,16 @@ class Db(Rpc):
 class Race(Rpc):
     @property
     def status(self):
-        return self.call('race', 'status')
+        data = self.call('race', 'status')
+        try:
+            return data['race_status']
+        except Exception:
+            return data
 
     @property
     def heat(self):
-        return self.call('race', 'heat')
+        data = self.call('race', 'heat')
+        return data
 
     @heat.setter
     def heat(self, heat_id):
@@ -170,7 +191,11 @@ class Race(Rpc):
 
     @property
     def frequencyset(self):
-        return self.call('race', 'frequencyset')
+        data = self.call('race', 'status')
+        try:
+            return data['frequencyset']
+        except Exception:
+            return data
 
     @property
     def any_laps_recorded(self):
@@ -360,6 +385,7 @@ class Bridge:
     # ---- bridge -> server ----
     def call(self, event, payload):
         '''Synchronous RPC via socket.io ack.'''
+        payload = plain(payload)
         with self._call_lock:
             self._call_id += 1
             call_id = self._call_id
@@ -431,8 +457,8 @@ class Bridge:
                 results.append(handler(args))
             except Exception as ex:
                 import traceback
-                traceback.print_exc()
-                results.append({'error': '%s: %s' % (type(ex).__name__, ex)})
+                results.append({'error': '%s: %s' % (type(ex).__name__, ex),
+                                'traceback': traceback.format_exc().splitlines()[-14:]})
         return {'result': results[0] if len(results) == 1 else results}
 
 
