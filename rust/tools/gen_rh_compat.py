@@ -11,6 +11,12 @@ import os
 SRC = "/home/racefpv/git/RotorHazard/src/server"
 OUT = "/home/racefpv/git/RotorHazard/rust/plugin-bridge/rh_compat"
 
+TYPING_PRELUDE = (
+    "from enum import Enum\n"
+    "from typing import Any, Optional, Dict, List, Callable\n"
+    "from dataclasses import dataclass, field\n"
+)
+
 
 def slice_symbol(path, name):
     """Return the source lines defining a top-level class or simple assignment."""
@@ -19,7 +25,12 @@ def slice_symbol(path, name):
     tree = ast.parse(text)
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == name:
-            return "\n".join(lines[node.lineno - 1:node.end_lineno])
+            start = node.lineno - 1
+            if node.decorator_list:
+                # @dataclass sits above the class statement and carries the
+                # generated __init__; dropping it made UIField() take no args.
+                start = min(d.lineno - 1 for d in node.decorator_list)
+            return "\n".join(lines[start:node.end_lineno])
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == name:
@@ -39,7 +50,7 @@ MODULES = {
     "Database.py": ("Database.py", ["LapSource"], ""),
     "eventmanager.py": ("eventmanager.py", ["Evt"], ""),
     "RHUI.py": ("RHUI.py", ["UIFieldType", "UIFieldSelectOption", "UIField"],
-                "from enum import Enum\nfrom typing import Any, Optional, Dict, List, Callable\n\n"),
+                TYPING_PRELUDE),
 }
 
 for out_name, (src_name, symbols, prelude) in MODULES.items():

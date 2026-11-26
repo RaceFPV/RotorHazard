@@ -331,6 +331,13 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             Ok(json!(true))
         }
 
+        // ---- config: config.json values (RHAPI config.get) ----
+        ("config", "get") => {
+            let section = arg_str("section").ok_or("section required")?;
+            let key = arg_str("key").ok_or("key required")?;
+            Ok(json!(db::get_config_string(state, &section, &key)))
+        }
+
         _ => Err(format!("Unknown RHAPI method: {}.{}", object, method)),
     }
 }

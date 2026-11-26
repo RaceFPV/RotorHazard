@@ -5,6 +5,7 @@
 
 from enum import Enum
 from typing import Any, Optional, Dict, List, Callable
+from dataclasses import dataclass, field
 
 class UIFieldType(Enum):
     TEXT = "text"
@@ -22,10 +23,12 @@ class UIFieldType(Enum):
     URL = "url"
     STATUS = "status"
 
+@dataclass
 class UIFieldSelectOption():
     value: str
     label: str
 
+@dataclass
 class UIField():
     name: str
     label: str

@@ -10,7 +10,7 @@ hooks the plugins register.
 
 Usage:
     python3 rhapi_bridge.py [--server http://127.0.0.1:5000] \
-        [--plugins-dir ./plugins] [--plugins name1,name2]
+        [--plugins-dir ./plugins] [--plugins name1,name2] [--control-port 5099]
 
 The server is never required to run Python; if this bridge isn't
 running, the server behaves as if no plugins are installed.
@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import socketio
 
@@ -36,99 +37,188 @@ RPC_OBJECT = 'rhapi_call'
 RPC_TIMEOUT = 10.0
 
 
-class RhapiNode:
-    '''Attribute-walking proxy: rhapi.db.pilots() performs an RPC call
-    ("db", "pilots") on the server.'''
-    def __init__(self, host, path):
-        self._host = host
-        self._path = path
+# --------------------------------------------------------------------------
+# Values returned by the server are plain JSON; RHAPI hands plugins objects
+# with attributes (pilot.id, heat.display_name), so wrap them on the way in.
+# --------------------------------------------------------------------------
+def wrap(value):
+    if isinstance(value, dict):
+        return Obj(value)
+    if isinstance(value, list):
+        return [wrap(item) for item in value]
+    return value
+
+
+class Obj:
+    def __init__(self, data):
+        object.__setattr__(self, '_data', data)
 
     def __getattr__(self, name):
-        if name.startswith('_'):
-            raise AttributeError(name)
-        return RhapiNode(self._host, self._path + [name])
+        data = object.__getattribute__(self, '_data')
+        if name in data:
+            return wrap(data[name])
+        if name == 'id':
+            for key in ('id', 'pilot_id', 'heat_id', 'race_id', 'slot_id',
+                        'class_id', 'format_id', 'frequencyset_id'):
+                if key in data:
+                    return data[key]
+        raise AttributeError(name)
 
-    def __call__(self, *args, **kwargs):
-        method = self._path[-1] if self._path else ''
-        obj = '.'.join(self._path[:-1])
-        payload = {'object': obj, 'method': method, 'args': kwargs or {},
-                   'pos': list(args)}
-        result = self._host.call(RPC_OBJECT, payload)
-        # result is the server's full ack payload: {result: ...} or {error}
-        if isinstance(result, dict) and 'error' in result:
-            raise RuntimeError(result['error'])
-        return result.get('result') if isinstance(result, dict) else result
+    def __getitem__(self, key):
+        return wrap(object.__getattribute__(self, '_data')[key])
 
-
-class RhapiEvents:
-    '''Event registration: plugins register hooks by event name; server
-    broadcasts are dispatched to them here.'''
-    def __init__(self, host):
-        self._host = host
-        self._handlers = {}
-
-    def on(self, event, handler):
-        self._handlers.setdefault(event, []).append(handler)
-
-    def dispatch(self, event, args):
-        for handler in self._handlers.get(event, []):
-            try:
-                handler(args)
-            except Exception:
-                print('[bridge] handler error for {}:'.format(event), file=sys.stderr)
-                import traceback
-                traceback.print_exc()
+    def __repr__(self):
+        return 'Obj(%r)' % (object.__getattribute__(self, '_data'),)
 
 
-class RhapiUI:
-    def __init__(self, host):
-        self._host = host
-
-    def message_speak(self, message):
-        self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'message_speak',
-                                     'args': {'message': message}})
-
-    def message_notify(self, message):
-        self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'message_notify',
-                                     'args': {'message': message}})
-
-    def message_alert(self, message):
-        self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'message_alert',
-                                     'args': {'message': message}})
-
-    def clear_messages(self):
-        self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'clear_messages', 'args': {}})
-
-    def register_config_section(self, section, items=None):
-        '''Allows a config section to be fetched via a load_data request
-        (RHUI.register_config_section); items None allows the whole section.'''
-        return self._host.call(RPC_OBJECT, {'object': 'ui', 'method': 'register_config_section',
-                                            'args': {'section': section, 'items': items}})
-
-
-class RhapiConfig:
-    """rhapi.config.get/set -- the server stores these as db options."""
+class Rpc:
+    '''Shared helper: one server call, unwrapped.'''
 
     def __init__(self, host):
         self._host = host
+
+    def call(self, obj, method, **args):
+        response = self._host.call(RPC_OBJECT, {
+            'object': obj, 'method': method, 'args': args})
+        if isinstance(response, dict):
+            if 'error' in response:
+                raise RuntimeError('%s.%s: %s' % (obj, method, response['error']))
+            response = response.get('result')
+        return wrap(response)
+
+
+def field_payload(field):
+    '''A UIField as JSON: dataclass attrs, enums reduced to their values.'''
+    data = dict(getattr(field, '__dict__', {}))
+    for key, value in list(data.items()):
+        if hasattr(value, 'value') and not isinstance(value, (str, int, float, bool)):
+            data[key] = value.value
+        elif isinstance(value, list):
+            data[key] = [getattr(v, 'value', v) for v in value]
+    return data
+
+
+class Db(Rpc):
+    @property
+    def pilots(self):
+        return self.call('db', 'pilots') or []
+
+    @property
+    def heats(self):
+        return self.call('db', 'heats') or []
+
+    def pilot(self, pilot_id):
+        return self.call('db', 'pilot', pilot_id=pilot_id)
+
+    def pilot_add(self, name=None, callsign=None, **rest):
+        return self.call('db', 'pilot_add', callsign=callsign or name,
+                         name=name, **rest)
+
+    def pilot_alter(self, pilot_id, attributes=None, **fields):
+        return self.call('db', 'pilot_alter', pilot_id=pilot_id,
+                         attributes=attributes, **fields)
+
+    def pilot_attribute_value(self, pilot_id, attribute, default=None):
+        value = self.call('db', 'pilot_attribute_value', pilot_id=pilot_id,
+                          attribute=attribute)
+        return default if value is None else value
+
+    def heat_add(self, name=None, **rest):
+        return self.call('db', 'heat_add', name=name, **rest)
+
+    def heat_by_id(self, heat_id):
+        return self.call('db', 'heat', heat_id=heat_id)
+
+    def heat_alter(self, heat_id, name=None, attributes=None, **fields):
+        return self.call('db', 'heat_alter', heat_id=heat_id, name=name,
+                         attributes=attributes, **fields)
+
+    def heat_attribute_value(self, heat_id, attribute, default=None):
+        value = self.call('db', 'heat_attribute_value', heat_id=heat_id,
+                          attribute=attribute)
+        return default if value is None else value
+
+    def slots_by_heat(self, heat_id):
+        return self.call('db', 'slots_by_heat', heat_id=heat_id) or []
+
+    def slots_alter_fast(self, slots):
+        return self.call('db', 'slots_alter_fast', slots=slots)
+
+    def option(self, key):
+        return self.call('db', 'get_option', key=key)
+
+    def option_set(self, key, value):
+        return self.call('db', 'set_option', key=key, value=value)
+
+    def frequencyset_alter(self, frequencyset_id, frequencies=None):
+        return self.call('db', 'frequencyset_alter',
+                         frequencyset_id=frequencyset_id, frequencies=frequencies)
+
+
+class Race(Rpc):
+    @property
+    def status(self):
+        return self.call('race', 'status')
+
+    @property
+    def heat(self):
+        return self.call('race', 'heat')
+
+    @heat.setter
+    def heat(self, heat_id):
+        self.call('race', 'set_heat', heat_id=heat_id)
+
+    @property
+    def frequencyset(self):
+        return self.call('race', 'frequencyset')
+
+    @property
+    def any_laps_recorded(self):
+        return bool(self.call('race', 'any_laps_recorded'))
+
+    def stage(self, args=None):
+        return self.call('race', 'stage', options=args or {})
+
+    def stop(self):
+        return self.call('race', 'stop')
+
+    def save(self):
+        return self.call('race', 'save')
+
+    def clear(self):
+        return self.call('race', 'clear')
+
+
+class Fields(Rpc):
+    def register_race_attribute(self, field):
+        return self.call('fields', 'register_race_attribute',
+                         field=field_payload(field))
+
+    def register_pilot_attribute(self, field):
+        return self.call('fields', 'register_pilot_attribute',
+                         field=field_payload(field))
+
+    def register_option(self, field, panel):
+        return self.call('fields', 'register_option',
+                         field=field_payload(field), panel=panel)
+
+
+class Config(Rpc):
+    '''rhapi.config.get/set -- the server stores these as db options.'''
 
     def get(self, section, key, default=None):
         try:
-            return self._host.call(RPC_OBJECT, {
-                'object': 'db', 'method': 'get_option',
-                'args': {'section': section, 'key': key, 'default': default}})
+            value = self.call('db', 'get_option', section=section, key=key)
         except Exception:
             return default
+        return default if value is None else value
 
     def set(self, section, key, value):
-        return self._host.call(RPC_OBJECT, {
-            'object': 'db', 'method': 'set_option',
-            'args': {'section': section, 'key': key, 'value': value}})
+        return self.call('db', 'set_option', section=section, key=key, value=value)
 
 
-class RhapiUtils:
+class Utils:
     def format_time_to_str(self, ms, leading=2, ms_sep=False):
-        """Milliseconds -> 'M:SS.mmm', mirroring RHUtils.format_time_to_str."""
         try:
             total = float(ms) / 1000.0
         except (TypeError, ValueError):
@@ -140,27 +230,93 @@ class RhapiUtils:
         return '%.2f' % seconds
 
 
-class RhapiServerInfo:
-    """Minimum server_info shape plugins read (version gating)."""
-
+class ServerInfo(dict):
     def __init__(self):
-        self.rhapi_version = (1, 7)
-        self.version = '4.6.0-dev.3-rust'
-        self.api_version = 1
+        super().__init__(rhapi_version=(1, 7),
+                         version='4.6.0-dev.3-rust', api_version=1)
+
+
+class UI(Rpc):
+    def __init__(self, host):
+        super().__init__(host)
+        self._host = host
+
+    def socket_listen(self, event, handler):
+        '''Register a handler for a client-emitted socket event.'''
+        self._host.listeners.setdefault(event, []).append(handler)
+        return True
+
+    def socket_broadcast(self, event, payload):
+        return self.call('ui', 'socket_broadcast', event=event, payload=payload)
+
+    def broadcast_pilots(self):
+        return self.call('ui', 'broadcast', what='pilots')
+
+    def broadcast_heats(self):
+        return self.call('ui', 'broadcast', what='heats')
+
+    def broadcast_current_heat(self):
+        return self.call('ui', 'broadcast', what='current_heat')
+
+    def broadcast_ui(self, panel=None):
+        return self.call('ui', 'broadcast', what='ui', panel=panel)
+
+    def register_panel(self, domain, name, location, order=0):
+        return self.call('ui', 'register_panel', domain=domain, name=name,
+                         location=location, order=order)
+
+    def message_speak(self, message):
+        return self.call('ui', 'message_speak', message=message)
+
+    def message_notify(self, message):
+        return self.call('ui', 'message_notify', message=message)
+
+    def message_alert(self, message):
+        return self.call('ui', 'message_alert', message=message)
+
+    def clear_messages(self):
+        return self.call('ui', 'clear_messages')
+
+    def register_config_section(self, section, items=None):
+        return self.call('ui', 'register_config_section', section=section,
+                         items=items)
+
+
+class Events:
+    '''Event registration: plugins register hooks by event name; server
+    broadcasts are dispatched to them here.'''
+
+    def __init__(self, host):
+        self._host = host
+        self._handlers = {}
+
+    def on(self, event, handler):
+        self._handlers.setdefault(event, []).append(handler)
+        return handler
+
+    def dispatch(self, event, args):
+        for handler in self._handlers.get(event, []):
+            try:
+                handler(args)
+            except Exception:
+                print('[bridge] handler error for {}:'.format(event), file=sys.stderr)
+                import traceback
+                traceback.print_exc()
 
 
 class Rhapi:
-    """The object surface handed to plugins (RHAPI subset)."""
+    '''The object surface handed to plugins.'''
 
     def __init__(self, host):
-        self.db = RhapiNode(host, ['db'])
-        self.race = RhapiNode(host, ['race'])
-        self.pilot = RhapiNode(host, ['pilot'])
-        self.ui = RhapiUI(host)
-        self.events = RhapiEvents(host)
-        self.config = RhapiConfig(host)
-        self.utils = RhapiUtils()
-        self.server_info = RhapiServerInfo()
+        self.db = Db(host)
+        self.race = Race(host)
+        self.pilot = Db(host)
+        self.ui = UI(host)
+        self.events = Events(host)
+        self.fields = Fields(host)
+        self.config = Config(host)
+        self.utils = Utils()
+        self.server_info = ServerInfo()
         # rhapi.__ is RHAPI's translation helper; English is the identity.
         setattr(self, '__', lambda text: text)
         self._host = host
@@ -173,6 +329,7 @@ class Bridge:
         self._call_id = 0
         self._acks = {}
         self._cond = threading.Condition()
+        self.listeners = {}
 
         self.sio.on('rhapi_response', self._on_response)
         self.sio.on('rhapi_event', self._on_plugin_event)
@@ -184,9 +341,8 @@ class Bridge:
         self.sio.connect(server_url, wait_timeout=15)
         print('[bridge] connected to', server_url)
 
+    # ---- server -> bridge ----
     def _on_response(self, data):
-        '''Fallback response channel (server-initiated responses); the
-        ack callback is the primary path.'''
         with self._cond:
             call_id = (data or {}).get('id')
             if call_id is not None:
@@ -194,9 +350,6 @@ class Bridge:
                 self._cond.notify_all()
 
     def _on_plugin_event(self, data):
-        '''Internal-event channel: {event, args} — dispatched to plugin
-        hooks by event name (the socket.io counterpart of the server's
-        internal Events.trigger).'''
         data = data or {}
         self.rhapi.events.dispatch(data.get('event', ''), data.get('args') or {})
 
@@ -204,6 +357,7 @@ class Bridge:
         args_payload = args[0] if args else {}
         self.rhapi.events.dispatch(event, args_payload)
 
+    # ---- bridge -> server ----
     def call(self, event, payload):
         '''Synchronous RPC via socket.io ack.'''
         with self._call_lock:
@@ -216,20 +370,20 @@ class Bridge:
             while call_id not in self._acks:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RuntimeError('RHAPI RPC timeout: {}'.format(payload.get('method')))
+                    raise RuntimeError('RHAPI RPC timeout: {}'.format(
+                        payload.get('method')))
                 self._cond.wait(remaining)
             return self._acks.pop(call_id)
 
     def _ack_callback(self, call_id):
         def cb(*args):
             with self._cond:
-                # store the full server payload; __call__ unwraps 'result'
                 self._acks[call_id] = args[0] if args else {}
                 self._cond.notify_all()
         return cb
 
+    # ---- plugin loading ----
     def load_plugins(self, plugins_dir, only=None):
-        '''Loads plugins: <dir>/<name>/__init__.py with initialize(rhapi).'''
         if not os.path.isdir(plugins_dir):
             print('[bridge] plugins dir not found:', plugins_dir)
             return
@@ -252,21 +406,73 @@ class Bridge:
             try:
                 spec.loader.exec_module(module)
                 if hasattr(module, 'initialize'):
-                    module.initialize(self.rhapi)
+                    plugin = module.initialize(self.rhapi)
+                    if plugin is not None and hasattr(plugin, 'initialize'):
+                        plugin.initialize(None)
                 self._plugins.append(name)
                 print('[bridge] loaded plugin: {} ({})'.format(
                     name, manifest.get('name', name)))
             except Exception as ex:
                 print('[bridge] failed to load plugin {}: {}'.format(name, ex),
                       file=sys.stderr)
+                import traceback
+                traceback.print_exc()
 
-    def run_forever(self):
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print('[bridge] shutting down')
-            self.sio.disconnect()
+    # ---- test/control surface (localhost only) ----
+    def invoke(self, event, args=None):
+        '''Call the handlers a plugin registered for a socket event, as the
+        server would when a client emits it.'''
+        handlers = self.listeners.get(event, [])
+        if not handlers:
+            return {'error': 'no listener for ' + event}
+        results = []
+        for handler in handlers:
+            try:
+                results.append(handler(args))
+            except Exception as ex:
+                import traceback
+                traceback.print_exc()
+                results.append({'error': '%s: %s' % (type(ex).__name__, ex)})
+        return {'result': results[0] if len(results) == 1 else results}
+
+
+def serve_control(bridge, port):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get('content-length') or 0)
+            body = self.rfile.read(length) if length else b'{}'
+            try:
+                request = json.loads(body or b'{}')
+            except Exception:
+                request = {}
+            payload = bridge.invoke(request.get('event', ''),
+                                    request.get('args'))
+            raw = json.dumps(payload, default=str).encode()
+            self.send_response(200)
+            self.send_header('content-type', 'application/json')
+            self.send_header('content-length', str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            raw = json.dumps({
+                'plugins': bridge._plugins,
+                'listeners': sorted(bridge.listeners),
+            }).encode()
+            self.send_response(200)
+            self.send_header('content-type', 'application/json')
+            self.send_header('content-length', str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print('[bridge] control endpoint on http://127.0.0.1:%d' % port)
+    return server
 
 
 def main():
@@ -275,13 +481,28 @@ def main():
     parser.add_argument('--plugins-dir', default='./plugins')
     parser.add_argument('--plugins', default=None,
                         help='comma-separated plugin names (default: all)')
+    parser.add_argument('--control-port', type=int, default=0,
+                        help='localhost HTTP control surface for tests')
     args = parser.parse_args()
 
     bridge = Bridge(args.server)
     only = set(args.plugins.split(',')) if args.plugins else None
     bridge.load_plugins(args.plugins_dir, only)
+
+    # Plugins initialise on Evt.STARTUP, which the server fires once at boot;
+    # loading a plugin is not enough, its handlers register during startup.
+    bridge.rhapi.events.dispatch('startup', None)
+
+    if args.control_port:
+        serve_control(bridge, args.control_port)
+
     print('[bridge] running; {} plugin(s) loaded'.format(len(bridge._plugins)))
-    bridge.run_forever()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print('[bridge] shutting down')
+        bridge.sio.disconnect()
 
 
 if __name__ == '__main__':
