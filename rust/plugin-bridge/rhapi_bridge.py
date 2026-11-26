@@ -51,7 +51,8 @@ class RhapiNode:
     def __call__(self, *args, **kwargs):
         method = self._path[-1] if self._path else ''
         obj = '.'.join(self._path[:-1])
-        payload = {'object': obj, 'method': method, 'args': kwargs or {}}
+        payload = {'object': obj, 'method': method, 'args': kwargs or {},
+                   'pos': list(args)}
         result = self._host.call(RPC_OBJECT, payload)
         # result is the server's full ack payload: {result: ...} or {error}
         if isinstance(result, dict) and 'error' in result:
@@ -105,14 +106,63 @@ class RhapiUI:
                                             'args': {'section': section, 'items': items}})
 
 
+class RhapiConfig:
+    """rhapi.config.get/set -- the server stores these as db options."""
+
+    def __init__(self, host):
+        self._host = host
+
+    def get(self, section, key, default=None):
+        try:
+            return self._host.call(RPC_OBJECT, {
+                'object': 'db', 'method': 'get_option',
+                'args': {'section': section, 'key': key, 'default': default}})
+        except Exception:
+            return default
+
+    def set(self, section, key, value):
+        return self._host.call(RPC_OBJECT, {
+            'object': 'db', 'method': 'set_option',
+            'args': {'section': section, 'key': key, 'value': value}})
+
+
+class RhapiUtils:
+    def format_time_to_str(self, ms, leading=2, ms_sep=False):
+        """Milliseconds -> 'M:SS.mmm', mirroring RHUtils.format_time_to_str."""
+        try:
+            total = float(ms) / 1000.0
+        except (TypeError, ValueError):
+            return ''
+        minutes = int(total // 60)
+        seconds = total - minutes * 60
+        if minutes:
+            return '%d:%05.2f' % (minutes, seconds)
+        return '%.2f' % seconds
+
+
+class RhapiServerInfo:
+    """Minimum server_info shape plugins read (version gating)."""
+
+    def __init__(self):
+        self.rhapi_version = (1, 7)
+        self.version = '4.6.0-dev.3-rust'
+        self.api_version = 1
+
+
 class Rhapi:
-    '''The object surface handed to plugins (RHAPI subset).'''
+    """The object surface handed to plugins (RHAPI subset)."""
+
     def __init__(self, host):
         self.db = RhapiNode(host, ['db'])
         self.race = RhapiNode(host, ['race'])
         self.pilot = RhapiNode(host, ['pilot'])
         self.ui = RhapiUI(host)
         self.events = RhapiEvents(host)
+        self.config = RhapiConfig(host)
+        self.utils = RhapiUtils()
+        self.server_info = RhapiServerInfo()
+        # rhapi.__ is RHAPI's translation helper; English is the identity.
+        setattr(self, '__', lambda text: text)
         self._host = host
 
 
