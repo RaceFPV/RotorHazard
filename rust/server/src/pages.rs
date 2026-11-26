@@ -223,6 +223,7 @@ fn read_config_item(data_dir: &str, section: &str, key: &str) -> serde_json::Val
         match (s, k) {
             ("GENERAL", "HTTP_PORT") => json!(5000),
             ("GENERAL", "DEBUG") => json!(false),
+            ("GENERAL", "CORS_ALLOWED_HOSTS") => json!(""),
             ("GENERAL", "SECONDARY_TIMEOUT") => json!(300),
             ("GENERAL", "SHUTDOWN_BUTTON_GPIOPIN") => json!(18),
             ("GENERAL", "SHUTDOWN_BUTTON_DELAYMS") => json!(2500),
