@@ -25,6 +25,13 @@ import time
 
 import socketio
 
+# Plugins import RotorHazard server internals (RHRace.RaceStatus,
+# eventmanager.Evt, RHUI.UIField, RHUtils.HEAT_ID_NONE, Database.LapSource).
+# A machine running the Rust server has no Python tree, so rh_compat ships
+# sliced copies of exactly those symbols (see rust/tools/gen_rh_compat.py).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'rh_compat'))
+
 RPC_OBJECT = 'rhapi_call'
 RPC_TIMEOUT = 10.0
 
