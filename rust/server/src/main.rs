@@ -501,6 +501,7 @@ async fn main() {
         .route("/stream/heat/{heat_id}", axum::routing::get(render_page))
         .route("/static/{*path}", axum::routing::get(assets::static_handler))
         .layer(socketio_layer)
+        .layer(axum::middleware::map_response(add_security_headers))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", http_port_cfg))
@@ -508,6 +509,20 @@ async fn main() {
         .expect("failed to bind port");
     tracing::info!("Running http server at port {}", http_port_cfg);
     axum::serve(listener, app).await.expect("server error");
+}
+
+/// Adds response headers that harden the pages without changing how they are
+/// used (the add_security_headers after_request hook in server.py).
+async fn add_security_headers(mut response: axum::response::Response) -> axum::response::Response {
+    use axum::http::{HeaderName, HeaderValue};
+    let headers = response.headers_mut();
+    headers
+        .entry(HeaderName::from_static("x-content-type-options"))
+        .or_insert(HeaderValue::from_static("nosniff"));
+    headers
+        .entry(HeaderName::from_static("referrer-policy"))
+        .or_insert(HeaderValue::from_static("same-origin"));
+    response
 }
 
 /// Routes that require admin auth when credentials are configured
