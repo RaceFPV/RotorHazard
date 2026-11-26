@@ -64,7 +64,7 @@ dump_port() {
 record_gaps() {
     [ -s "${SYNC_GAPS_FILE:-}" ] || return 0
     python3 - "$SYNC_GAPS_FILE" <<'PYEOF' || true
-import datetime, json, sys
+import datetime, json, os, sys
 
 gaps = json.load(open(sys.argv[1]))
 if not gaps:
@@ -91,9 +91,12 @@ rows = []
 stamp = datetime.date.today().isoformat()
 for gap in gaps:
     kind = "divergence" if gap.get("diverges") else "absent"
+    commit = (gap.get("commit") or "").strip()
+    if commit in ("", "diff", "?", "n/a"):
+        commit = "up to %s" % os.environ.get("UPSTREAM_SHA", "?")[:7]
     rows.append("| %s | `%s` | %s | %s | %s | open |" % (
         stamp,
-        gap.get("commit") or "?",
+        commit,
         (gap.get("change") or "").replace("|", "/"),
         (gap.get("reason") or "").replace("|", "/"),
         kind,
