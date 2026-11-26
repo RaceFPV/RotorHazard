@@ -321,6 +321,14 @@ Without the bridge: no plugins, no problem. The server is pure Rust.
 
 ## Known gaps / TODO
 
+- [ ] Plugin settings panels: `fields.register_*` and `ui.register_panel` are
+      accepted as no-ops, so a plugin's configuration panel does not render in
+      the Rust UI — its behaviour (race control, lean mode, marshal) is fully
+      functional without it
+- [ ] Plugin host scaling: `Bridge.call` is synchronous with a 10s timeout, so a
+      slow plugin handler delays other plugin events; fine for one plugin,
+      revisit before hosting several
+
 - [ ] Remaining protocol test files (lifecycle 15, phase2 5, phase3 11,
       auth 3, export 2, results 3, ui 2, new_features 5 = 46 tests) —
       optional while the Python suite gates CI; each is a mechanical
