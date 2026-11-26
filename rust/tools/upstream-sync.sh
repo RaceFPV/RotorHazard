@@ -419,6 +419,24 @@ wins because your test has to pass against the server as it exists. For
 example the JSON API returns 201 with a {"status": ...} wrapper for
 /api/status -- a test asserting 200 will fail and the whole port is rejected.
 If you are unsure of a value, assert on shape (key present, type) instead.
+
+COMPLETENESS RULES. A partial port that looks complete is worse than a
+rejection, because a human has no way to see the gap:
+- Account for EVERY upstream hunk, not just the ones with obvious Rust
+  counterparts. A change is either ported, or provably has no Rust surface
+  (the feature does not exist in Rust at all). Never leave it unmentioned.
+- Never port half of a change. If Python changes a default AND the code that
+  consumes it, both must land: flipping CORS_ALLOWED_HOSTS to "" while nothing
+  in Rust reads it is an inert edit, not a port.
+- String literals ARE behaviour: header names, error messages, config keys and
+  event names. When the diff adds or renames one, search the Rust tree for the
+  old spelling and update every occurrence; if the search finds nothing, the
+  feature is probably missing (say so in a test comment) rather than done.
+- Before changing a default, list its uses in the CURRENT RUST SOURCE and
+  update each consumer in the same response.
+- Upstream tests are the acceptance criteria: when you add behaviour, add a
+  Rust test asserting the same OBSERVABLE result (header present, request
+  rejected, value echoed), not the same internal call.
 PROMPT_END2
 
 log "calling LLM: ${LLM_MODEL:-deepseek/deepseek-v4.1-flash-1017} via ${LLM_BASE_URL:-https://openrouter.ai/api/v1/chat/completions}"
