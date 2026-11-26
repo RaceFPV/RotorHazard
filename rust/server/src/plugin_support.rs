@@ -208,7 +208,10 @@ pub fn autostart(data_dir: &str, http_port: u16) {
 
     let plugins_dir = Path::new(data_dir).join("plugins");
     let plugins = plugin_dirs(&plugins_dir);
-    set_status(|s| s.installed = plugins.len());
+    set_status(|s| {
+        s.installed = plugins.len();
+        s.plugins_dir = Some(plugins_dir.display().to_string());
+    });
     if plugins.is_empty() {
         tracing::info!(
             "plugin bridge: no plugins in {} -- not starting",
@@ -252,6 +255,7 @@ pub fn autostart(data_dir: &str, http_port: u16) {
     set_status(|s| {
         s.started = true;
         s.problem = None;
+        s.running = false; // set true when the child actually spawns
     });
     tracing::info!(
         "plugin bridge: starting {} plugin(s) with {} ({})",
@@ -292,7 +296,19 @@ pub fn autostart(data_dir: &str, http_port: u16) {
                 }
             }
             match command.spawn() {
-                Ok(mut child) => match child.wait() {
+                Ok(mut child) => {
+                    set_status(|s| s.running = true);
+                    let outcome = child.wait();
+                    set_status(|s| {
+                        s.running = false;
+                        if let Ok(status) = &outcome {
+                            s.problem = Some(format!(
+                                "the plugin bridge exited ({}) -- see plugin-bridge.log",
+                                status
+                            ));
+                        }
+                    });
+                    match outcome {
                     Ok(status) => tracing::warn!(
                         "plugin bridge exited ({}); restart {}/5",
                         status,
@@ -301,7 +317,8 @@ pub fn autostart(data_dir: &str, http_port: u16) {
                     Err(err) => {
                         tracing::warn!("plugin bridge wait failed: {}; restart {}/5", err, attempt)
                     }
-                },
+                    }
+                }
                 Err(err) => {
                     tracing::error!(
                         "plugin bridge could not start {}: {}; giving up",
@@ -329,6 +346,10 @@ pub struct BridgeStatus {
     pub has_socketio: bool,
     /// Whether this run started the bridge.
     pub started: bool,
+    /// Whether the bridge child process is alive right now.
+    pub running: bool,
+    /// The folder plugins are loaded from, so the UI can show where they live.
+    pub plugins_dir: Option<String>,
     /// How many plugin directories are installed.
     pub installed: usize,
     /// Free-form explanation when plugins are installed but cannot run.
@@ -374,7 +395,16 @@ fn probe_python(name: &str) -> Option<(String, bool)> {
 }
 
 /// Installed plugins, read from each manifest.json (the UI shows these).
-pub fn installed_plugins(data_dir: &str) -> Vec<serde_json::Value> {
+///
+/// Field names follow what the settings page expects: `id` is the directory
+/// name (the UI's delete/install handles key off it), plus `loaded`/`load_issue`
+/// which are filled in from the bridge's own report.
+pub fn installed_plugins(
+    data_dir: &str,
+    load_status: &std::collections::HashMap<String, Option<String>>,
+    bridge_running: bool,
+    bridge_problem: Option<&str>,
+) -> Vec<serde_json::Value> {
     let dir = Path::new(data_dir).join("plugins");
     let mut out: Vec<serde_json::Value> = Vec::new();
     for path in plugin_dirs(&dir) {
@@ -387,16 +417,45 @@ pub fn installed_plugins(data_dir: &str) -> Vec<serde_json::Value> {
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
             .unwrap_or_else(|| serde_json::json!({}));
         let field = |key: &str| manifest.get(key).cloned().unwrap_or(serde_json::Value::Null);
+
+        // The bridge is the only thing that knows whether the import worked.
+        let (loaded, load_issue) = match load_status.get(&domain) {
+            Some(None) => (true, serde_json::Value::Null),
+            Some(Some(err)) => (false, serde_json::Value::String(err.clone())),
+            None => (
+                false,
+                serde_json::Value::String(
+                    bridge_problem
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| {
+                            if bridge_running {
+                                "the plugin bridge has not reported this plugin yet".to_string()
+                            } else {
+                                "the plugin bridge is not running".to_string()
+                            }
+                        }),
+                ),
+            ),
+        };
+
         out.push(serde_json::json!({
+            "id": domain,
             "domain": domain,
             "name": field("name"),
             "author": field("author"),
+            "author_uri": field("author_uri"),
             "description": field("description"),
-            "version": field("version"),
-            "license": field("license"),
-            "required_rhapi_version": field("required_rhapi_version"),
+            "documentation_uri": field("documentation_uri"),
             "info_uri": field("info_uri"),
+            "license": field("license"),
+            "license_uri": field("license_uri"),
+            "version": field("version"),
+            "required_rhapi_version": field("required_rhapi_version"),
+            "text_domain": field("text_domain"),
+            "update_status": serde_json::Value::Null,
             "is_bundled": false,
+            "loaded": loaded,
+            "load_issue": load_issue,
         }));
     }
     out.sort_by(|a, b| {
@@ -413,9 +472,17 @@ pub fn installed_plugins(data_dir: &str) -> Vec<serde_json::Value> {
 /// Additive to the Python shape (`{"plugins": [...]}`): a `bridge` object tells
 /// the plugins page why nothing is running when Python is missing, which is the
 /// difference between "plugins are broken" and "install Python".
-pub fn plugin_list_payload(data_dir: &str) -> serde_json::Value {
-    let plugins = installed_plugins(data_dir);
+pub fn plugin_list_payload(
+    data_dir: &str,
+    load_status: &std::collections::HashMap<String, Option<String>>,
+) -> serde_json::Value {
     let status = status();
+    let plugins = installed_plugins(
+        data_dir,
+        load_status,
+        status.running,
+        status.problem.as_deref(),
+    );
     serde_json::json!({
         "plugins": plugins,
         "bridge": {
@@ -423,6 +490,8 @@ pub fn plugin_list_payload(data_dir: &str) -> serde_json::Value {
             "python_version": status.python_version,
             "has_socketio": status.has_socketio,
             "started": status.started,
+            "running": status.running,
+            "plugins_dir": status.plugins_dir,
             "installed": plugins.len(),
             "problem": status.problem,
         }
@@ -586,7 +655,9 @@ mod tests {
         // A directory without __init__.py is not a plugin.
         fs::create_dir_all(plugins.join("not_a_plugin")).unwrap();
 
-        let listed = installed_plugins(dir.to_str().unwrap());
+        // Nothing reported by the bridge yet: every plugin should say why.
+        let status = std::collections::HashMap::new();
+        let listed = installed_plugins(dir.to_str().unwrap(), &status, false, Some("no bridge"));
         let domains: Vec<&str> = listed
             .iter()
             .map(|p| p["domain"].as_str().unwrap_or(""))
@@ -598,6 +669,20 @@ mod tests {
         // Missing/broken manifests must not invent a plugin name.
         assert!(listed[0]["name"].is_null());
         assert!(listed[2]["name"].is_null());
+        // Unreported plugins are not "loaded", and carry a reason the UI shows.
+        assert_eq!(listed[0]["loaded"], false);
+        assert_eq!(listed[0]["load_issue"], "no bridge");
+        assert_eq!(listed[0]["id"], "alpha_plugin");
+
+        // When the bridge reports success the plugin is marked loaded.
+        let mut reported = std::collections::HashMap::new();
+        reported.insert("beta_plugin".to_string(), None);
+        reported.insert("gamma_plugin".to_string(), Some("ImportError: nope".to_string()));
+        let listed = installed_plugins(dir.to_str().unwrap(), &reported, true, None);
+        assert_eq!(listed[1]["loaded"], true);
+        assert!(listed[1]["load_issue"].is_null());
+        assert_eq!(listed[2]["loaded"], false);
+        assert_eq!(listed[2]["load_issue"], "ImportError: nope");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -680,6 +765,26 @@ mod tests {
         }
         walk(Path::new(root), Path::new(root), &mut out);
         out
+    }
+
+
+    /// A fresh install must not ship plugins: the binary only ever writes its
+    /// own bridge directory.
+    #[test]
+    fn a_fresh_start_creates_no_plugins() {
+        let dir = temp_dir("no-plugins");
+        materialise(dir.to_str().unwrap()).unwrap();
+        assert!(
+            !dir.join("plugins").exists(),
+            "materialise created a plugins directory"
+        );
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries, vec!["plugin-bridge".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

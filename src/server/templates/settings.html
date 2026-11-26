@@ -122,7 +122,7 @@
 		populate_audio_settings();
 
 		if ('{{ getConfig('LED', 'ledBrightness') }}' != 'False') {
-			$('#set_led_brightness').val(brightness_logsl.position( {{ getConfig('LED', 'ledBrightness') }} ));
+			$('#set_led_brightness').val(brightness_logsl.position( {{ getConfig('LED', 'ledBrightness')|tojson }} ));
 			rhui.updateRangeValue($('#set_led_brightness'));
 		}
 

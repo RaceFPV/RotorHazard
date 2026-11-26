@@ -41,6 +41,57 @@ pub fn emit_plugin_event(state: &SharedState, event: &str, args: &Value) {
     );
 }
 
+
+/// The `plugin_list` payload the settings page expects.
+fn plugin_list_payload(state: &SharedState) -> serde_json::Value {
+    let status = state.plugin_load_status.lock().unwrap().clone();
+    crate::plugin_support::plugin_list_payload(&state.data_dir, &status)
+}
+
+/// Remove an installed plugin directory. Only ever touches `<data>/plugins/<one
+/// path component>`, and never a directory without an `__init__.py` (that is not
+/// a plugin, so deleting it would destroy something we do not understand).
+fn delete_plugin(state: &SharedState, domain: &str) -> Result<(), String> {
+    if !valid_plugin_domain(domain) {
+        return Err(format!("refusing to delete plugin {:?}", domain));
+    }
+    let dir = std::path::Path::new(&state.data_dir).join("plugins").join(domain);
+    if !dir.is_dir() || !dir.join("__init__.py").is_file() {
+        return Err(format!("no plugin named {:?}", domain));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("could not delete {}: {}", domain, e))?;
+    tracing::info!("plugin bridge: deleted plugin {}", domain);
+    Ok(())
+}
+
+
+/// A plugin domain is a single directory name. Anything else is either a bug in
+/// the caller or an attempt to escape the plugins directory.
+fn valid_plugin_domain(domain: &str) -> bool {
+    !domain.is_empty()
+        && domain != "."
+        && domain != ".."
+        && !domain.contains('/')
+        && !domain.contains('\\')
+        && !domain.contains('\0')
+        && !domain.contains("..")
+}
+
+#[cfg(test)]
+mod plugin_delete_tests {
+    use super::valid_plugin_domain;
+
+    #[test]
+    fn plugin_domains_are_a_single_directory_name() {
+        assert!(valid_plugin_domain("rh_connector_trackside"));
+        assert!(valid_plugin_domain("my.plugin-v2"));
+
+        for bad in ["", ".", "..", "../config.json", "a/b", "a\\b", "..\\..", "x\0y"] {
+            assert!(!valid_plugin_domain(bad), "{:?} should be refused", bad);
+        }
+    }
+}
+
 pub fn register_handlers(io: SocketIo, state: SharedState) {
     io.ns("/", move |socket: SocketRef| {
         tracing::info!("socket connected: {}", socket.id);
@@ -296,8 +347,17 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
             "upd_cfg_files_list" => {
                 let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
             }
+            "plugin_repo" => {
+                // The community directory is a remote index the Python server
+                // fetches at startup. Until that exists here, answer with an
+                // empty directory instead of leaving the page on "Loading...".
+                let _ = socket.emit("plugin_repo", &json!({
+                    "remote_data": {},
+                    "remote_categories": {},
+                }));
+            }
             "plugin_list" => {
-                let payload = crate::plugin_support::plugin_list_payload(&state.data_dir);
+                let payload = plugin_list_payload(&state);
                 let _ = socket.emit("plugin_list", &payload);
             }
             "action_setup" => {
@@ -454,6 +514,47 @@ fn read_config_item(state: &SharedState, section: &str, key: &str) -> Value {
 
 fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
     // ---- pilots ----
+    socket.on(
+        "plugin_delete",
+        move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| async move {
+            let state = s.0.clone();
+            let domain = data
+                .0
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .or_else(|| data.0.get("plugin").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            match delete_plugin(&state, &domain) {
+                Ok(()) => {
+                    let payload = plugin_list_payload(&state);
+                    let _ = sock.emit("plugin_list", &payload);
+                }
+                Err(err) => {
+                    let _ = sock.emit(
+                        "priority_message",
+                        &json!({"action": "message", "message": err}),
+                    );
+                }
+            }
+        },
+    );
+
+    socket.on(
+        "plugin_install",
+        move |sock: SocketRef, _data: Data<Value>, _s: State<SharedState>| async move {
+            // Installing from a zip needs the Python installer's packaging rules;
+            // say so instead of failing silently.
+            let _ = sock.emit(
+                "priority_message",
+                &json!({
+                    "action": "message",
+                    "message": "Installing plugins from a file is not supported by this server yet: copy the plugin folder into plugins/ and restart."
+                }),
+            );
+        },
+    );
+
     socket.on("add_pilot", move |sock: SocketRef, s: State<SharedState>| async move {
         let state = s.0.clone();
             if !socket_authed(&sock, &state) { return; }

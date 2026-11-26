@@ -1948,6 +1948,27 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             Ok(json!({"id": new_id}))
         }
 
+        // ---- bridge bookkeeping ----
+        ("plugin", "report_status") => {
+            let entries = args
+                .get("plugins")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut map = state.plugin_load_status.lock().unwrap();
+            for entry in entries {
+                let Some(domain) = entry.get("domain").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let error = entry
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                map.insert(domain.to_string(), error);
+            }
+            Ok(json!(true))
+        }
+
         _ => Err(format!("Unknown RHAPI method: {}.{}", object, method)),
     }
 }

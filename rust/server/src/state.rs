@@ -375,6 +375,8 @@ pub struct AppState {
     /// handler registers one forwarding handler per name, so a client emit of
     /// that event reaches the plugin and its return value becomes the ack.
     pub plugin_listeners: Mutex<Vec<String>>,
+    /// domain -> load error (None = loaded). Reported by the bridge.
+    pub plugin_load_status: Mutex<std::collections::HashMap<String, Option<String>>>,
     /// Invocations awaiting the bridge's reply, keyed by call id.
     pub plugin_pending:
         Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>,
@@ -401,4 +403,4 @@ impl AppState {
 pub type SharedState = Arc<AppState>;
 
 /// The release version string reported to clients and cluster peers.
-pub const RELEASE_VERSION: &str = "4.6.0-dev.4-rust";
+pub const RELEASE_VERSION: &str = "4.6.0-dev.5-rust";

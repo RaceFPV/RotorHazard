@@ -306,6 +306,28 @@ the install command, and `plugin_list` (which used to emit an empty array) now
 lists installed plugins from their manifests plus a `bridge` object with the
 detected interpreter, its version and whether the bridge is running.
 
+**Fresh installs ship no plugins.** The binary only ever writes `plugin-bridge/`
+(there is a test asserting that a fresh data dir contains exactly that); plugins
+appear only when the user's own `plugins/` folder has them. If a plugin looks
+"already installed", check the data dir named on the first log line — an earlier
+RotorHazard install is being reused.
+
+**The settings page plugin manager** (`settings.html`, section "Plugins") is fed
+by the same `plugin_list` event as `/plugins`, and it expects Python's shape:
+`id` (the directory name), plus `loaded` and `load_issue`. The bridge reports the
+real per-plugin result through `plugin.report_status` after loading, so a plugin
+that raises shows "Not loaded: RuntimeError: boom" rather than "Not loaded:
+undefined". `plugin_delete` removes `<data>/plugins/<domain>` (single path
+component only, and only a directory with `__init__.py`); `plugin_install`
+answers with a message that file installs are not supported yet.
+
+One trap worth remembering: templates render missing `getConfig` keys as the
+literal string `None`. `settings.html` calls `brightness_logsl.position({{ ... }})`,
+so a missing `LED.ledBrightness` default threw a ReferenceError that killed the
+whole `$(document).ready` block - every handler on the page, including the plugin
+list, silently never registered. `read_config_item` now carries Config.py's
+UI/LED/PLUGINS defaults, and that one call renders through `|tojson`.
+
 **Tests that protect this**: `rust/plugin-bridge/test_plugin_fixture.sh` runs an
 in-repo fixture plugin (`tests/fixture_plugin`) that calls 42 representative
 RHAPI members, registers a panel/option/attributes, stages a race and listens for

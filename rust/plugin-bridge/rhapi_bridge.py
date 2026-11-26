@@ -1456,6 +1456,7 @@ class Bridge:
         if not os.path.isdir(plugins_dir):
             print('[bridge] plugins dir not found:', plugins_dir)
             return
+        report = []
         for name in sorted(os.listdir(plugins_dir)):
             if only and name not in only:
                 continue
@@ -1479,13 +1480,24 @@ class Bridge:
                     if plugin is not None and hasattr(plugin, 'initialize'):
                         plugin.initialize(None)
                 self._plugins.append(name)
+                report.append({'domain': name, 'error': None})
                 print('[bridge] loaded plugin: {} ({})'.format(
                     name, manifest.get('name', name)))
             except Exception as ex:
+                report.append({'domain': name, 'error': '{}: {}'.format(
+                    type(ex).__name__, ex)})
                 print('[bridge] failed to load plugin {}: {}'.format(name, ex),
                       file=sys.stderr)
                 import traceback
                 traceback.print_exc()
+
+        # Tell the server what actually loaded, so the settings page can show
+        # "Loaded" or the reason instead of guessing from "the bridge is up".
+        try:
+            self.rhapi.db.call('plugin', 'report_status', plugins=report)
+        except Exception as ex:  # noqa: BLE001 - never fail a load over reporting
+            print('[bridge] could not report plugin status: {}'.format(ex),
+                  file=sys.stderr)
 
     # ---- test/control surface (localhost only) ----
     def invoke(self, event, args=None):

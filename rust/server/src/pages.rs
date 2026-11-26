@@ -234,6 +234,30 @@ fn read_config_item(data_dir: &str, section: &str, key: &str) -> serde_json::Val
             ("TIMING", "startThreshLowerDuration") => json!("0"),
             ("TIMING", "calibrationMode") => json!("1"),
             ("TIMING", "MinLapBehavior") => json!("0"),
+            // Config.py UI defaults: without these the templates render the
+            // literal string "None" into CSS variables and, in one case, into a
+            // JavaScript call - which threw and killed the whole settings page.
+            ("UI", "timerName") => json!("RotorHazard"),
+            ("UI", "timerLogo") => json!(""),
+            ("UI", "hue_0") => json!("212"),
+            ("UI", "sat_0") => json!("55"),
+            ("UI", "lum_0_low") => json!("29.2"),
+            ("UI", "lum_0_high") => json!("46.7"),
+            ("UI", "contrast_0_low") => json!("#ffffff"),
+            ("UI", "contrast_0_high") => json!("#ffffff"),
+            ("UI", "hue_1") => json!("25"),
+            ("UI", "sat_1") => json!("85.3"),
+            ("UI", "lum_1_low") => json!("37.6"),
+            ("UI", "lum_1_high") => json!("54.5"),
+            ("UI", "contrast_1_low") => json!("#ffffff"),
+            ("UI", "contrast_1_high") => json!("#000000"),
+            ("UI", "currentLanguage") => json!(""),
+            ("UI", "timeFormat") => json!("{m}:{s}.{d}"),
+            ("UI", "timeFormatPhonetic") => json!("{m} {s}.{d}"),
+            ("UI", "pilotSort") => json!("name"),
+            ("LED", "ledBrightness") => json!(32),
+            ("PLUGINS", "UPDATE_BEHAVIOR") => json!("check"),
+            ("PLUGINS", "SHOW_RELEASES") => json!(false),
             _ => serde_json::Value::Null,
         }
     };

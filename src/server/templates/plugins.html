@@ -116,8 +116,10 @@
 					if (p.author) {
 						item.append($('<span>').addClass('muted').text(' — ' + p.author));
 					}
-					if (bridge.started) {
+					if (bridge.running) {
 						item.append($('<span>').addClass('muted').text(' (' + __('running') + ')'));
+					} else if (bridge.started) {
+						item.append($('<span>').addClass('muted').text(' (' + __('not running') + ')'));
 					} else if (bridge.python && bridge.has_socketio) {
 						item.append($('<span>').addClass('muted').text(' (' + __('not started') + ')'));
 					}
@@ -126,6 +128,13 @@
 				$('#plugin-installed').show();
 			} else {
 				$('#plugin-installed').hide();
+			}
+
+			var dirEl = $('#plugin-installed-dir');
+			if (bridge.plugins_dir) {
+				dirEl.text(__('Loaded from') + ': ' + bridge.plugins_dir).show();
+			} else {
+				dirEl.hide();
 			}
 		}
 
@@ -410,6 +419,7 @@
 	<div class="panel-content">
 		<h2>{{ __('Installed Plugins') }}</h2>
 		<ul id="plugin-installed-list" class="plugin-list"></ul>
+		<p id="plugin-installed-dir" class="muted" style="display: none;"></p>
 	</div>
 </div>
 
