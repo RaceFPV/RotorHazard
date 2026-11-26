@@ -46,6 +46,9 @@ fi
 log() { echo "$LOG_PREFIX $*"; }
 die() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
+# Where the validator writes the gaps the port declared, if any.
+export SYNC_GAPS_FILE="${SYNC_GAPS_FILE:-/tmp/sync-gaps.json}"
+
 # Keep a copy of the attempted port before it is discarded, so a failed sync
 # can be inspected instead of guessed at.
 dump_port() {
@@ -56,6 +59,51 @@ dump_port() {
     local size
     size=$(wc -c < "$dir/port.diff" 2>/dev/null || echo 0)
     log "attempted port saved to $dir/port.diff ($size bytes)"
+}
+
+record_gaps() {
+    [ -s "${SYNC_GAPS_FILE:-}" ] || return 0
+    python3 - "$SYNC_GAPS_FILE" <<'PYEOF' || true
+import datetime, json, sys
+
+gaps = json.load(open(sys.argv[1]))
+if not gaps:
+    sys.exit(0)
+
+LEDGER = "rust/UPSTREAM-PORT-GAPS.md"
+HEADER = """# Upstream port gaps
+
+Upstream changes this pipeline deliberately did not port. One row per deferral,
+appended by rust/tools/upstream-sync.sh. `divergence` means the omission is a
+real behavioural difference (Rust still does the unhardened thing); `absent`
+means the feature does not exist in Rust, so nothing diverged. Bulk review:
+grep for `open` rows, work them in batches, flip the status here in the same PR.
+
+| date | upstream | change | why not ported | kind | status |
+|---|---|---|---|---|---|
+"""
+try:
+    existing = open(LEDGER, encoding="utf-8").read()
+except FileNotFoundError:
+    existing = HEADER
+
+rows = []
+stamp = datetime.date.today().isoformat()
+for gap in gaps:
+    kind = "divergence" if gap.get("diverges") else "absent"
+    rows.append("| %s | `%s` | %s | %s | %s | open |" % (
+        stamp,
+        gap.get("commit") or "?",
+        (gap.get("change") or "").replace("|", "/"),
+        (gap.get("reason") or "").replace("|", "/"),
+        kind,
+    ))
+
+if not existing.endswith("\n"):
+    existing += "\n"
+open(LEDGER, "w", encoding="utf-8").write(existing + "\n".join(rows) + "\n")
+print("ledger: %d gap row(s) recorded" % len(rows))
+PYEOF
 }
 
 # Publish a merge-only outcome: no ported Rust, so no review is needed and it
@@ -439,6 +487,15 @@ rejection, because a human has no way to see the gap:
 - Upstream tests are the acceptance criteria: when you add behaviour, add a
   Rust test asserting the same OBSERVABLE result (header present, request
   rejected, value echoed), not the same internal call.
+- Record every change you did NOT port in a single extra array element:
+  {"gaps": [{"commit": "<short sha>", "change": "<what upstream did>",
+  "reason": "<why Rust does not need it, or does not have it>",
+  "diverges": true|false}]}
+  Set "diverges": true when Rust still behaves the OLD way and that is a real
+  difference someone must fix later (security hardening that Rust lacks);
+  false when the feature simply does not exist in Rust. This element is
+  recorded in rust/UPSTREAM-PORT-GAPS.md, so a wrong `diverges` value hides
+  work from a human. Omit the element only if every hunk was ported.
 PROMPT_END2
 
 log "calling LLM: ${LLM_MODEL:-deepseek/deepseek-v4.1-flash-1017} via ${LLM_BASE_URL:-https://openrouter.ai/api/v1/chat/completions}"
@@ -470,6 +527,7 @@ unset LLM_API_KEY 2>/dev/null || true
 case "$PORT_RESULT" in
     applied_*)
         log "LLM port OK: $PORT_RESULT"
+        record_gaps
         ;;
     no_edits|parse_error|script_error)
         if [ "${ACCEPT_NO_PORT:-0}" = "1" ]; then

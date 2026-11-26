@@ -267,6 +267,34 @@ def main():
         print("no_edits")
         return
 
+    # A response may carry {"gaps": [...]} alongside its edits: the upstream
+    # changes that were deliberately NOT ported. They are recorded rather than
+    # rejected, so the deferral is visible in the repo instead of living in a
+    # run log that expires in 90 days.
+    gaps = []
+    real_edits = []
+    for edit in edits:
+        if isinstance(edit, dict) and "gaps" in edit and "path" not in edit:
+            for gap in edit.get("gaps") or []:
+                if isinstance(gap, dict):
+                    gaps.append({
+                        "commit": str(gap.get("commit") or "")[:12],
+                        "change": str(gap.get("change") or "").strip(),
+                        "reason": str(gap.get("reason") or "").strip(),
+                        "diverges": bool(gap.get("diverges")),
+                    })
+        else:
+            real_edits.append(edit)
+    if gaps:
+        gaps_file = os.environ.get("SYNC_GAPS_FILE")
+        if gaps_file:
+            with open(gaps_file, "w", encoding="utf-8") as handle:
+                json.dump(gaps, handle, indent=1)
+    if not real_edits:
+        print("no_edits")
+        return
+    edits = real_edits
+
     total_size = 0
     for edit in edits:
         if isinstance(edit, dict):
