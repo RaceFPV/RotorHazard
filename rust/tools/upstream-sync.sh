@@ -391,7 +391,9 @@ element for it will be rejected.
 Rules for "edits":
 - The CURRENT RUST SOURCE above is the real content of every file. Copy "old"
   from it character for character; do not reconstruct it from memory.
-- "old" must match the file EXACTLY -- indentation, blank lines included -- and
+- "old" must be copied verbatim from the CURRENT RUST SOURCE -- indentation,
+  blank lines and trailing spaces included. Do not retype it from memory;
+  quote the block as it appears. It must
   must occur exactly once in the file. Include at least three lines of
   surrounding context so it cannot match twice.
 - Anchors are applied in order; a later anchor sees the result of the earlier

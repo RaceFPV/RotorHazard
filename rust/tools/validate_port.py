@@ -151,6 +151,40 @@ def response_hit_cap(response):
     return str(response.get("stop_reason") or "").lower() in CAP_REASONS
 
 
+def _replace_linewise(text, old, new, rstrip_only):
+    """Replace the unique line window matching `old`, tolerating whitespace.
+
+    Returns (new_text, matched_original) or None. Matching on rstripped lines
+    first, then fully stripped lines, keeps indentation drift from failing a
+    port while the uniqueness requirement keeps it safe.
+    """
+    text_lines = text.splitlines()
+    old_lines = old.splitlines()
+    if not old_lines or len(old_lines) > len(text_lines):
+        return None
+
+    def norm(line):
+        return line.rstrip() if rstrip_only else line.strip()
+
+    wanted = [norm(line) for line in old_lines]
+    hits = []
+    span = len(wanted)
+    for start in range(len(text_lines) - span + 1):
+        window = [norm(line) for line in text_lines[start:start + span]]
+        if window == wanted:
+            hits.append(start)
+            if len(hits) > 1:
+                return None
+    if not hits:
+        return None
+
+    start = hits[0]
+    matched = "\n".join(text_lines[start:start + span])
+    new_lines = new.splitlines()
+    result = text_lines[:start] + new_lines + text_lines[start + span:]
+    return "\n".join(result), matched
+
+
 def apply_anchors(path, base_text, anchors):
     """Apply [{old,new}] to base_text. Returns (text, added_lines)."""
     if not isinstance(anchors, list) or not anchors:
@@ -169,13 +203,24 @@ def apply_anchors(path, base_text, anchors):
             raise Rejected("anchor_too_short:" + path)
 
         occurrences = text.count(old)
-        if occurrences == 0:
-            raise Rejected("anchor_missing:" + path)
         if occurrences > 1:
             raise Rejected("anchor_ambiguous:" + path)
+        if occurrences == 1:
+            text = text.replace(old, new, 1)
+            added.extend(added_lines(old, new))
+            continue
 
-        text = text.replace(old, new, 1)
-        added.extend(added_lines(old, new))
+        # Exact match failed. A model quoting from ~200k tokens of context
+        # often loses trailing whitespace or re-indents a block; rejecting on
+        # that throws away an otherwise correct port. Retry line-wise: trailing
+        # whitespace first, then indentation, each requiring a unique window.
+        replaced = _replace_linewise(text, old, new, rstrip_only=True)
+        if replaced is None:
+            replaced = _replace_linewise(text, old, new, rstrip_only=False)
+        if replaced is None:
+            raise Rejected("anchor_missing:" + path)
+        text, matched = replaced
+        added.extend(added_lines(matched, new))
 
     return text, added
 
