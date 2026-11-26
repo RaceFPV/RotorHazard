@@ -380,6 +380,10 @@ pub struct AppState {
         Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>,
     /// Monotonic id for server -> bridge invocations.
     pub plugin_seq: std::sync::atomic::AtomicU64,
+    /// Panels plugins registered (ui.register_panel): name, label, page, order.
+    pub plugin_panels: Mutex<Vec<serde_json::Value>>,
+    /// Fields plugins added to those panels (fields.register_option).
+    pub plugin_fields: Mutex<Vec<serde_json::Value>>,
 }
 
 impl AppState {

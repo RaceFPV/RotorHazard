@@ -24,6 +24,11 @@ def marshal(payload):
     events.append({'marshal': payload})
 
 
+@sio.on('ui')
+def ui(msg):
+    events.append({'ui': msg})
+
+
 def emit(event, arg, timeout=15.0):
     box = {}
     done = []
@@ -45,6 +50,16 @@ def emit(event, arg, timeout=15.0):
 
 
 sio.connect(url, wait_timeout=15)
+
+# the settings page asks for its plugin panels as soon as it loads
+sio.emit('load_data', {'load_types': [{'type': 'ui', 'value': 'settings'}]})
+time.sleep(1.0)
+ui_pages = [e['ui'] for e in events if 'ui' in e]
+panels = [p['panel']['name'] for page in ui_pages for p in page.get('panels', [])]
+if 'ts_connector' not in panels:
+    failures.append('plugin panel missing from load_data ui (got %r)' % (panels,))
+else:
+    print('plugin panel  :', panels)
 
 lean = emit('ts_get_lean_mode', None)
 if not isinstance(lean, dict) or 'lean_mode' not in lean:

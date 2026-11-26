@@ -128,123 +128,133 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
         .unwrap_or_default();
 
     for load_type in &load_types {
-        match load_type.as_str() {
-            Some("pilot_data") => {
+        // Entries are either "type" strings or {type, value} objects (the UI
+        // page request is an object). Normalise to a name and keep the value
+        // for the branches that use one.
+        let load_value = load_type.get("value").cloned().unwrap_or(Value::Null);
+        let load_name = match load_type {
+            Value::String(name) => name.clone(),
+            other => other
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        };
+        match load_name.as_str() {
+            "pilot_data" => {
                 let payload = db::with_db(state, payloads::build_pilot_data);
                 let _ = socket.emit("pilot_data", &payload);
             }
-            Some("heat_data") => {
+            "heat_data" => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_heat_data(conn, &race)
                 });
                 let _ = socket.emit("heat_data", &payload);
             }
-            Some("class_data") => {
+            "class_data" => {
                 let payload = db::with_db(state, payloads::build_class_data);
                 let _ = socket.emit("class_data", &payload);
             }
-            Some("format_data") => {
+            "format_data" => {
                 let payload = db::with_db(state, payloads::build_format_data);
                 let _ = socket.emit("format_data", &payload);
             }
-            Some("frequency_data") => {
+            "frequency_data" => {
                 let payload = db::with_db(state, payloads::build_frequency_data);
                 let _ = socket.emit("frequency_data", &payload);
             }
-            Some("node_data") => {
+            "node_data" => {
                 let payload = payloads::build_node_data(&state.race.lock().unwrap());
                 let _ = socket.emit("node_data", &payload);
             }
-            Some("race_status") => {
+            "race_status" => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_race_status(conn, &race)
                 });
                 let _ = socket.emit("race_status", &payload);
             }
-            Some("current_heat") => {
+            "current_heat" => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_current_heat(conn, &race)
                 });
                 let _ = socket.emit("current_heat", &payload);
             }
-            Some("seat_data") => {
+            "seat_data" => {
                 let payload = payloads::build_seat_data(state);
                 let _ = socket.emit("seat_data", &payload);
             }
-            Some("min_lap") => {
+            "min_lap" => {
                 let payload = payloads::build_min_lap(state);
                 let _ = socket.emit("min_lap", &payload);
             }
-            Some("enter_and_exit_at_levels") => {
+            "enter_and_exit_at_levels" => {
                 let payload = db::with_db(state, payloads::build_enter_exit_levels);
                 let _ = socket.emit("enter_and_exit_at_levels", &payload);
             }
-            Some("current_laps") => {
+            "current_laps" => {
                 let payload = db::with_db(state, |conn| {
                     let race = state.race.lock().unwrap();
                     payloads::build_current_laps(conn, &race)
                 });
                 let _ = socket.emit("current_laps", &payload);
             }
-            Some("pilot_list") => {
+            "pilot_list" => {
                 let payload = db::with_db(state, payloads::build_pilot_list);
                 let _ = socket.emit("pilot_list", &payload);
             }
-            Some("heat_list") => {
+            "heat_list" => {
                 let payload = db::with_db(state, payloads::build_heat_list);
                 let _ = socket.emit("heat_list", &payload);
             }
-            Some("class_list") => {
+            "class_list" => {
                 let payload = db::with_db(state, payloads::build_class_list);
                 let _ = socket.emit("class_list", &payload);
             }
-            Some("leaderboard") => {
+            "leaderboard" => {
                 let payload = build_current_leaderboard(&state);
                 let _ = socket.emit("leaderboard", &payload);
             }
-            Some("race_list") => {
+            "race_list" => {
                 let payload = build_race_list(&state);
                 let _ = socket.emit("race_list", &payload);
             }
-            Some("exporter_list") => {
+            "exporter_list" => {
                 let _ = socket.emit("exporter_list", &crate::export_import::exporter_list());
             }
-            Some("importer_list") => {
+            "importer_list" => {
                 let _ = socket.emit("importer_list", &crate::export_import::importer_list());
             }
-            Some("all_languages") => {
+            "all_languages" => {
                 let _ = socket.emit("all_languages", &json!({"languages": crate::phase3::languages()}));
             }
-            Some("language") => {
+            "language" => {
                 let current = crate::phase3::current_language(&state.data_dir);
                 let _ = socket.emit("language", &json!({
                     "language": current,
                     "languages": language_list(&crate::phase3::languages()),
                 }));
             }
-            Some("ui") => {
-                // no plugin-registered panels in the Rust build yet; the
-                // page shell still functions from its static template parts
-                let page = load_type
-                    .get("value")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let _ = socket.emit("ui", &json!({"page": page, "panels": []}));
+            "ui" => {
+                let page = load_value.as_str().unwrap_or("");
+                let payload = crate::pluginrpc::build_ui_payload(state, page);
+                let _ = socket.emit("ui", &payload);
             }
-            Some("node_tuning") => {
+            "node_tuning" => {
                 let payload = build_node_tuning_payload(&state);
                 let _ = socket.emit("node_tuning", &payload);
             }
-            Some("led_effects") => {
-                let _ = socket.emit("led_effects", &json!({"enabled": true, "effects": {}}));
+            "led_effects" => {
+                // rh-ui/run.html does msg.effects.slice(), so this must be an
+                // array even when no plugin has registered effects.
+                let _ = socket.emit("led_effects", &json!({"enabled": true, "effects": []}));
             }
-            Some("led_effect_setup") => {
+            "led_effect_setup" => {
                 let _ = socket.emit("led_effect_setup_data", &json!({"enabled": true}));
             }
-            Some("cluster_status") => {
+            "cluster_status" => {
                 let payload = state
                     .cluster
                     .get()
@@ -252,26 +262,26 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                     .unwrap_or(json!({"secondaries": []}));
                 let _ = socket.emit("cluster_status", &payload);
             }
-            Some("vrx_list") => {
+            "vrx_list" => {
                 let _ = socket.emit("vrx_list", &json!({
                     "enabled": state.vrx_manager.is_enabled(),
                     "controllers": state.vrx_manager.get_controller_status(),
                     "devices": state.vrx_manager.get_all_device_status(),
                 }));
             }
-            Some("environmental_data") => {
+            "environmental_data" => {
                 let _ = socket.emit("environmental_data", &crate::sensor::environmental_data());
             }
-            Some("heatgenerator_list") => {
+            "heatgenerator_list" => {
                 let _ = socket.emit("heatgenerator_list", &crate::heatgen::generator_list());
             }
-            Some("raceclass_rank_method_list") => {
+            "raceclass_rank_method_list" => {
                 let _ = socket.emit("raceclass_rank_method_list", &crate::class_rank::rank_method_list());
             }
-            Some("race_points_method_list") => {
+            "race_points_method_list" => {
                 let _ = socket.emit("race_points_method_list", &crate::class_rank::points_method_list());
             }
-            Some("class_ranking") => {
+            "class_ranking" => {
                 let class_id = load_type
                     .as_object()
                     .and_then(|o| o.get("class_id").and_then(|v| v.as_i64()));
@@ -283,16 +293,16 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                     "result": payload,
                 }));
             }
-            Some("upd_cfg_files_list") => {
+            "upd_cfg_files_list" => {
                 let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
             }
-            Some("plugin_list") => {
+            "plugin_list" => {
                 let _ = socket.emit("plugin_list", &json!({"plugins": []}));
             }
-            Some("action_setup") => {
+            "action_setup" => {
                 let _ = socket.emit("action_setup", &json!({"enabled": false, "events": {}, "effects": {}}));
             }
-            Some("event_actions") => {
+            "event_actions" => {
                 let _ = socket.emit("event_actions", &json!({"actions": {}}));
             }
             _ => {
@@ -2391,6 +2401,9 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
         ) {
             let text = match value {
                 Value::String(s) => s.clone(),
+                // RHData.set_option stores booleans as '1'/'0'; plugins read
+                // them back with `== '1'`, so 'true' silently reads as false.
+                Value::Bool(flag) => if *flag { "1" } else { "0" }.to_string(),
                 other => other.to_string(),
             };
             db::with_db(&state, |conn| db::set_option(conn, option, &text));

@@ -251,6 +251,8 @@ async fn main() {
         plugin_listeners: std::sync::Mutex::new(Vec::new()),
         plugin_pending: std::sync::Mutex::new(std::collections::HashMap::new()),
         plugin_seq: std::sync::atomic::AtomicU64::new(1),
+        plugin_panels: std::sync::Mutex::new(Vec::new()),
+        plugin_fields: std::sync::Mutex::new(Vec::new()),
     });
 
     let (socketio_layer, io) = SocketIo::builder()

@@ -266,7 +266,12 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
         }
         ("db", "set_option") => {
             let name = arg_str("name").ok_or("name required")?;
-            let value = arg_str("value").unwrap_or_default();
+            let value = match args.get("value") {
+                Some(Value::Bool(flag)) => if *flag { "1" } else { "0" }.to_string(),
+                Some(Value::String(text)) => text.clone(),
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
             Ok(db::with_db(state, |conn| {
                 db::set_option(conn, &name, &value);
                 json!(true)
@@ -589,10 +594,34 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             }
             Ok(json!(true))
         }
-        ("ui", "register_panel") | ("fields", "register_race_attribute")
-        | ("fields", "register_pilot_attribute") | ("fields", "register_option") => {
-            // No plugin panel host in the Rust UI yet; accepting the call lets
-            // plugins that only need registration finish initialising.
+        // ---- plugin panels (rendered by rh-ui.js into #custom-ui) ----
+        ("ui", "register_panel") => {
+            let name = arg_str("domain").ok_or("domain required")?;
+            let label = arg_str("name").unwrap_or_else(|| name.clone());
+            let page = arg_str("location").unwrap_or_else(|| "settings".to_string());
+            let order = arg_i64("order");
+            state.plugin_panels.lock().unwrap().push(json!({
+                "name": name,
+                "label": label,
+                "page": page,
+                "order": order,
+                "open": false,
+            }));
+            Ok(json!(true))
+        }
+        ("fields", "register_option") => {
+            let panel = arg_str("panel").unwrap_or_default();
+            let field = args.get("field").cloned().unwrap_or(json!({}));
+            state
+                .plugin_fields
+                .lock()
+                .unwrap()
+                .push(json!({"panel": panel, "field": field}));
+            Ok(json!(true))
+        }
+        ("fields", "register_race_attribute") | ("fields", "register_pilot_attribute") => {
+            // Attribute registration only labels the forms built by load_data
+            // 'attributes'; the values themselves live in *_attribute tables.
             Ok(json!(true))
         }
 
@@ -920,6 +949,82 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
     }
 }
 
+
+/// Reads a stored option (RHAPI db.option) as text.
+fn option_value(state: &SharedState, name: &str) -> Option<String> {
+    db::with_db(state, |conn| {
+        conn.query_row(
+            "SELECT option_value FROM global_settings WHERE option_name = ?1",
+            [name],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    })
+}
+
+/// Builds the `ui` payload for one page, mirroring RHUI.emit_ui: plugin
+/// panels with their settings, values resolved from config or db options.
+pub fn build_ui_payload(state: &SharedState, page: &str) -> Value {
+    let panels = state.plugin_panels.lock().unwrap().clone();
+    let fields = state.plugin_fields.lock().unwrap().clone();
+
+    let mut out = Vec::new();
+    for panel in panels.iter().filter(|p| p.get("page").and_then(|v| v.as_str()) == Some(page)) {
+        let panel_name = panel.get("name").and_then(|v| v.as_str()).unwrap_or("");
+
+        let settings: Vec<Value> = fields
+            .iter()
+            .filter(|entry| entry.get("panel").and_then(|v| v.as_str()) == Some(panel_name))
+            .map(|entry| {
+                let field = entry.get("field").cloned().unwrap_or(json!({}));
+                let name = field.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let section = field.get("section").and_then(|v| v.as_str());
+                let field_type = field
+                    .get("field_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let stored = match section {
+                    Some(section) => db::get_config_value(state, section, name),
+                    None => option_value(state, name).map(Value::String),
+                };
+
+                let mut out = field.clone();
+                if let Some(stored) = stored {
+                    let value = if field_type == "checkbox" {
+                        match &stored {
+                            Value::String(text) => {
+                                json!(!(text.is_empty() || text == "0" || text == "false"))
+                            }
+                            Value::Bool(flag) => json!(*flag),
+                            Value::Null => json!(false),
+                            _ => json!(true),
+                        }
+                    } else {
+                        stored
+                    };
+                    out["value"] = value;
+                }
+                out
+            })
+            .collect();
+
+        out.push(json!({
+            "panel": {
+                "name": panel_name,
+                "label": panel.get("label").cloned().unwrap_or(json!(panel_name)),
+                "order": panel.get("order").cloned().unwrap_or(Value::Null),
+                "open": panel.get("open").cloned().unwrap_or(json!(false)),
+            },
+            "settings": settings,
+            "fn_binds": [],
+            "quickbuttons": [],
+            "markdowns": [],
+        }));
+    }
+
+    json!({"page": page, "panels": out})
+}
 
 /// Forwards a client socket event to the bridge and waits for the plugin's
 /// return value, which becomes the socket ack. Null when no bridge answers.
