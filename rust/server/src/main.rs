@@ -23,6 +23,7 @@ mod mock;
 mod vrx;
 mod pages;
 mod pluginrpc;
+mod plugin_support;
 mod serial;
 mod payloads;
 mod phase3;
@@ -505,6 +506,10 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", http_port_cfg))
         .await
         .expect("failed to bind port");
+
+    // Plugins run in a Python child process whose source is embedded in this
+    // binary. Start it after the socket is bound so its first connect succeeds.
+    plugin_support::autostart(&data_dir, http_port_cfg);
     tracing::info!("Running http server at port {}", http_port_cfg);
     axum::serve(listener, app).await.expect("server error");
 }

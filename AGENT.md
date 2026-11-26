@@ -282,6 +282,18 @@ export/import and heat generation run server-side, event results are not cached,
 `interface.*` registrations are accepted no-ops). `COMPATIBILITY.md` answers the
 narrower question — what one specific plugin needs.
 
+**The bridge ships inside the binary.** `rust/server/build.rs` embeds
+`rhapi_bridge.py` and `rh_compat/**` and derives a revision hash from their
+contents; `plugin_support::materialise()` writes them to `<data_dir>/bridge/` and
+rewrites only when the binary's copy differs. On start-up (after the port is
+bound) `plugin_support::autostart()` spawns `python -u <bridge> --server
+http://127.0.0.1:<port> --plugins-dir <data_dir>/plugins`, logs to
+`<data_dir>/bridge.log`, and restarts a crashed bridge up to five times. So
+upgrading is still "replace one binary": no download, no bridge version to
+manage, no drift between server and bridge. `RH_PLUGIN_BRIDGE=0` disables it.
+The one host requirement is Python 3 with `python-socketio`; without it the
+server logs a clear warning and runs normally without plugins.
+
 **Tests that protect this**: `rust/plugin-bridge/test_plugin_fixture.sh` runs an
 in-repo fixture plugin (`tests/fixture_plugin`) that calls 42 representative
 RHAPI members, registers a panel/option/attributes, stages a race and listens for

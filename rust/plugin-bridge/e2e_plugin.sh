@@ -11,17 +11,20 @@ printf '%s' '{"SECRETS":{"ADMIN_USERNAME":"","ADMIN_PASSWORD":""},"GENERAL":{"HT
 mkdir -p "$DATA/plugins"
 cp -r "${PLUGIN_DIR:-/tmp/plugin-fpv/custom_plugins/rh_connector_trackside}" "$DATA/plugins/"
 
-RH_DATA_DIR="$DATA" RH_NODES=8 ./rust/target/release/rh-server > "$DATA/server.log" 2>&1 &
+# The server carries the bridge inside the binary and starts it when
+# <data_dir>/plugins has plugins, which is the path users get. PYTHON_BIN puts
+# the venv's python first so the spawned bridge can import socketio.
+PATH="$(dirname "$PY"):$PATH" RH_DATA_DIR="$DATA" RH_NODES=8 \
+    ./rust/target/release/rh-server > "$DATA/server.log" 2>&1 &
 SPID=$!
 for i in $(seq 1 40); do sleep 0.5; curl -sf "http://127.0.0.1:$PORT/api/status" >/dev/null 2>&1 && break; done
 
-"$PY" -u rust/plugin-bridge/rhapi_bridge.py \
-    --server "http://127.0.0.1:$PORT" --plugins-dir "$DATA/plugins" \
-    --plugins rh_connector_trackside > "$DATA/bridge.log" 2>&1 &
-BPID=$!
-sleep 4
+for i in $(seq 1 40); do
+    sleep 0.5
+    grep -q "loaded plugin: rh_connector_trackside" "$DATA/bridge.log" 2>/dev/null && break
+done
 
-echo "=== bridge startup"
+echo "=== bridge startup (spawned by the server)"
 head -6 "$DATA/bridge.log"
 
 echo "=== client (plays FPVTrackSide)"
@@ -51,6 +54,5 @@ PY
 echo "=== bridge errors"
 grep -i "error\|traceback" "$DATA/bridge.log" | head -6
 
-kill "$BPID" 2>/dev/null || true
 kill "$SPID" 2>/dev/null || true
 wait 2>/dev/null || true
