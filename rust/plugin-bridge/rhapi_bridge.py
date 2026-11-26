@@ -130,7 +130,6 @@ class Db(Rpc):
         return Obj({'id': new_id})
 
     def pilot_alter(self, pilot_id, attributes=None, **fields):
-        print("[bridge] pilot_alter(%r)" % (pilot_id,), file=sys.stderr)
         return self.call('db', 'pilot_alter', pilot_id=pilot_id,
                          attributes=attributes, **fields)
 
@@ -156,6 +155,75 @@ class Db(Rpc):
 
     def slots_by_heat(self, heat_id):
         return self.call('db', 'slots_by_heat', heat_id=heat_id) or []
+
+    def pilot_by_id(self, pilot_id):
+        return self.call('db', 'pilot', pilot_id=pilot_id)
+
+    def race_by_id(self, race_id):
+        return self.call('db', 'race_by_id', race_id=race_id)
+
+    def race_alter(self, race_id, attributes=None, **fields):
+        return self.call('db', 'race_alter', race_id=race_id, attributes=attributes,
+                         **fields)
+
+    def race_attribute_value(self, race_id, attribute, default=None):
+        value = self.call('db', 'race_attribute_value', race_id=race_id,
+                          attribute=attribute)
+        return default if value is None else value
+
+    def race_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'race_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def pilot_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'pilot_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def pilotruns_by_race(self, race_id):
+        return self.call('db', 'pilotruns_by_race', race_id=race_id) or []
+
+    def laps_by_pilotrun(self, pilotrun_id):
+        return self.call('db', 'laps_by_pilotrun', pilotrun_id=pilotrun_id) or []
+
+    def pilotrun_alter(self, pilotrun_id, enter_at=None, exit_at=None, laps=None):
+        return self.call('db', 'pilotrun_alter', pilotrun_id=pilotrun_id,
+                         enter_at=enter_at, exit_at=exit_at, laps=laps)
+
+    def pilot_by_id(self, pilot_id):
+        return self.call('db', 'pilot', pilot_id=pilot_id)
+
+    def race_by_id(self, race_id):
+        return self.call('db', 'race_by_id', race_id=race_id)
+
+    def race_alter(self, race_id, attributes=None, **fields):
+        return self.call('db', 'race_alter', race_id=race_id, attributes=attributes,
+                         **fields)
+
+    def race_attribute_value(self, race_id, attribute, default=None):
+        value = self.call('db', 'race_attribute_value', race_id=race_id,
+                          attribute=attribute)
+        return default if value is None else value
+
+    def race_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'race_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def pilot_ids_by_attribute(self, attribute, value):
+        return self.call('db', 'pilot_ids_by_attribute', attribute=attribute,
+                         value=value) or []
+
+    def pilotruns_by_race(self, race_id):
+        return self.call('db', 'pilotruns_by_race', race_id=race_id) or []
+
+    def laps_by_pilotrun(self, pilotrun_id):
+        return self.call('db', 'laps_by_pilotrun', pilotrun_id=pilotrun_id) or []
+
+    def pilotrun_alter(self, pilotrun_id, enter_at=None, exit_at=None, laps=None):
+        return self.call('db', 'pilotrun_alter', pilotrun_id=pilotrun_id,
+                         enter_at=enter_at, exit_at=exit_at, laps=laps)
+
+    def heat_delete(self, heat_id):
+        return self.call('db', 'heat_delete', heat_id=heat_id)
 
     def slots_alter_fast(self, slots):
         return self.call('db', 'slots_alter_fast', slots=slots)
@@ -187,13 +255,15 @@ class Race(Rpc):
 
     @heat.setter
     def heat(self, heat_id):
+        if hasattr(heat_id, 'id'):
+            heat_id = heat_id.id
         self.call('race', 'set_heat', heat_id=heat_id)
 
     @property
     def frequencyset(self):
         data = self.call('race', 'status')
         try:
-            return data['frequencyset']
+            return Obj({'id': data['frequencyset']})
         except Exception:
             return data
 
@@ -202,7 +272,8 @@ class Race(Rpc):
         return bool(self.call('race', 'any_laps_recorded'))
 
     def stage(self, args=None):
-        return self.call('race', 'stage', options=args or {})
+        result = self.call('race', 'stage', options=args or {})
+        return result
 
     def stop(self):
         return self.call('race', 'stop')
@@ -212,6 +283,17 @@ class Race(Rpc):
 
     def clear(self):
         return self.call('race', 'clear')
+
+    def update_colors(self):
+        return self.call('race', 'update_colors')
+
+    @property
+    def laps(self):
+        return self.call('race', 'laps')
+
+    @property
+    def laps(self):
+        return self.call('race', 'laps')
 
 
 class Fields(Rpc):
@@ -233,26 +315,34 @@ class Config(Rpc):
 
     def get(self, section, key, default=None):
         try:
-            value = self.call('db', 'get_option', section=section, key=key)
+            value = self.call('config', 'get', section=section, key=key)
         except Exception:
             return default
-        return default if value is None else value
+        if value in (None, ''):
+            return default
+        return value
 
     def set(self, section, key, value):
-        return self.call('db', 'set_option', section=section, key=key, value=value)
+        return self.call('config', 'set', section=section, key=key, value=value)
 
 
 class Utils:
-    def format_time_to_str(self, ms, leading=2, ms_sep=False):
-        try:
-            total = float(ms) / 1000.0
-        except (TypeError, ValueError):
+    def format_time_to_str(self, millis, timeformat='{m}:{s}.{d}'):
+        '''RHUtils.format_time_to_str: milliseconds -> 0:00.000.'''
+        if not isinstance(millis, (int, float)):
             return ''
-        minutes = int(total // 60)
-        seconds = total - minutes * 60
-        if minutes:
-            return '%d:%05.2f' % (minutes, seconds)
-        return '%.2f' % seconds
+        millis = int(round(millis, 0))
+        sign = '-' if millis < 0 else ''
+        millis = abs(millis)
+        minutes = millis // 60000
+        over = millis % 60000
+        seconds = over // 1000
+        milliseconds = over % 1000
+        if not timeformat:
+            timeformat = '{m}:{s}.{d}'
+        return sign + timeformat.format(m=str(minutes),
+                                        s=str(seconds).zfill(2),
+                                        d=str(milliseconds).zfill(3))
 
 
 class ServerInfo(dict):
@@ -320,7 +410,14 @@ class Events:
         return handler
 
     def dispatch(self, event, args):
-        for handler in self._handlers.get(event, []):
+        # Python hands plugins a dict of args with objects inside it
+        # (args['node_index'], args['lap'].lap_time_stamp), so keep the dict
+        # dict-like and only wrap the values that are records.
+        if isinstance(args, dict):
+            args = {key: (wrap(value) if isinstance(value, dict) else value)
+                    for key, value in args.items()}
+        handlers = self._handlers.get(event, [])
+        for handler in handlers:
             try:
                 handler(args)
             except Exception:
@@ -358,6 +455,7 @@ class Bridge:
 
         self.sio.on('rhapi_response', self._on_response)
         self.sio.on('rhapi_event', self._on_plugin_event)
+        self.sio.on('plugin_invoke', self._on_invoke)
         self.sio.on('*', self._on_any)
 
         self.rhapi = Rhapi(self)
@@ -374,13 +472,40 @@ class Bridge:
                 self._acks[call_id] = data or {}
                 self._cond.notify_all()
 
+    def _on_invoke(self, data):
+        """A client socket event that a plugin listens for, sent by the server
+        as plugin_invoke; the handler's return value goes back as the ack."""
+        data = data or {}
+
+        def run():
+            # Handlers make blocking RPC calls, and this returns on the socket.io
+            # reader thread; blocking it would stop the very acks those calls
+            # wait for, so each invocation runs on its own thread.
+            outcome = self.invoke(data.get('event', ''), data.get('args'))
+            if 'result' in outcome:
+                result = outcome['result']
+            else:
+                result = {'error': outcome.get('error', 'plugin error')}
+            if data.get('id') is not None:
+                self.sio.emit('plugin_result',
+                              {'id': data.get('id'), 'result': result})
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _on_plugin_event(self, data):
         data = data or {}
-        self.rhapi.events.dispatch(data.get('event', ''), data.get('args') or {})
+        # Handlers make blocking RPC calls; dispatching inline would occupy the
+        # socket.io reader thread and the acks those calls wait for could never
+        # be processed (the whole save path deadlocked this way).
+        threading.Thread(
+            target=self.rhapi.events.dispatch,
+            args=(data.get('event', ''), data.get('args') or {}),
+            daemon=True).start()
 
     def _on_any(self, event, *args):
         args_payload = args[0] if args else {}
-        self.rhapi.events.dispatch(event, args_payload)
+        threading.Thread(target=self.rhapi.events.dispatch,
+                         args=(event, args_payload), daemon=True).start()
 
     # ---- bridge -> server ----
     def call(self, event, payload):
@@ -449,6 +574,8 @@ class Bridge:
         '''Call the handlers a plugin registered for a socket event, as the
         server would when a client emits it.'''
         handlers = self.listeners.get(event, [])
+                                           else {k: args[k] for k in list(args)[:6]}),
+              file=sys.stderr)
         if not handlers:
             return {'error': 'no listener for ' + event}
         results = []
@@ -521,6 +648,17 @@ def main():
 
     if args.control_port:
         serve_control(bridge, args.control_port)
+
+    # Tell the server which client events the loaded plugins listen for; it
+    # registers a forwarding handler for each on every socket connect.
+    if bridge.listeners:
+        try:
+            bridge.call(RPC_OBJECT, {
+                'object': 'plugin', 'method': 'listen',
+                'args': {'names': sorted(bridge.listeners)}})
+            print('[bridge] registered %d socket listener(s)' % len(bridge.listeners))
+        except Exception as ex:
+            print('[bridge] listener registration failed: %s' % ex, file=sys.stderr)
 
     print('[bridge] running; {} plugin(s) loaded'.format(len(bridge._plugins)))
     try:

@@ -371,6 +371,15 @@ pub struct AppState {
     /// Plugin-registered fetchable config sections (ui.register_config_section):
     /// section -> None for the whole section, Some(items) for an allowlist.
     pub config_load_items: Mutex<std::collections::HashMap<String, Option<Vec<String>>>>,
+    /// Socket events plugins subscribed to (ui.socket_listen). The connect
+    /// handler registers one forwarding handler per name, so a client emit of
+    /// that event reaches the plugin and its return value becomes the ack.
+    pub plugin_listeners: Mutex<Vec<String>>,
+    /// Invocations awaiting the bridge's reply, keyed by call id.
+    pub plugin_pending:
+        Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>,
+    /// Monotonic id for server -> bridge invocations.
+    pub plugin_seq: std::sync::atomic::AtomicU64,
 }
 
 impl AppState {

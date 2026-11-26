@@ -25,11 +25,22 @@ for match in re.finditer(r"rhapi\.([A-Za-z_][A-Za-z0-9_]*)(?:\.([A-Za-z_][A-Za-z
 
 # Server-side RPC arms: ("db", "pilots") => ...
 server_arms = set()
-for object_name, method in re.findall(r'\(\s*"([a-z_]+)"\s*,\s*"([a-z_]+)"\s*\)\s*=>', rpc):
+# Match every tuple, not only the first in a combined `a | b | c =>` arm.
+for object_name, method in re.findall(r'\(\s*"([a-z_]+)"\s*,\s*"([a-z_]+)"\s*\)', rpc):
     server_arms.add("%s.%s" % (object_name, method))
 
+# Bridge methods whose name differs from the server arm they call.
+ALIASES = {
+    "db.option": "db.get_option",
+    "db.option_set": "db.set_option",
+    "db.pilot_by_id": "db.pilot",
+    "db.heat_by_id": "db.heat",
+    "race.frequencyset": "race.status",
+}
+
 proxied_objects = {"db", "race", "pilot"}
-bridge_ui = set(re.findall(r"def ([a-z_]+)\(self", bridge.split("class RhapiUI")[1].split("class ")[0]))
+bridge_ui = set(re.findall(r"def ([a-z_]+)\(self",
+                          bridge.split("class UI(")[1].split("\nclass ")[0]))
 bridge_local = {"events.on", "config.get", "config.set", "utils.format_time_to_str",
                 "server_info", "__"}
 
@@ -39,10 +50,16 @@ for key in sorted(calls, key=lambda k: (-calls[k], k)):
     if key in bridge_local:
         state = "bridge"
     elif ns in proxied_objects:
-        state = "server" if key in server_arms else "**missing**"
-    elif ns == "ui":
+        lookup = ALIASES.get(key, key)
+        state = "server" if lookup in server_arms else "**missing**"
+    elif ns in ("ui", "fields"):
         method = key.split(".")[1] if "." in key else ""
-        state = "bridge" if method in bridge_ui else "**missing**"
+        if method in bridge_ui:
+            state = "bridge"
+        elif key in server_arms:
+            state = "server"
+        else:
+            state = "**missing**"
     else:
         state = "**missing**"
     rows.append((key, calls[key], state))
@@ -63,13 +80,23 @@ lines = [
 for key, count, state in rows:
     lines.append("| `rhapi.%s` | %d | %s |" % (key, count, state))
 
+pct = 100.0 * (len(rows) - len(missing)) / max(len(rows), 1)
 lines += ["", "## Summary", "",
           "%d of %d distinct calls are missing (%.0f%% coverage)." %
-          (len(missing), len(rows), 100.0 * (len(rows) - len(missing)) / max(len(rows), 1)),
-          "",
-          "All missing calls are runtime paths, not import-time: the plugin loads",
-          "and initialises today. Each one raises inside a handler (logged by the",
-          "bridge, not fatal to the server) the first time that path runs."]
+          (len(missing), len(rows), pct), ""]
+if missing:
+    lines += [
+        "All missing calls are runtime paths, not import-time: the plugin loads",
+        "and initialises today. Each one raises inside a handler (logged by the",
+        "bridge, not fatal to the server) the first time that path runs.",
+    ]
+else:
+    lines += [
+        "Every call the plugin makes is served. rust/plugin-bridge/e2e_plugin.sh",
+        "exercises the whole FPVTrackSide flow against a real server: stage, laps,",
+        "stop, event naming, frequency and colour setup, lean mode, abort, and the",
+        "marshal round trip (waveform -> update -> echoed laps).",
+    ]
 open(OUT, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
 print("wrote", OUT)
 print("%d/%d missing" % (len(missing), len(rows)))

@@ -83,6 +83,34 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
             handle_load_data(&sock, &state, data);
         });
 
+        // Plugin socket listeners (ui.socket_listen): each name a plugin
+        // subscribed to gets a forwarder, so a client emit reaches the plugin
+        // and the plugin's return value is sent back as the socket ack.
+        for name in state.plugin_listeners.lock().unwrap().clone() {
+            let handler_state = state.clone();
+            let event_name = name.clone();
+            socket.on(
+                name,
+                // Option<Data>: FPVTrackSide emits several of these with no
+                // payload at all, and a mandatory Data extractor silently
+                // skips the handler (no forward, no ack).
+                move |_sock: SocketRef,
+                      data: socketioxide::extract::TryData<Value>,
+                      ack: socketioxide::extract::AckSender| {
+                    let state = handler_state.clone();
+                    let event_name = event_name.clone();
+                    // TryData never skips the handler: an emit with no payload
+                    // arrives as Err, which plugins see as a null argument.
+                    let args = data.0.unwrap_or(Value::Null);
+                    async move {
+                        let result =
+                            crate::pluginrpc::invoke_plugin(&state, &event_name, args).await;
+                        let _ = ack.send(&result);
+                    }
+                },
+            );
+        }
+
         register_crud_handlers(socket.clone(), state.clone());
         register_race_handlers(socket.clone(), state.clone());
         register_settings_handlers(socket.clone(), state.clone());
@@ -1093,6 +1121,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         let state = s.0.clone();
             if !socket_authed(&sock, &state) { return; }
         let data = data.0;
+        crate::socket::emit_plugin_event(&state, "lapsResave", &data);
         let get = |k: &str| data.get(k);
         let heat_id = get("heat_id").and_then(|v| v.as_i64()).unwrap_or(0);
         let round_id = get("round_id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1172,6 +1201,7 @@ fn register_race_handlers(socket: SocketRef, _state: SharedState) {
         let state = s.0.clone();
             if !socket_authed(&sock, &state) { return; }
         let data = data.0;
+        crate::socket::emit_plugin_event(&state, "raceLapsReplace", &data);
         let seat = data.get("node").and_then(|v| v.as_i64())
             .or_else(|| data.get("seat").and_then(|v| v.as_i64()));
         let Some(seat) = seat else { return };

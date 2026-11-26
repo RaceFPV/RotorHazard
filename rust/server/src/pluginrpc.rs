@@ -101,6 +101,17 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                         .ok();
                     }
                 }
+                if let Some(attributes) = args.get("attributes").and_then(|v| v.as_object()) {
+                    for (name, value) in attributes {
+                        if let Err(err) = conn.execute(
+                            "INSERT OR REPLACE INTO pilot_attribute (id, name, value)
+                             VALUES (?1, ?2, ?3)",
+                            rusqlite::params![pilot_id, name, value.as_str().unwrap_or("")],
+                        ) {
+                            tracing::warn!("pilot_attribute insert failed: {}", err);
+                        }
+                    }
+                }
                 json!(true)
             }))
         }
@@ -264,12 +275,22 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
 
         // ---- race ----
         ("race", "status") => {
-            let race = state.race.lock().unwrap();
+            let (status, current_heat, format_id, started) = {
+                let race = state.race.lock().unwrap();
+                (
+                    race.race_status,
+                    race.current_heat,
+                    race.format_id,
+                    race.start_time_monotonic,
+                )
+            };
+            let frequencyset = db::with_db(state, |conn| db::current_profile_id(conn));
             Ok(json!({
-                "race_status": race.race_status,
-                "current_heat": race.current_heat,
-                "format_id": race.format_id,
-                "start_time_monotonic": race.start_time_monotonic,
+                "race_status": status,
+                "current_heat": current_heat,
+                "format_id": format_id,
+                "start_time_monotonic": started,
+                "frequencyset": frequencyset,
             }))
         }
         ("race", "pilots") => {
@@ -361,7 +382,15 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             Ok(json!(race.current_heat))
         }
         ("race", "set_heat") => {
-            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            // RHAPI allows HEAT_ID_NONE (None) to clear the current heat.
+            let heat_id = arg_i64("heat_id");
+            if heat_id.is_none() {
+                let mut race = state.race.lock().unwrap();
+                race.current_heat = None;
+                race.node_pilots = vec![None; state.node_count()];
+                return Ok(json!(true));
+            }
+            let heat_id = heat_id.unwrap();
             let pilots = db::with_db(state, |conn| {
                 let mut slots = vec![None; state.node_count()];
                 if let Ok(mut stmt) =
@@ -442,10 +471,14 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                 }
                 if let Some(attributes) = &attributes {
                     for (key, value) in attributes {
+                        let text = match value {
+                            Value::String(text) => text.clone(),
+                            other => other.to_string(),
+                        };
                         conn.execute(
-                            "INSERT OR REPLACE INTO heat_attribute (heat_id, attribute, value)
+                            "INSERT OR REPLACE INTO heat_attribute (id, name, value)
                              VALUES (?1, ?2, ?3)",
-                            rusqlite::params![heat_id, key, value.as_str().unwrap_or("")],
+                            rusqlite::params![heat_id, key, text],
                         )
                         .ok();
                     }
@@ -498,7 +531,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let attribute = arg_str("attribute").ok_or("attribute required")?;
             Ok(db::with_db(state, |conn| {
                 conn.query_row(
-                    "SELECT value FROM pilot_attribute WHERE pilot_id = ?1 AND attribute = ?2",
+                    "SELECT value FROM pilot_attribute WHERE id = ?1 AND name = ?2",
                     rusqlite::params![pilot_id, attribute],
                     |r| r.get::<_, String>(0),
                 )
@@ -512,7 +545,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let attribute = arg_str("attribute").ok_or("attribute required")?;
             Ok(db::with_db(state, |conn| {
                 conn.query_row(
-                    "SELECT value FROM heat_attribute WHERE heat_id = ?1 AND attribute = ?2",
+                    "SELECT value FROM heat_attribute WHERE id = ?1 AND name = ?2",
                     rusqlite::params![heat_id, attribute],
                     |r| r.get::<_, String>(0),
                 )
@@ -563,10 +596,351 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             Ok(json!(true))
         }
 
+        // ---- plugin transport ----
+        // The bridge declares which client socket events its plugins listen
+        // to; the connect handler registers a forwarder for each name.
+        ("plugin", "listen") => {
+            let names: Vec<String> = args
+                .get("names")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            tracing::info!("plugin bridge listens for {} socket event(s)", names.len());
+            *state.plugin_listeners.lock().unwrap() = names;
+            Ok(json!(true))
+        }
+
+        // ---- config write (RHAPI config.set) ----
+        ("config", "set") => {
+            let section = arg_str("section").ok_or("section required")?;
+            let key = arg_str("key").ok_or("key required")?;
+            let value = args.get("value").cloned().unwrap_or(Value::Null);
+            state
+                .config_items
+                .lock()
+                .unwrap()
+                .insert(format!("{}_{}", section, key), value.clone());
+            crate::phase3::persist_config_item(&state.data_dir, &section, &key, &value);
+            Ok(json!(true))
+        }
+
+        // ---- frequency set (RHAPI db.frequencyset_alter) ----
+        // FPVTrackSide sends a flat list of frequencies; the profile stores
+        // (band, channel, frequency) triples.
+        ("db", "frequencyset_alter") => {
+            let profile_id = arg_i64("frequencyset_id").ok_or("frequencyset_id required")?;
+            let triples: Vec<Value> = args
+                .get("frequencies")
+                .and_then(|v| v.as_array())
+                .map(|list| {
+                    list.iter()
+                        .map(|f| match f.as_i64() {
+                            Some(freq) => json!([Value::Null, Value::Null, freq]),
+                            None => json!([Value::Null, Value::Null, Value::Null]),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let stored = serde_json::to_string(&triples).unwrap_or_else(|_| "[]".to_string());
+            db::with_db(state, |conn| {
+                conn.execute(
+                    "UPDATE profiles SET frequencies = ?1 WHERE id = ?2",
+                    rusqlite::params![stored, profile_id],
+                )
+                .ok();
+            });
+            Ok(json!(true))
+        }
+
+        ("db", "heat_delete") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            db::with_db(state, |conn| {
+                conn.execute("DELETE FROM heat_node WHERE heat_id = ?1", [heat_id]).ok();
+                conn.execute("DELETE FROM heat WHERE id = ?1", [heat_id]).ok();
+            });
+            {
+                let mut race = state.race.lock().unwrap();
+                if race.current_heat == Some(heat_id) {
+                    race.current_heat = None;
+                    race.node_pilots = vec![None; state.node_count()];
+                }
+            }
+            let payload = db::with_db(state, |conn| {
+                let race = state.race.lock().unwrap();
+                crate::payloads::build_heat_data(conn, &race)
+            });
+            crate::socket::broadcast(state, "heat_data", payload);
+            Ok(json!(true))
+        }
+
+        ("race", "laps") => Ok(db::with_db(state, |conn| {
+            let race = state.race.lock().unwrap();
+            crate::payloads::build_current_laps(conn, &race)
+        })),
+
+        // ---- saved races (marshal path) ----
+        ("db", "race_alter") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            let attributes = args.get("attributes").and_then(|v| v.as_object()).cloned();
+            db::with_db(state, |conn| {
+                if let Some(attributes) = &attributes {
+                    for (name, value) in attributes {
+                        // RHAPI stores attribute values as text; plugins pass
+                        // integers (race ids) as often as strings, and only a
+                        // real null clears an attribute.
+                        match value {
+                            Value::Null => {
+                                conn.execute(
+                                    "DELETE FROM saved_race_meta_attribute WHERE id = ?1 AND name = ?2",
+                                    rusqlite::params![race_id, name],
+                                )
+                                .ok();
+                            }
+                            Value::String(text) => {
+                                conn.execute(
+                                    "INSERT OR REPLACE INTO saved_race_meta_attribute (id, name, value)
+                                     VALUES (?1, ?2, ?3)",
+                                    rusqlite::params![race_id, name, text],
+                                )
+                                .ok();
+                            }
+                            other => {
+                                conn.execute(
+                                    "INSERT OR REPLACE INTO saved_race_meta_attribute (id, name, value)
+                                     VALUES (?1, ?2, ?3)",
+                                    rusqlite::params![race_id, name, other.to_string()],
+                                )
+                                .ok();
+                            }
+                        }
+                    }
+                }
+            });
+            Ok(json!(true))
+        }
+        ("db", "race_attribute_value") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            let name = arg_str("attribute").ok_or("attribute required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT value FROM saved_race_meta_attribute WHERE id = ?1 AND name = ?2",
+                    rusqlite::params![race_id, name],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+                .map(|v| json!(v))
+                .unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "race_ids_by_attribute") => {
+            let name = arg_str("attribute").ok_or("attribute required")?;
+            // Plugins pass the looked-up id as an integer or as text.
+            let value = args
+                .get("value")
+                .map(|v| match v {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+                .unwrap_or_default();
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM saved_race_meta_attribute WHERE name = ?1 AND value = ?2 ORDER BY id")
+                    .unwrap();
+                let rows = stmt
+                    .query_map(rusqlite::params![name, value], |r| r.get::<_, i64>(0))
+                    .unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<i64>>())
+            }))
+        }
+        ("db", "pilot_ids_by_attribute") => {
+            let name = arg_str("attribute").ok_or("attribute required")?;
+            // Plugins pass the looked-up id as an integer or as text.
+            let value = args
+                .get("value")
+                .map(|v| match v {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+                .unwrap_or_default();
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn
+                    .prepare("SELECT id FROM pilot_attribute WHERE name = ?1 AND value = ?2 ORDER BY id")
+                    .unwrap();
+                let rows = stmt
+                    .query_map(rusqlite::params![name, value], |r| r.get::<_, i64>(0))
+                    .unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<i64>>())
+            }))
+        }
+        ("db", "race_by_id") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, round_id, heat_id, class_id, format_id, \
+                            CAST(start_time AS TEXT) \
+                     FROM saved_race_meta WHERE id = ?1",
+                    [race_id],
+                    |r| {
+                        Ok(json!({
+                            "id": r.get::<_, i64>(0)?,
+                            "round_id": r.get::<_, i64>(1)?,
+                            "heat_id": r.get::<_, i64>(2)?,
+                            "class_id": r.get::<_, Option<i64>>(3)?,
+                            "format_id": r.get::<_, Option<i64>>(4)?,
+                            "start_time": r.get::<_, Option<String>>(5)?,
+                        }))
+                    },
+                )
+                .unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "pilotruns_by_race") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, race_id, node_index, pilot_id, enter_at, exit_at, \
+                                history_values, history_times FROM saved_pilot_race \
+                         WHERE race_id = ?1 ORDER BY id",
+                    )
+                    .unwrap();
+                let rows = stmt
+                    .query_map([race_id], |r| {
+                        Ok(json!({
+                            "id": r.get::<_, i64>(0)?,
+                            "race_id": r.get::<_, i64>(1)?,
+                            "node_index": r.get::<_, i64>(2)?,
+                            "pilot_id": r.get::<_, i64>(3)?,
+                            "enter_at": r.get::<_, Option<i64>>(4)?,
+                            "exit_at": r.get::<_, Option<i64>>(5)?,
+                            "history_values": r.get::<_, Option<String>>(6)?,
+                            "history_times": r.get::<_, Option<String>>(7)?,
+                        }))
+                    })
+                    .unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+        ("db", "laps_by_pilotrun") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, lap_time_stamp, lap_time, lap_time_formatted, source, deleted, peak_rssi \
+                         FROM saved_race_lap WHERE pilotrace_id = ?1 ORDER BY id",
+                    )
+                    .unwrap();
+                let rows = stmt
+                    .query_map([run_id], |r| {
+                        Ok(json!({
+                            "id": r.get::<_, i64>(0)?,
+                            "lap_time_stamp": r.get::<_, f64>(1)?,
+                            "lap_time": r.get::<_, f64>(2)?,
+                            "lap_time_formatted": r.get::<_, Option<String>>(3)?,
+                            "source": r.get::<_, Option<i64>>(4)?,
+                            "deleted": r.get::<_, Option<i64>>(5)?.unwrap_or(0) != 0,
+                            "peak_rssi": r.get::<_, Option<i64>>(6)?,
+                        }))
+                    })
+                    .unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+        ("db", "pilotrun_alter") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            let enter_at = args.get("enter_at").and_then(|v| v.as_i64());
+            let exit_at = args.get("exit_at").and_then(|v| v.as_i64());
+            let laps = args.get("laps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let (race_id, pilot_id) = db::with_db(state, |conn| {
+                let ids: (i64, i64) = conn
+                    .query_row(
+                        "SELECT race_id, pilot_id FROM saved_pilot_race WHERE id = ?1",
+                        [run_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap_or((0, 0));
+                if enter_at.is_some() {
+                    conn.execute(
+                        "UPDATE saved_pilot_race SET enter_at = ?1 WHERE id = ?2",
+                        rusqlite::params![enter_at, run_id],
+                    )
+                    .ok();
+                }
+                if exit_at.is_some() {
+                    conn.execute(
+                        "UPDATE saved_pilot_race SET exit_at = ?1 WHERE id = ?2",
+                        rusqlite::params![exit_at, run_id],
+                    )
+                    .ok();
+                }
+                conn.execute("DELETE FROM saved_race_lap WHERE pilotrace_id = ?1", [run_id])
+                    .ok();
+                for lap in &laps {
+                    let stamp = lap.get("lap_time_stamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let time = lap.get("lap_time").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let formatted = lap.get("lap_time_formatted").and_then(|v| v.as_str());
+                    let source = lap.get("source").and_then(|v| v.as_i64()).unwrap_or(4);
+                    let deleted = lap.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let peak = lap.get("peak_rssi").and_then(|v| v.as_i64());
+                    conn.execute(
+                        "INSERT INTO saved_race_lap (race_id, pilotrace_id, node_index, pilot_id,
+                                                     lap_time_stamp, lap_time, lap_time_formatted,
+                                                     source, deleted, peak_rssi)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        rusqlite::params![ids.0, run_id,
+                                          conn.query_row("SELECT node_index FROM saved_pilot_race WHERE id = ?1",
+                                                         [run_id], |r| r.get::<_, i64>(0)).unwrap_or(0),
+                                          ids.1, stamp, time, formatted, source,
+                                          if deleted { 1 } else { 0 }, peak],
+                    )
+                    .ok();
+                }
+                ids
+            });
+            crate::socket::emit_plugin_event(
+                state,
+                "lapsResave",
+                &json!({"race_id": race_id, "pilot_id": pilot_id}),
+            );
+            Ok(json!(true))
+        }
+
+        // ---- seat colours re-read from config (RHAPI race.update_colors) ----
+        ("race", "update_colors") => {
+            let payload = crate::payloads::build_seat_data(state);
+            crate::socket::broadcast(state, "seat_data", payload);
+            Ok(json!(true))
+        }
+
         _ => Err(format!("Unknown RHAPI method: {}.{}", object, method)),
     }
 }
 
+
+/// Forwards a client socket event to the bridge and waits for the plugin's
+/// return value, which becomes the socket ack. Null when no bridge answers.
+pub async fn invoke_plugin(state: &SharedState, event: &str, args: Value) -> Value {
+    use std::sync::atomic::Ordering;
+    let id = state.plugin_seq.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.plugin_pending.lock().unwrap().insert(id, tx);
+    crate::socket::broadcast_payload(
+        state,
+        "plugin_invoke",
+        json!({"id": id, "event": event, "args": args}),
+    );
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(value)) => value,
+        _ => {
+            state.plugin_pending.lock().unwrap().remove(&id);
+            Value::Null
+        }
+    }
+}
 
 /// Registers the RPC endpoint on a connected socket (called from the
 /// socket.io namespace handler).
@@ -575,6 +949,7 @@ pub fn register_rpc(
     state: SharedState,
 ) {
     use socketioxide::extract::{AckSender, Data};
+    let state_for_result = state.clone();
     socket.on(
         "rhapi_call",
         move |ack: AckSender, data: Data<Value>| async move {
@@ -587,6 +962,20 @@ pub fn register_rpc(
                 Err(e) => json!({"error": e}),
             };
             let _ = ack.send(&response);
+        },
+    );
+
+    // Reply channel for server -> bridge invocations (plugin_invoke).
+    socket.on(
+        "plugin_result",
+        move |data: Data<Value>| async move {
+            let id = data.0.get("id").and_then(|v| v.as_u64());
+            if let Some(id) = id {
+                let sender = state_for_result.plugin_pending.lock().unwrap().remove(&id);
+                if let Some(tx) = sender {
+                    let _ = tx.send(data.0.get("result").cloned().unwrap_or(Value::Null));
+                }
+            }
         },
     );
 }

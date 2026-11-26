@@ -248,6 +248,9 @@ async fn main() {
         server_instance_token: state::now_epoch_ms() as f64 + (state::monotonic() * 1000.0).fract(),
         cal_undo: std::sync::Mutex::new(std::collections::HashMap::new()),
         config_load_items: std::sync::Mutex::new(std::collections::HashMap::new()),
+        plugin_listeners: std::sync::Mutex::new(Vec::new()),
+        plugin_pending: std::sync::Mutex::new(std::collections::HashMap::new()),
+        plugin_seq: std::sync::atomic::AtomicU64::new(1),
     });
 
     let (socketio_layer, io) = SocketIo::builder()

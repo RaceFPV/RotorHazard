@@ -235,10 +235,45 @@ pub fn register_lap_at(state: &SharedState, node_index: usize, now: f64) {
     broadcast(&state, "current_laps", laps_payload);
     state.led_manager.trigger("raceLapRecorded", &json!({"node_index": node_index}));
     state.vrx_manager.do_race_lap_recorded(&json!({"node_index": node_index}));
+    // Plugins (RHAPI) read frequency, peak_rssi and the lap object itself
+    // from the raceLapRecorded args; Python passes the same shape.
+    let (pilot_id, heat_id, lap) = {
+        let race = state.race.lock().unwrap();
+        (
+            race.node_pilots.get(node_index).copied().flatten(),
+            race.current_heat,
+            race.node_laps
+                .get(node_index)
+                .and_then(|laps| laps.last())
+                .cloned(),
+        )
+    };
+    // profile_frequencies yields (band, channel, frequency) per seat.
+    let frequency = db::with_db(state, |conn| {
+        let profile_id = db::current_profile_id(conn);
+        db::profile_frequencies(conn, profile_id)
+            .get(node_index)
+            .map(|entry| entry.2)
+            .unwrap_or(0)
+    });
+    let lap_json = match &lap {
+        Some(lap) => json!({
+            "lap_time_stamp": lap.lap_time_stamp,
+            "lap_time": lap.lap_time,
+            "lap_time_stamp_ms": lap.lap_time_stamp,
+            "source": lap.source,
+            "deleted": lap.deleted,
+            "peak_rssi": lap.peak_rssi,
+        }),
+        None => serde_json::Value::Null,
+    };
     let args = json!({
         "node_index": node_index,
-        "pilot_id": state.race.lock().unwrap().node_pilots.get(node_index).copied().flatten(),
-        "heat_id": state.race.lock().unwrap().current_heat,
+        "pilot_id": pilot_id,
+        "heat_id": heat_id,
+        "frequency": frequency,
+        "peak_rssi": lap.as_ref().and_then(|l| l.peak_rssi).unwrap_or(0),
+        "lap": lap_json,
     });
     state.actions_engine.do_actions(state, "raceLapRecorded", &args);
     crate::socket::emit_plugin_event(state, "raceLapRecorded", &args);
@@ -480,6 +515,13 @@ pub fn save_laps(state: &SharedState) -> bool {
         race.race_status = RACE_STATUS_READY;
     }
     if saved {
+        // RHAPI's lapsSave carries the saved race id: plugins tag the race
+        // (FPVTrackSide stores its own id on it) and marshal against it later.
+        let race_id = db::with_db(state, |conn| {
+            conn.query_row("SELECT MAX(id) FROM saved_race_meta", [], |r| r.get::<_, i64>(0))
+                .unwrap_or(0)
+        });
+        crate::socket::emit_plugin_event(state, "lapsSave", &json!({"race_id": race_id}));
         broadcast(&state, "race_saved", json!({}));
         emit_race_status(state);
         // race list broadcast lives in socket.rs to reuse its builder
