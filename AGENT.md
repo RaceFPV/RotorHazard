@@ -264,10 +264,50 @@ runs community plugins (unmodified RHAPI code) against the Rust server:
 Rust server ←→ localhost socket.io ←→ rhapi_bridge.py ←→ user plugins
 ```
 
-- Server emits `rhapi_event` {event, args} for internal events
-- Bridge subscribes, dispatches to plugin hooks
-- Plugin RHAPI calls go back as `rhapi_call` {object, method, args} with ack
-- Server answers in `pluginrpc.rs` (db reads, race status, ui messaging)
+- Plugin RHAPI calls go out as `rhapi_call` {object, method, args} with an ack;
+  `pluginrpc.rs` answers (db, race control, ui, config, marshal path)
+- Server emits `rhapi_event` {event, args} for internal events; the bridge
+  dispatches them to plugin hooks
+- Inbound: the bridge declares its listener names via `plugin.listen`; the
+  socket connect handler registers a forwarder per name, so a client emit of
+  `ts_race_stage` reaches the plugin and its return value becomes the socket ack
+  (`plugin_invoke` → `plugin_result`, 10s timeout, null if no bridge)
+
+Verified against Connector-FPVTrackSide (the most-used community plugin):
+stage, lap telemetry, stop/save, lean mode, event naming, frequency and colour
+setup, abort, and the marshal round trip all work; `COMPATIBILITY.md` (generated
+by `rust/tools/gen_compat_matrix.py`) reports 0 of 50 RHAPI calls missing.
+
+**Running the end-to-end test**
+
+```bash
+git clone https://github.com/RotorHazard/Connector-FPVTrackSide /tmp/plugin-fpv
+bash rust/plugin-bridge/e2e_plugin.sh      # server + bridge + a client playing FPVTrackSide
+```
+
+`rust/plugin-bridge/probe_plugin.sh` is the lighter "does it load" check.
+
+**Server-internal imports**: plugins import `RHRace`, `RHUI`, `eventmanager`,
+`RHUtils`, `Database` — server modules a Rust deployment does not have.
+`rh_compat/` ships AST-sliced copies of exactly those symbols, regenerated from
+`src/server` by `rust/tools/gen_rh_compat.py` (it keeps `@dataclass` decorators
+and typing imports; dropping either breaks `UIField()`).
+
+**Gotchas that cost real time**
+
+- Never dispatch plugin work on the socket.io reader thread: handlers make
+  blocking RPC calls and the reader is what delivers their acks. Both
+  `plugin_invoke` and `rhapi_event` run on worker threads.
+- Forwarders must use `TryData<Value>`; a mandatory `Data` extractor silently
+  skips the handler when a client emits no payload.
+- Event args are dict-like with record values wrapped: `args['node_index']` and
+  `args['lap'].lap_time_stamp` both work, as in Python.
+- Attribute tables are `(id, name, value)` where `id` is the owning row — not
+  `(pilot_id, attribute, value)`. Values are text, but plugins pass integers;
+  only a real null clears one.
+- `pilot_add` must set `active` (NOT NULL).
+- The server may report failure inside the result envelope; the bridge raises on
+  that, otherwise plugins receive an error object where a list is expected.
 
 Without the bridge: no plugins, no problem. The server is pure Rust.
 
