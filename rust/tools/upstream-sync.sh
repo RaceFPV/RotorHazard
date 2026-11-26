@@ -46,6 +46,18 @@ fi
 log() { echo "$LOG_PREFIX $*"; }
 die() { echo "$LOG_PREFIX ERROR: $*" >&2; exit 1; }
 
+# Keep a copy of the attempted port before it is discarded, so a failed sync
+# can be inspected instead of guessed at.
+dump_port() {
+    local dir="${SYNC_ARTIFACT_DIR:-/tmp/sync-artifacts}"
+    mkdir -p "$dir" 2>/dev/null || true
+    git add -A 2>/dev/null || true
+    git diff --cached "${PRE_MERGE_SHA:-HEAD}" > "$dir/port.diff" 2>/dev/null || true
+    local size
+    size=$(wc -c < "$dir/port.diff" 2>/dev/null || echo 0)
+    log "attempted port saved to $dir/port.diff ($size bytes)"
+}
+
 # Publish a merge-only outcome: no ported Rust, so no review is needed and it
 # goes straight to rust whatever SYNC_MODE says. Opening a PR for a pure
 # upstream merge would be noise.
@@ -105,6 +117,7 @@ run_gates() {
         log "test run $attempt failed (rc $test_rc)"
         if [ "$attempt" = "2" ]; then
             log "TESTS FAILED"
+            dump_port
             log "Test output: $test_out"
             return 1
         fi
@@ -156,6 +169,7 @@ run_gates() {
         # Naming the failures matters: the run log is the only debugging channel
         # when this happens unattended.
         log "PROTOCOL SUITE FAILED"
+        dump_port
         grep -E '^(FAIL|ERROR):' "$suite_out" | sed 's/^/    /' | head -20 || true
         tail -25 "$suite_out" | sed 's/^/    /' || true
         return 1
@@ -391,6 +405,13 @@ Add a focused test to the matching suite file (create protocol_upstream.rs
 for unrelated areas). Tests must assert the NEW upstream behavior so the
 suite fails if the port is wrong. Do not modify the harness. If the change
 is purely internal, output no test edits.
+
+Do NOT invent expectations. Every assertion must come from the Python diff or
+from the CURRENT RUST SOURCE above; when the two disagree, the Rust source
+wins because your test has to pass against the server as it exists. For
+example the JSON API returns 201 with a {"status": ...} wrapper for
+/api/status -- a test asserting 200 will fail and the whole port is rejected.
+If you are unsure of a value, assert on shape (key present, type) instead.
 PROMPT_END2
 
 log "calling LLM: ${LLM_MODEL:-deepseek/deepseek-v4.1-flash-1017} via ${LLM_BASE_URL:-https://openrouter.ai/api/v1/chat/completions}"
@@ -443,6 +464,7 @@ case "$PORT_RESULT" in
         ;;
     *)
         log "PORT REJECTED: $PORT_RESULT — reverting"
+        dump_port
         git reset --hard "$PRE_MERGE_SHA"
         die "port rejected: $PORT_RESULT"
         ;;
