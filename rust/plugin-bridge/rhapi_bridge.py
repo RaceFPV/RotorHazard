@@ -574,8 +574,6 @@ class Bridge:
         '''Call the handlers a plugin registered for a socket event, as the
         server would when a client emits it.'''
         handlers = self.listeners.get(event, [])
-                                           else {k: args[k] for k in list(args)[:6]}),
-              file=sys.stderr)
         if not handlers:
             return {'error': 'no listener for ' + event}
         results = []

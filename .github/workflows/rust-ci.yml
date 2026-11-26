@@ -54,3 +54,31 @@ jobs:
 
       - name: Protocol integration tests
         run: cargo test --release --manifest-path rust/server/Cargo.toml --test protocol_core --test protocol_more --test protocol_autoadjust --test protocol_heartbeat
+
+  plugins:
+    name: Plugin compatibility (Connector-FPVTrackSide)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
+
+      - name: Build (release)
+        run: cargo build --release --manifest-path rust/server/Cargo.toml
+
+      - name: Install python client deps
+        run: python3 -m pip install --quiet 'python-socketio[client]' requests
+
+      - name: Clone the plugin under test
+        run: git clone --depth 1 https://github.com/RotorHazard/Connector-FPVTrackSide /tmp/plugin-fpv
+
+      - name: Plugin end-to-end (stage, laps, save, marshal)
+        env:
+          PYTHON_BIN: python3
+          PLUGIN_DIR: /tmp/plugin-fpv/custom_plugins/rh_connector_trackside
+        run: bash rust/plugin-bridge/e2e_plugin.sh

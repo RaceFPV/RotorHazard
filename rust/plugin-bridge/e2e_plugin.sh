@@ -1,8 +1,9 @@
 #!/bin/bash
 # End-to-end plugin transport: server + bridge + a client playing FPVTrackSide.
 set -uo pipefail
-cd "$HOME/git/RotorHazard" || exit 1
-SC=/mnt/c/Users/RaceF/AppData/Local/hermes/cache/scratch
+cd "$(cd "$(dirname "$0")/../.." && pwd)" || exit 1
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="${PYTHON_BIN:-$HOME/.venvs/rh/bin/python}"
 
 PORT=5884
 DATA=$(mktemp -d /tmp/rh-e2e.XXXXXX)
@@ -14,7 +15,7 @@ RH_DATA_DIR="$DATA" RH_NODES=8 ./rust/target/release/rh-server > "$DATA/server.l
 SPID=$!
 for i in $(seq 1 40); do sleep 0.5; curl -sf "http://127.0.0.1:$PORT/api/status" >/dev/null 2>&1 && break; done
 
-"$HOME/.venvs/rh/bin/python" -u rust/plugin-bridge/rhapi_bridge.py \
+"$PY" -u rust/plugin-bridge/rhapi_bridge.py \
     --server "http://127.0.0.1:$PORT" --plugins-dir "$DATA/plugins" \
     --plugins rh_connector_trackside > "$DATA/bridge.log" 2>&1 &
 BPID=$!
@@ -24,10 +25,10 @@ echo "=== bridge startup"
 head -6 "$DATA/bridge.log"
 
 echo "=== client (plays FPVTrackSide)"
-"$HOME/.venvs/rh/bin/python" "$SC/fpvtrackside_client.py" "http://127.0.0.1:$PORT"
+"$PY" "$HERE/fpvtrackside_client.py" "http://127.0.0.1:$PORT"
 
 echo "=== database"
-"$HOME/.venvs/rh/bin/python" - "$DATA/database.db" <<'PY'
+"$PY" - "$DATA/database.db" <<'PY'
 import sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
 print("heats :", db.execute("select id, note from heat order by id").fetchall())
