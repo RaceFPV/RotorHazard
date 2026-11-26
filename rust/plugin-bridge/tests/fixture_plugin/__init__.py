@@ -54,6 +54,30 @@ def _probe(rhapi):
     check('db.backup_list', lambda: rhapi.db.backup_list)
     check('db.option', lambda: rhapi.db.option('_fixture_flag'))
 
+    # Objects must look like Python's: every row carries `.id`, plus its own FK
+    # fields under the same names the Python models use.
+    def rows_have_ids():
+        for name in ('pilots', 'heats', 'races', 'raceclasses', 'raceformats',
+                     'frequencysets', 'slots', 'pilotruns'):
+            rows = getattr(rhapi.db, name)
+            if not rows:
+                continue
+            row = rows[0]
+            if getattr(row, 'id', None) is None:
+                raise AssertionError('%s row has no .id (keys: %r)'
+                                     % (name, list(row.keys())))
+
+    check('db rows expose .id', rows_have_ids)
+
+    def object_attributes():
+        for heat in rhapi.db.heats:
+            heat.display_name if hasattr(heat, 'display_name') else None
+        for fmt in rhapi.db.raceformats:
+            if getattr(fmt, 'unlimited_time', None) is None:
+                raise AssertionError('raceformat has no unlimited_time')
+
+    check('db objects expose python attributes', object_attributes)
+
     check('race.status', lambda: rhapi.race.status)
     check('race.pilots', lambda: rhapi.race.pilots)
     check('race.slots', lambda: rhapi.race.slots)

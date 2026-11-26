@@ -35,6 +35,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let rows = stmt
                 .query_map([], |r| {
                     Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
                         "pilot_id": r.get::<_, i64>(0)?,
                         "callsign": r.get::<_, String>(1)?,
                         "name": r.get::<_, Option<String>>(2)?,
@@ -54,7 +55,8 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                     [pilot_id],
                     |r| {
                         Ok(json!({
-                            "pilot_id": r.get::<_, i64>(0)?,
+                            "id": r.get::<_, i64>(0)?,
+                        "pilot_id": r.get::<_, i64>(0)?,
                             "callsign": r.get::<_, String>(1)?,
                             "name": r.get::<_, Option<String>>(2)?,
                             "team": r.get::<_, Option<String>>(3)?,
@@ -127,6 +129,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let rows = stmt
                 .query_map([], |r| {
                     Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
                         "heat_id": r.get::<_, i64>(0)?,
                         "display_name": r.get::<_, String>(1)?,
                         "class_id": r.get::<_, Option<i64>>(2)?,
@@ -167,6 +170,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let rows = stmt
                 .query_map([], |r| {
                     Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
                         "class_id": r.get::<_, i64>(0)?,
                         "name": r.get::<_, Option<String>>(1)?,
                         "description": r.get::<_, Option<String>>(2)?,
@@ -188,6 +192,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let rows = stmt
                 .query_map([], |r| {
                     Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
                         "format_id": r.get::<_, i64>(0)?,
                         "name": r.get::<_, String>(1)?,
                         "unlimited_time": r.get::<_, i64>(2)?,
@@ -213,6 +218,7 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             let rows = stmt
                 .query_map([], |r| {
                     Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
                         "race_id": r.get::<_, i64>(0)?,
                         "heat_id": r.get::<_, i64>(1)?,
                         "round_id": r.get::<_, i64>(2)?,
@@ -1145,8 +1151,6 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                 .unwrap();
             json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
         })),
-        ("db", "raceclasses") => Ok(db::with_db(state, crate::payloads::build_class_data)),
-        ("db", "raceformats") => Ok(db::with_db(state, crate::payloads::build_format_data)),
         ("db", "frequencysets") => Ok(db::with_db(state, |conn| {
             let mut stmt = conn
                 .prepare("SELECT id, name, description FROM profiles ORDER BY id")

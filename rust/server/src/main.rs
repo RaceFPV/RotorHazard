@@ -153,7 +153,28 @@ async fn main() {
     }
     crate::phase3::set_languages(crate::assets::load_languages());
 
-    let conn = db::open_or_init(&data_dir).expect("failed to open/init database");
+    // Opening the database runs the schema init/migrations. Under heavy parallel
+    // load (the protocol suite spawns one server per test) SQLite can transiently
+    // refuse, and a panic here looks like "server not ready" ten seconds later in
+    // whatever test happened to grab that port.
+    let conn = {
+        let mut attempt = 0u32;
+        loop {
+            match db::open_or_init(&data_dir) {
+                Ok(conn) => break conn,
+                Err(err) if attempt < 5 => {
+                    attempt += 1;
+                    tracing::warn!(
+                        "database open failed ({}); retry {}/5",
+                        err,
+                        attempt
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100 * attempt as u64));
+                }
+                Err(err) => panic!("failed to open/init database: {}", err),
+            }
+        }
+    };
 
     // serial ports come from the config file (GENERAL.SERIAL_PORTS)
     let serial_ports: Vec<String> = std::fs::read_to_string(&config_path)
