@@ -282,6 +282,16 @@ export/import and heat generation run server-side, event results are not cached,
 `interface.*` registrations are accepted no-ops). `COMPATIBILITY.md` answers the
 narrower question — what one specific plugin needs.
 
+**Tests that protect this**: `rust/plugin-bridge/test_plugin_fixture.sh` runs an
+in-repo fixture plugin (`tests/fixture_plugin`) that calls 42 representative
+RHAPI members, registers a panel/option/attributes, stages a race and listens for
+laps (`tests/fixture_client.py` asserts the panel, the call results, the '1'/'0'
+option round-trip and the lap events). It needs no network and takes ~25s, so it
+is a hard gate in `rust-ci.yml` AND in the upstream-sync `run_gates()`; the
+sync gate also runs the real Connector-FPVTrackSide e2e whenever its clone
+succeeds. Without this, a port could compile, pass the protocol suite and still
+break every plugin.
+
 **Panels**: `ui.register_panel` + `fields.register_option` are stored in
 `SharedState` and served on `load_data [{"type":"ui","value":"settings"}]` in the
 `RHUI.emit_ui` shape; `rh-ui.js` builds them into `#custom-ui`. Note the frontend
