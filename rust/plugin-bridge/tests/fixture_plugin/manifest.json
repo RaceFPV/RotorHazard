@@ -1,0 +1,9 @@
+{
+  "domain": "fixture_plugin",
+  "name": "Bridge Fixture Plugin",
+  "author": "RotorHazard Rust port",
+  "description": "Exercises the RHAPI surface so bridge regressions fail a fast test",
+  "license": "RotorHazard",
+  "version": "1.0.0",
+  "required_rhapi_version": "1.7"
+}

@@ -74,6 +74,11 @@ jobs:
       - name: Install python client deps
         run: python3 -m pip install --quiet 'python-socketio[client]' requests
 
+      - name: Plugin bridge fixture (in-repo, offline)
+        env:
+          PYTHON_BIN: python3
+        run: bash rust/plugin-bridge/test_plugin_fixture.sh
+
       - name: Clone the plugin under test
         run: git clone --depth 1 https://github.com/RotorHazard/Connector-FPVTrackSide /tmp/plugin-fpv
 

@@ -233,6 +233,38 @@ run_gates() {
         return 1
     fi
     log "protocol suite passed"
+
+    # Plugin compatibility gate. The fixture is in-repo and fast; the connector
+    # is the plugin users actually run. A port that compiles and passes the
+    # protocol suite can still break the bridge (RHAPI surface, panel payload,
+    # option encoding), and nothing else in this pipeline would notice.
+    log "running plugin bridge fixture..."
+    export PYTHON_BIN="$py"
+    if ! bash rust/plugin-bridge/test_plugin_fixture.sh > /tmp/sync-plugin-fixture.log 2>&1; then
+        log "PLUGIN BRIDGE FIXTURE FAILED"
+        dump_port
+        tail -20 /tmp/sync-plugin-fixture.log | sed 's/^/    /' || true
+        return 1
+    fi
+    log "plugin bridge fixture passed"
+
+    if [ "${SKIP_PLUGIN_E2E:-0}" != "1" ]; then
+        local plug_dir=/tmp/rh-sync-plugin
+        rm -rf "$plug_dir"
+        if git clone --depth 1 -q https://github.com/RotorHazard/Connector-FPVTrackSide "$plug_dir" 2>/dev/null; then
+            log "running Connector-FPVTrackSide end-to-end..."
+            if ! PLUGIN_DIR="$plug_dir/custom_plugins/rh_connector_trackside" \
+                 bash rust/plugin-bridge/e2e_plugin.sh > /tmp/sync-plugin-e2e.log 2>&1; then
+                log "CONNECTOR PLUGIN E2E FAILED"
+                dump_port
+                tail -25 /tmp/sync-plugin-e2e.log | sed 's/^/    /' || true
+                return 1
+            fi
+            log "connector plugin e2e passed"
+        else
+            log "WARNING: could not clone the connector plugin; e2e skipped this run"
+        fi
+    fi
     return 0
 }
 

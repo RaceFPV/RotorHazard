@@ -67,6 +67,24 @@ class Obj:
     def __getitem__(self, key):
         return wrap(object.__getattribute__(self, '_data')[key])
 
+    # Dict-like access: snapshot payloads and event args are read with .get(),
+    # keys() and `in` as often as with attribute access.
+    def get(self, key, default=None):
+        return wrap(object.__getattribute__(self, '_data').get(key, default))
+
+    def keys(self):
+        return object.__getattribute__(self, '_data').keys()
+
+    def items(self):
+        return ((key, wrap(value))
+                for key, value in object.__getattribute__(self, '_data').items())
+
+    def __contains__(self, key):
+        return key in object.__getattribute__(self, '_data')
+
+    def __iter__(self):
+        return iter(object.__getattribute__(self, '_data'))
+
     def __repr__(self):
         return 'Obj(%r)' % (object.__getattribute__(self, '_data'),)
 
