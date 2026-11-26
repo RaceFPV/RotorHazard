@@ -22,8 +22,13 @@ use std::time::Duration;
 include!(concat!(env!("OUT_DIR"), "/bridge_assets.rs"));
 
 /// Where the bridge lives inside the data directory.
+///
+/// Deliberately distinctive: the data directory belongs to the user and holds a
+/// Python RotorHazard install's config.json, database.db and plugins/ after an
+/// upgrade, so this must never collide with a name a user or an older server
+/// might already use.
 pub fn bridge_dir(data_dir: &str) -> PathBuf {
-    Path::new(data_dir).join("bridge")
+    Path::new(data_dir).join("plugin-bridge")
 }
 
 /// Write the embedded bridge to `<data_dir>/bridge/`, skipping unchanged files.
@@ -144,7 +149,7 @@ pub fn autostart(data_dir: &str, http_port: u16) {
 
     let script = dir.join("rhapi_bridge.py");
     let url = format!("http://127.0.0.1:{}", http_port);
-    let log_path = Path::new(data_dir).join("bridge.log");
+    let log_path = Path::new(data_dir).join("plugin-bridge.log");
 
     tracing::info!(
         "plugin bridge: starting {} plugin(s) with {} ({})",
@@ -164,7 +169,11 @@ pub fn autostart(data_dir: &str, http_port: u16) {
                 .open(&log_path);
             let mut command = Command::new(&python);
             command
-                .arg("-u")   // unbuffered: plugin output must reach bridge.log live
+                .arg("-u")   // unbuffered: plugin output must reach plugin-bridge.log live
+                // Never write .pyc files into the user's data directory: the
+                // import of their plugin would otherwise litter plugins/ with
+                // __pycache__ (and fail on a read-only mount).
+                .env("PYTHONDONTWRITEBYTECODE", "1")
                 .arg(&script)
                 .arg("--server")
                 .arg(&url)
@@ -261,6 +270,87 @@ mod tests {
                 .unwrap()
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+
+    /// The data directory may already hold a Python RotorHazard install. Nothing
+    /// outside `plugin-bridge/` may be created, changed or removed - not on first
+    /// run, not on upgrade, not when the revision marker is stale.
+    #[test]
+    fn the_rest_of_the_data_dir_is_never_touched() {
+        let dir = temp_dir("non-destructive");
+        let root = dir.to_str().unwrap().to_string();
+
+        // A realistic pre-upgrade data directory, as the Python server leaves it.
+        let sentinels: &[(&str, &str)] = &[
+            ("config.json", "{\"GENERAL\":{\"HTTP_PORT\":5000}}"),
+            ("database.db", "SQLite format 3\0"),
+            ("plugins/rh_connector_trackside/__init__.py", "# user's plugin\n"),
+            ("plugins/rh_connector_trackside/manifest.json", "{\"domain\":\"x\"}"),
+            ("custom_plugins/legacy.py", "# an older layout\n"),
+            ("static/custom.css", "/* user styling */"),
+            ("database.db-wal", "wal"),
+        ];
+        for (rel, contents) in sentinels {
+            let path = Path::new(&root).join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+        }
+        let before = snapshot(&root);
+
+        // First run, an unchanged re-run, and an upgrade (stale marker).
+        materialise(&root).unwrap();
+        materialise(&root).unwrap();
+        fs::write(bridge_dir(&root).join(".revision"), "stale").unwrap();
+        materialise(&root).unwrap();
+
+        for (rel, contents) in sentinels {
+            let on_disk = fs::read_to_string(Path::new(&root).join(rel)).unwrap();
+            assert_eq!(&on_disk, contents, "{} was modified", rel);
+        }
+
+        let after = snapshot(&root);
+        for (path, mtime) in &before {
+            assert_eq!(
+                after.get(path),
+                Some(mtime),
+                "{} changed or disappeared",
+                path
+            );
+        }
+        for path in after.keys() {
+            assert!(
+                before.contains_key(path) || path.starts_with("plugin-bridge/"),
+                "{} was created outside plugin-bridge/",
+                path
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Every file under `root`, with the bytes it holds (path -> length + mtime).
+    fn snapshot(root: &str) -> std::collections::BTreeMap<String, (u64, std::time::SystemTime)> {
+        let mut out = std::collections::BTreeMap::new();
+        fn walk(base: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, (u64, std::time::SystemTime)>) {
+            let Ok(entries) = fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(base, &path, out);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let meta = fs::metadata(&path).unwrap();
+                out.insert(rel, (meta.len(), meta.modified().unwrap()));
+            }
+        }
+        walk(Path::new(root), Path::new(root), &mut out);
+        out
     }
 
     #[test]

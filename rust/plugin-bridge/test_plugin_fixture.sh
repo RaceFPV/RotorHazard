@@ -28,17 +28,17 @@ for i in $(seq 1 40); do sleep 0.5; curl -sf "http://127.0.0.1:$PORT/api/status"
 LOADED=0
 for i in $(seq 1 40); do
     sleep 0.5
-    if grep -q "loaded plugin: fixture_plugin" "$DATA/bridge.log" 2>/dev/null; then
+    if grep -q "loaded plugin: fixture_plugin" "$DATA/plugin-bridge.log" 2>/dev/null; then
         LOADED=1
         break
     fi
 done
 if [ "$LOADED" != "1" ]; then
-    echo "FAIL: the server did not start the bridge (no 'loaded plugin' in bridge.log)"
+    echo "FAIL: the server did not start the bridge (no 'loaded plugin' in plugin-bridge.log)"
     echo "--- server log"
     tail -20 "$DATA/server.log"
     echo "--- bridge log"
-    tail -20 "$DATA/bridge.log" 2>/dev/null
+    tail -20 "$DATA/plugin-bridge.log" 2>/dev/null
     kill "$SPID" 2>/dev/null || true
     rm -rf "$DATA"
     exit 1
@@ -49,7 +49,7 @@ RC=$?
 
 if [ "$RC" != "0" ]; then
     echo "--- bridge log"
-    tail -40 "$DATA/bridge.log" 2>/dev/null
+    tail -40 "$DATA/plugin-bridge.log" 2>/dev/null
     echo "--- server log"
     tail -20 "$DATA/server.log"
 fi

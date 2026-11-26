@@ -284,13 +284,21 @@ narrower question — what one specific plugin needs.
 
 **The bridge ships inside the binary.** `rust/server/build.rs` embeds
 `rhapi_bridge.py` and `rh_compat/**` and derives a revision hash from their
-contents; `plugin_support::materialise()` writes them to `<data_dir>/bridge/` and
+contents; `plugin_support::materialise()` writes them to `<data_dir>/plugin-bridge/` and
 rewrites only when the binary's copy differs. On start-up (after the port is
 bound) `plugin_support::autostart()` spawns `python -u <bridge> --server
 http://127.0.0.1:<port> --plugins-dir <data_dir>/plugins`, logs to
-`<data_dir>/bridge.log`, and restarts a crashed bridge up to five times. So
+`<data_dir>/plugin-bridge.log`, and restarts a crashed bridge up to five times. So
 upgrading is still "replace one binary": no download, no bridge version to
 manage, no drift between server and bridge. `RH_PLUGIN_BRIDGE=0` disables it.
+
+The data directory belongs to the user — after an upgrade from the Python server
+it already holds their `config.json`, `database.db` and `plugins/`. The bridge
+therefore lives in its own `plugin-bridge/` subdirectory and nothing else in the
+data dir is created, modified or removed (there is a unit test that fails if a
+single file outside it changes, and the child runs with
+`PYTHONDONTWRITEBYTECODE=1` so importing a plugin does not litter `plugins/`
+with `__pycache__`).
 The one host requirement is Python 3 with `python-socketio`; without it the
 server logs a clear warning and runs normally without plugins.
 

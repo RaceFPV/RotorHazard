@@ -21,11 +21,11 @@ for i in $(seq 1 40); do sleep 0.5; curl -sf "http://127.0.0.1:$PORT/api/status"
 
 for i in $(seq 1 40); do
     sleep 0.5
-    grep -q "loaded plugin: rh_connector_trackside" "$DATA/bridge.log" 2>/dev/null && break
+    grep -q "loaded plugin: rh_connector_trackside" "$DATA/plugin-bridge.log" 2>/dev/null && break
 done
 
 echo "=== bridge startup (spawned by the server)"
-head -6 "$DATA/bridge.log"
+head -6 "$DATA/plugin-bridge.log"
 
 echo "=== client (plays FPVTrackSide)"
 "$PY" "$HERE/fpvtrackside_client.py" "http://127.0.0.1:$PORT"
@@ -52,7 +52,7 @@ db.close()
 PY
 
 echo "=== bridge errors"
-grep -i "error\|traceback" "$DATA/bridge.log" | head -6
+grep -i "error\|traceback" "$DATA/plugin-bridge.log" | head -6
 
 kill "$SPID" 2>/dev/null || true
 wait 2>/dev/null || true
