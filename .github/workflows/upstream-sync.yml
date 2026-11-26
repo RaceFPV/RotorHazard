@@ -137,9 +137,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SYNC_MODE: ${{ vars.SYNC_MODE }}
           SYNC_ARGS: ${{ inputs.dry_run && '--dry-run' || '' }}
+          SYNC_ARTIFACT_DIR: /tmp/sync-artifacts
         run: |
           chmod +x rust/tools/upstream-sync.sh
           ./rust/tools/upstream-sync.sh ${SYNC_ARGS:-}
+
+      - name: Upload attempted port
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-port-diff
+          path: /tmp/sync-artifacts
+          if-no-files-found: ignore
 
       - name: Report failure
         if: failure()
