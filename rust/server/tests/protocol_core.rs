@@ -79,6 +79,36 @@ fn test_http_api_status() {
 }
 
 #[test]
+fn test_security_headers_present_on_responses() {
+    with_server(|server, _client, _| {
+        // Python's after_request adds hardening headers to every response
+        // (X-Content-Type-Options: nosniff, Referrer-Policy: same-origin).
+        for path in ["/api/status", "/"] {
+            let resp = ureq::get(&format!("{}{}", server.base_url, path))
+                .call()
+                .expect("request failed");
+            let headers = resp.headers();
+            assert_eq!(
+                headers
+                    .get("x-content-type-options")
+                    .and_then(|v| v.to_str().ok()),
+                Some("nosniff"),
+                "{} missing X-Content-Type-Options header",
+                path
+            );
+            assert_eq!(
+                headers
+                    .get("referrer-policy")
+                    .and_then(|v| v.to_str().ok()),
+                Some("same-origin"),
+                "{} missing Referrer-Policy header",
+                path
+            );
+        }
+    });
+}
+
+#[test]
 fn test_http_api_pilot_roundtrip() {
     with_server(|_server, client, _| {
         let resp = client.emit_and_wait("load_data", &json!({"load_types": ["pilot_data"]}), "pilot_data", T);

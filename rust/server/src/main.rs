@@ -95,7 +95,7 @@ async fn main() {
                 "SECONDARIES": [],
                 "SECONDARY_TIMEOUT": 300,
                 "DEBUG": false,
-                "CORS_ALLOWED_HOSTS": "*",
+                "CORS_ALLOWED_HOSTS": "",
                 "ADMIN_SOCKET_AUTH": true,
                 "FORCE_S32_BPILL_FLAG": false,
                 "DEF_NODE_FWUPDATE_URL": "",
@@ -501,6 +501,7 @@ async fn main() {
         .route("/stream/heat/{heat_id}", axum::routing::get(render_page))
         .route("/static/{*path}", axum::routing::get(assets::static_handler))
         .layer(socketio_layer)
+        .layer(axum::middleware::from_fn(add_security_headers))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", http_port_cfg))
@@ -516,6 +517,23 @@ const AUTHED_PAGES: &[&str] = &[
     "/first-run", "/run", "/marshal", "/format", "/settings", "/advanced-settings",
     "/scanner", "/updatenodes", "/plugins", "/hardwarelog", "/database", "/vrxstatus",
 ];
+
+/// Adds response headers that harden pages without changing how they are
+/// used (port of `add_security_headers` from Python's server.py).
+async fn add_security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers
+        .entry(axum::http::header::HeaderName::from_static("x-content-type-options"))
+        .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+    headers
+        .entry(axum::http::header::HeaderName::from_static("referrer-policy"))
+        .or_insert(axum::http::HeaderValue::from_static("same-origin"));
+    response
+}
 
 /// Renders the page for the request path (page map in pages::PAGES).
 async fn render_page(
