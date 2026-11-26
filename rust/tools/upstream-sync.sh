@@ -147,7 +147,8 @@ run_gates() {
     # (RH_RUST_BIN overrides it). CI only ever builds release, so three classes
     # died in setUpClass with FileNotFoundError and the gate rejected an
     # otherwise good port.
-    export RH_RUST_BIN="/rust/target/release/rh-server"
+    RH_ROOT="$(git rev-parse --show-toplevel)"
+    export RH_RUST_BIN="$RH_ROOT/rust/target/release/rh-server"
     log "suite will spawn "
 
     local suite_dir suite_port suite_data suite_pid suite_rc suite_out i
