@@ -143,6 +143,12 @@ run_gates() {
         log "server build failed"
         return 1
     fi
+    # The suite s own spawn_rust_server() defaults to target/debug/rh-server
+    # (RH_RUST_BIN overrides it). CI only ever builds release, so three classes
+    # died in setUpClass with FileNotFoundError and the gate rejected an
+    # otherwise good port.
+    export RH_RUST_BIN="/rust/target/release/rh-server"
+    log "suite will spawn "
 
     local suite_dir suite_port suite_data suite_pid suite_rc suite_out i
     suite_dir="$(git rev-parse --show-toplevel)/src/tests/protocol"
