@@ -8,29 +8,41 @@ method/property or the server answers the matching RPC arm.
 |---|---|---|
 | rhapi.classrank | 1 | 1 |
 | rhapi.config | 7 | 7 |
-| rhapi.db | 45 | 98 |
-| rhapi.eventresults | 0 | 1 |
+| rhapi.db | 98 | 98 |
+| rhapi.eventresults | 1 | 1 |
 | rhapi.events | 3 | 3 |
 | rhapi.fields | 13 | 13 |
 | rhapi.filters | 3 | 3 |
 | rhapi.heatgen | 2 | 2 |
-| rhapi.interface | 0 | 9 |
+| rhapi.interface | 9 | 9 |
 | rhapi.io | 4 | 4 |
 | rhapi.language | 2 | 2 |
 | rhapi.led | 7 | 7 |
 | rhapi.points | 1 | 1 |
-| rhapi.race | 32 | 49 |
+| rhapi.race | 49 | 49 |
 | rhapi.sensors | 4 | 4 |
 | rhapi.server | 15 | 15 |
-| rhapi.ui | 27 | 28 |
+| rhapi.ui | 28 | 28 |
 | rhapi.utils | 10 | 10 |
 | rhapi.vrxcontrol | 5 | 5 |
-| **total** | **181** | **262** |
+| **total** | **262** | **262** |
 
 ## Missing members
 
-- **db** (53): `deleted_race_by_id`, `deleted_race_conflicts`, `deleted_race_data`, `event_results`, `frequencyset_add`, `frequencyset_by_id`, `frequencyset_delete`, `frequencyset_duplicate`, `frequencysets_reset`, `heat_attributes`, `heat_results`, `heats_by_class`, `heats_reset`, `lap_splits`, `open_readonly`, `pilot_attributes`, `pilotrun_add`, `pilotrun_auto_adjust`, `pilotrun_auto_adjust_undo`, `pilotrun_by_id`, `pilotrun_history`, `pilotrun_suggest_calibration`, `pilots_reset`, `race_add`, `race_attributes`, `race_by_heat_round`, `race_restore`, `race_results`, `race_results_rebuild`, `raceclass_add`, `raceclass_alter`, `raceclass_attribute_value`, `raceclass_attributes`, `raceclass_by_id`, `raceclass_delete`, `raceclass_duplicate`, `raceclass_ranking`, `raceclass_results`, `raceclasses_reset`, `raceformat_add`, `raceformat_alter`, `raceformat_attribute_value`, `raceformat_attributes`, `raceformat_by_id`, `raceformat_delete`, `raceformat_duplicate`, `raceformats_reset`, `races_clear`, `reset_all`, `saved_lap_splits`, `saved_lap_splits_by_pilotrun`, `saved_lap_splits_by_race`, `slots`
-- **eventresults** (1): `results`
-- **interface** (9): `add`, `is_mock_only`, `mock_signals`, `register_mock_signal`, `seat_crossing_end`, `seat_enter_at_set`, `seat_exit_at_set`, `seat_provider_type`, `seats`
-- **race** (17): `lap_add`, `lap_insert`, `laps_replace`, `last_race`, `prev_race_winner_name`, `prev_race_winner_phonetic`, `prev_race_winner_pilot_id`, `race_leader_lap`, `race_leader_pilot_id`, `race_winner_lap_id`, `race_winner_name`, `race_winner_phonetic`, `race_winner_pilot_id`, `schedule`, `seat_auto_adjust`, `seat_auto_adjust_undo`, `seat_suggest_calibration`
-- **ui** (1): `update_field_options`
+
+## Known approximations
+
+These are present (so they import and run) but do not reproduce the Python
+behaviour; a plugin that depends on the exact semantics will notice:
+
+- `db.open_readonly` raises: it returns a live SQLAlchemy session, and the
+  Rust server owns its SQLite connection.
+- `io.run_export` / `io.run_import` raise: export/import run server-side.
+- `heatgen.generate` raises: heat generation is driven from the UI.
+- `eventresults.results`, `db.event_results` return null: the Rust server has
+  no event-results cache yet.
+- `interface.*`: the Rust server owns node providers, so registrations are
+  accepted and the read-only views report seats/mock signals generically.
+- `server.enable_heartbeat_event`, `set_min_mocks`, `set_restart_required`,
+  `db.race_results_rebuild`, `ui.blueprint_add` return true as accepted
+  no-ops.

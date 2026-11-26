@@ -127,6 +127,27 @@ for attr in sorted(surface):
     if miss:
         lines.append("- **%s** (%d): %s" % (attr, len(miss), ", ".join("`%s`" % m for m in miss)))
 
+lines += [
+    "",
+    "## Known approximations",
+    "",
+    "These are present (so they import and run) but do not reproduce the Python",
+    "behaviour; a plugin that depends on the exact semantics will notice:",
+    "",
+    "- `db.open_readonly` raises: it returns a live SQLAlchemy session, and the",
+    "  Rust server owns its SQLite connection.",
+    "- `io.run_export` / `io.run_import` raise: export/import run server-side.",
+    "- `heatgen.generate` raises: heat generation is driven from the UI.",
+    "- `eventresults.results`, `db.event_results` return null: the Rust server has",
+    "  no event-results cache yet.",
+    "- `interface.*`: the Rust server owns node providers, so registrations are",
+    "  accepted and the read-only views report seats/mock signals generically.",
+    "- `server.enable_heartbeat_event`, `set_min_mocks`, `set_restart_required`,",
+    "  `db.race_results_rebuild`, `ui.blueprint_add` return true as accepted",
+    "  no-ops.",
+]
+
+
 open(OUT, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
 print("wrote", OUT)
 print("coverage: %d/%d" % (provided, total))

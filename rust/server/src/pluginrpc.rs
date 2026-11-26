@@ -1354,6 +1354,596 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             Ok(json!(true))
         }
 
+        // ---- db: saved races, results ----
+        ("db", "race_by_heat_round") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            let round_id = arg_i64("round_id").ok_or("round_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, heat_id, round_id, class_id, format_id, CAST(start_time AS TEXT) \
+                     FROM saved_race_meta WHERE heat_id = ?1 AND round_id = ?2 ORDER BY id DESC LIMIT 1",
+                    rusqlite::params![heat_id, round_id],
+                    |r| Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "heat_id": r.get::<_, i64>(1)?,
+                        "round_id": r.get::<_, i64>(2)?,
+                        "class_id": r.get::<_, Option<i64>>(3)?,
+                        "format_id": r.get::<_, Option<i64>>(4)?,
+                        "start_time": r.get::<_, Option<String>>(5)?,
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "race_results") | ("db", "heat_results") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT results FROM saved_race_meta WHERE id = ?1",
+                    [race_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "race_results_rebuild") => Ok(json!(true)),
+        ("db", "event_results") => Ok(Value::Null),
+        ("db", "races_clear") => {
+            db::with_db(state, |conn| {
+                for table in ["saved_race_lap", "saved_pilot_race", "saved_race_meta_attribute", "saved_race_meta"] {
+                    let sql = format!("DELETE FROM {}", table);
+                    conn.execute(&sql, []).ok();
+                }
+            });
+            Ok(json!(true))
+        }
+        ("db", "deleted_race_by_id") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, race_id, data FROM deleted_race WHERE race_id = ?1",
+                    [race_id],
+                    |r| Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "race_id": r.get::<_, i64>(1)?,
+                        "data": r.get::<_, Option<String>>(2)?,
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+
+        // ---- db: classes, formats, profiles ----
+        ("db", "raceclass_by_id") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, name, description, format_id FROM race_class WHERE id = ?1",
+                    [class_id],
+                    |r| Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "name": r.get::<_, Option<String>>(1)?,
+                        "description": r.get::<_, Option<String>>(2)?,
+                        "format_id": r.get::<_, Option<i64>>(3)?,
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "raceformat_by_id") => {
+            let format_id = arg_i64("format_id").ok_or("format_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, name, race_mode, race_time_sec FROM race_format WHERE id = ?1",
+                    [format_id],
+                    |r| Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "name": r.get::<_, Option<String>>(1)?,
+                        "race_mode": r.get::<_, Option<i64>>(2)?,
+                        "race_time_sec": r.get::<_, Option<i64>>(3)?,
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "frequencyset_by_id") => {
+            let profile_id = arg_i64("frequencyset_id").ok_or("frequencyset_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, name, description, frequencies FROM profiles WHERE id = ?1",
+                    [profile_id],
+                    |r| Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "name": r.get::<_, Option<String>>(1)?,
+                        "description": r.get::<_, Option<String>>(2)?,
+                        "frequencies": r.get::<_, Option<String>>(3)?
+                            .and_then(|t| serde_json::from_str::<Value>(&t).ok()),
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "raceclass_attribute_value") | ("db", "raceformat_attribute_value") => {
+            let table = if method == "raceclass_attribute_value" { "race_class_attribute" } else { "race_format_attribute" };
+            let id = arg_i64("raceclass_id").or_else(|| arg_i64("raceformat_id")).ok_or("id required")?;
+            let name = arg_str("attribute").ok_or("attribute required")?;
+            Ok(db::with_db(state, |conn| {
+                let sql = format!("SELECT value FROM {} WHERE id = ?1 AND name = ?2", table);
+                match conn.prepare(&sql) {
+                    Ok(mut stmt) => stmt
+                        .query_row(rusqlite::params![id, name], |r| r.get::<_, String>(0))
+                        .ok()
+                        .map(|v| json!(v))
+                        .unwrap_or(Value::Null),
+                    Err(_) => Value::Null,
+                }
+            }))
+        }
+        ("db", "heats_by_class") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM heat WHERE class_id = ?1 ORDER BY id").unwrap();
+                let rows = stmt.query_map([class_id], |r| r.get::<_, i64>(0)).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<i64>>())
+            }))
+        }
+        ("db", "heats_reset") | ("db", "pilots_reset") | ("db", "raceclasses_reset")
+        | ("db", "raceformats_reset") | ("db", "reset_all") => {
+            let tables: &[&str] = match method {
+                "heats_reset" => &["heat_node", "heat"],
+                "pilots_reset" => &["pilot"],
+                "raceclasses_reset" => &["race_class"],
+                "raceformats_reset" => &["race_format"],
+                _ => &["heat_node", "heat", "pilot", "race_class", "race_format"],
+            };
+            db::with_db(state, |conn| {
+                for table in tables {
+                    let sql = format!("DELETE FROM {}", table);
+                    conn.execute(&sql, []).ok();
+                }
+            });
+            Ok(json!(true))
+        }
+
+        // ---- db: pilot runs ----
+        ("db", "pilotrun_by_id") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT id, race_id, node_index, pilot_id, enter_at, exit_at \
+                     FROM saved_pilot_race WHERE id = ?1",
+                    [run_id],
+                    |r| Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "race_id": r.get::<_, i64>(1)?,
+                        "node_index": r.get::<_, i64>(2)?,
+                        "pilot_id": r.get::<_, i64>(3)?,
+                        "enter_at": r.get::<_, Option<i64>>(4)?,
+                        "exit_at": r.get::<_, Option<i64>>(5)?,
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "pilotrun_history") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row(
+                    "SELECT history_values, history_times FROM saved_pilot_race WHERE id = ?1",
+                    [run_id],
+                    |r| Ok(json!({
+                        "history_values": r.get::<_, Option<String>>(0)?,
+                        "history_times": r.get::<_, Option<String>>(1)?,
+                    })),
+                ).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "lap_splits") => {
+            let lap_id = arg_i64("lap_id").ok_or("lap_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, node_index, pilot_id, lap_id, split_id, split_time \
+                     FROM lap_split WHERE lap_id = ?1 ORDER BY split_id").unwrap();
+                let rows = stmt.query_map([lap_id], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "node_index": r.get::<_, i64>(1)?,
+                    "pilot_id": r.get::<_, Option<i64>>(2)?,
+                    "lap_id": r.get::<_, i64>(3)?,
+                    "split_id": r.get::<_, i64>(4)?,
+                    "split_time": r.get::<_, Option<f64>>(5)?,
+                }))).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+        ("db", "saved_lap_splits_by_race") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, race_id, pilotrace_id, node_index, pilot_id, lap_id, split_id, split_time \
+                     FROM saved_race_lap_split WHERE race_id = ?1 ORDER BY id").unwrap();
+                let rows = stmt.query_map([race_id], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "race_id": r.get::<_, i64>(1)?,
+                    "pilotrun_id": r.get::<_, Option<i64>>(2)?,
+                    "node_index": r.get::<_, i64>(3)?,
+                    "pilot_id": r.get::<_, Option<i64>>(4)?,
+                    "lap_id": r.get::<_, i64>(5)?,
+                    "split_id": r.get::<_, i64>(6)?,
+                    "split_time": r.get::<_, Option<f64>>(7)?,
+                }))).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+
+        // ---- race: lap edits and scheduling ----
+        ("race", "lap_add") => {
+            let seat = arg_i64("seat").ok_or("seat required")? as usize;
+            let timestamp = args.get("timestamp").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            crate::race::register_lap_at(state, seat, timestamp);
+            Ok(json!(true))
+        }
+        ("race", "lap_insert") => {
+            let seat = arg_i64("seat").ok_or("seat required")? as usize;
+            let stamp = args.get("lap_time_stamp").and_then(|v| v.as_f64()).ok_or("lap_time_stamp required")?;
+            let source = arg_i64("source").unwrap_or(4);
+            let peak = arg_i64("peak");
+            Ok(json!(crate::race::insert_lap(state, seat, stamp, source, peak, true).is_some()))
+        }
+        ("race", "laps_replace") => {
+            let seat = arg_i64("seat").ok_or("seat required")? as usize;
+            let laps = args.get("laps").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            {
+                let mut race = state.race.lock().unwrap();
+                if let Some(slot) = race.node_laps.get_mut(seat) {
+                    slot.clear();
+                    for lap in laps {
+                        slot.push(crate::state::Lap {
+                            lap_time_stamp: lap.get("lap_time_stamp").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            lap_time: lap.get("lap_time").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            source: lap.get("source").and_then(|v| v.as_i64()).unwrap_or(4),
+                            deleted: lap.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false),
+                            peak_rssi: lap.get("peak_rssi").and_then(|v| v.as_i64()),
+                        });
+                    }
+                }
+            }
+            Ok(json!(true))
+        }
+        ("race", "schedule") => {
+            let when = args.get("time").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            {
+                let mut race = state.race.lock().unwrap();
+                race.scheduled = when > 0.0;
+                race.scheduled_time = when;
+            }
+            Ok(json!(true))
+        }
+
+        // ---- db: profiles / classes / formats CRUD ----
+        ("db", "frequencyset_add") => {
+            let name = arg_str("name").unwrap_or_else(|| "Frequency Set".to_string());
+            let id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO profiles (name, description, frequencies, enter_ats, exit_ats, f_ratio)
+                     VALUES (?1, '', '[]', NULL, NULL, 0)",
+                    rusqlite::params![name],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": id}))
+        }
+        ("db", "frequencyset_delete") => {
+            let id = arg_i64("frequencyset_id").ok_or("frequencyset_id required")?;
+            db::with_db(state, |conn| { conn.execute("DELETE FROM profiles WHERE id = ?1", [id]).ok(); });
+            Ok(json!(true))
+        }
+        ("db", "frequencyset_duplicate") => {
+            let id = arg_i64("frequencyset_id").ok_or("frequencyset_id required")?;
+            let new_id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO profiles (name, description, frequencies, enter_ats, exit_ats, f_ratio)
+                     SELECT name || ' copy', description, frequencies, enter_ats, exit_ats, f_ratio
+                     FROM profiles WHERE id = ?1",
+                    [id],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": new_id}))
+        }
+        ("db", "frequencysets_reset") => {
+            db::with_db(state, |conn| {
+                conn.execute("DELETE FROM profiles", []).ok();
+                conn.execute(
+                    "INSERT INTO profiles (name, description, frequencies, enter_ats, exit_ats, f_ratio)
+                     VALUES ('Default', '', '[[null,null,5658],[null,null,5695],[null,null,5732],[null,null,5769],[null,null,5806],[null,null,5843],[null,null,5880],[null,null,5917]]', NULL, NULL, 0)",
+                    [],
+                ).ok();
+            });
+            Ok(json!(true))
+        }
+        ("db", "raceclass_add") => {
+            let name = arg_str("name").unwrap_or_else(|| "Class".to_string());
+            let format_id = arg_i64("format_id").unwrap_or(1);
+            let id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO race_class (name, description, format_id, win_condition, results, \"cacheStatus\", ranking, rounds, active)
+                     VALUES (?1, '', ?2, 0, NULL, '{}', NULL, 0, 1)",
+                    rusqlite::params![name, format_id],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": id}))
+        }
+        ("db", "raceclass_alter") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            let name = arg_str("name");
+            db::with_db(state, |conn| {
+                if let Some(name) = &name {
+                    conn.execute("UPDATE race_class SET name = ?1 WHERE id = ?2",
+                                 rusqlite::params![name, class_id]).ok();
+                }
+            });
+            Ok(json!(true))
+        }
+        ("db", "raceclass_delete") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            db::with_db(state, |conn| { conn.execute("DELETE FROM race_class WHERE id = ?1", [class_id]).ok(); });
+            Ok(json!(true))
+        }
+        ("db", "raceclass_duplicate") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            let new_id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO race_class (name, description, format_id, win_condition, results, \"cacheStatus\", ranking, rounds, active)
+                     SELECT name || ' copy', description, format_id, win_condition, NULL, '{}', ranking, rounds, 1
+                     FROM race_class WHERE id = ?1",
+                    [class_id],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": new_id}))
+        }
+        ("db", "raceformat_add") => {
+            let source = arg_i64("source_format_id").unwrap_or(1);
+            let name = arg_str("name").unwrap_or_else(|| "Format".to_string());
+            let new_id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO race_format (name, race_mode, race_time_sec, lap_grace_sec,
+                     staging_fixed_tones, start_delay_min_ms, start_delay_max_ms, staging_tones,
+                     number_laps_win, win_condition, team_racing_mode, start_behavior)
+                     SELECT ?1, race_mode, race_time_sec, lap_grace_sec, staging_fixed_tones,
+                            start_delay_min_ms, start_delay_max_ms, staging_tones, number_laps_win,
+                            win_condition, team_racing_mode, start_behavior
+                     FROM race_format WHERE id = ?2",
+                    rusqlite::params![name, source],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": new_id}))
+        }
+        ("db", "raceformat_alter") => {
+            let format_id = arg_i64("format_id").ok_or("format_id required")?;
+            let name = arg_str("name");
+            db::with_db(state, |conn| {
+                if let Some(name) = &name {
+                    conn.execute("UPDATE race_format SET name = ?1 WHERE id = ?2",
+                                 rusqlite::params![name, format_id]).ok();
+                }
+            });
+            Ok(json!(true))
+        }
+        ("db", "raceformat_delete") => {
+            let format_id = arg_i64("format_id").ok_or("format_id required")?;
+            db::with_db(state, |conn| { conn.execute("DELETE FROM race_format WHERE id = ?1", [format_id]).ok(); });
+            Ok(json!(true))
+        }
+        ("db", "raceformat_duplicate") => {
+            let format_id = arg_i64("format_id").ok_or("format_id required")?;
+            let new_id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO race_format (name, race_mode, race_time_sec, lap_grace_sec,
+                     staging_fixed_tones, start_delay_min_ms, start_delay_max_ms, staging_tones,
+                     number_laps_win, win_condition, team_racing_mode, start_behavior)
+                     SELECT name || ' copy', race_mode, race_time_sec, lap_grace_sec, staging_fixed_tones,
+                            start_delay_min_ms, start_delay_max_ms, staging_tones, number_laps_win,
+                            win_condition, team_racing_mode, start_behavior
+                     FROM race_format WHERE id = ?1",
+                    [format_id],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": new_id}))
+        }
+        ("db", "race_add") => {
+            let heat_id = arg_i64("heat_id").ok_or("heat_id required")?;
+            let round_id = arg_i64("round_id").unwrap_or(1);
+            let class_id = arg_i64("class_id");
+            let format_id = arg_i64("format_id");
+            let id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO saved_race_meta (round_id, heat_id, class_id, format_id, start_time,
+                                                  start_time_formatted, results, \"cacheStatus\")
+                     VALUES (?1, ?2, ?3, ?4, '', '', NULL, '{}')",
+                    rusqlite::params![round_id, heat_id, class_id, format_id],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": id}))
+        }
+        ("db", "deleted_race_conflicts") => Ok(json!([])),
+        ("db", "deleted_race_data") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            Ok(db::with_db(state, |conn| {
+                conn.query_row("SELECT data FROM deleted_race WHERE race_id = ?1", [race_id],
+                    |r| r.get::<_, Option<String>>(0)).ok().flatten()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                    .unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "saved_lap_splits") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, race_id, pilotrace_id, split_time FROM saved_race_lap_split ORDER BY id").unwrap();
+            let rows = stmt.query_map([], |r| Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "race_id": r.get::<_, i64>(1)?,
+                "pilotrun_id": r.get::<_, Option<i64>>(2)?,
+                "split_time": r.get::<_, Option<f64>>(3)?,
+            }))).unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+
+        // ---- hardware interface (read-only view of the seats) ----
+        ("interface", "seats") => Ok(json!(state.node_count())),
+        ("interface", "mock_signals") => Ok(json!(["none", "random", "carryover"])),
+        ("interface", "is_mock_only") => Ok(json!(true)),
+        ("interface", "seat_provider_type") => {
+            let seat = arg_i64("seat").unwrap_or(0);
+            Ok(json!(format!("mock:{}", seat)))
+        }
+        ("interface", "add") | ("interface", "register_mock_signal")
+        | ("interface", "seat_crossing_end") | ("interface", "seat_enter_at_set")
+        | ("interface", "seat_exit_at_set") => Ok(json!(true)),
+
+        // ---- ui: field option refresh ----
+        ("ui", "update_field_options") => {
+            crate::socket::broadcast_payload(state, "ui_field_update",
+                args.get("field").cloned().unwrap_or(json!({})));
+            Ok(json!(true))
+        }
+        ("eventresults", "results") => Ok(Value::Null),
+
+        ("db", "slots") => Ok(db::with_db(state, |conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, heat_id, node_index, pilot_id FROM heat_node ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "heat_id": r.get::<_, i64>(1)?,
+                    "node_index": r.get::<_, i64>(2)?,
+                    "pilot": r.get::<_, Option<i64>>(3)?,
+                })))
+                .unwrap();
+            json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+        })),
+        ("db", "saved_lap_splits_by_pilotrun") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            Ok(db::with_db(state, |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, race_id, pilotrace_id, split_id, split_time \
+                     FROM saved_race_lap_split WHERE pilotrace_id = ?1 ORDER BY id").unwrap();
+                let rows = stmt.query_map([run_id], |r| Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "race_id": r.get::<_, i64>(1)?,
+                    "pilotrun_id": r.get::<_, Option<i64>>(2)?,
+                    "split_id": r.get::<_, i64>(3)?,
+                    "split_time": r.get::<_, Option<f64>>(4)?,
+                }))).unwrap();
+                json!(rows.filter_map(|r| r.ok()).collect::<Vec<Value>>())
+            }))
+        }
+        ("db", "raceclass_ranking") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            Ok(db::with_db(state, |conn| {
+                crate::class_rank::calc_class_ranking(conn, class_id).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "raceclass_results") => {
+            let class_id = arg_i64("class_id").ok_or("class_id required")?;
+            Ok(db::with_db(state, |conn| {
+                crate::class_rank::calc_class_ranking(conn, class_id).unwrap_or(Value::Null)
+            }))
+        }
+        ("db", "pilotrun_add") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            let node_index = arg_i64("node_index").unwrap_or(0);
+            let pilot_id = arg_i64("pilot_id").unwrap_or(0);
+            let id = db::with_db(state, |conn| {
+                conn.execute(
+                    "INSERT INTO saved_pilot_race (race_id, node_index, pilot_id, history_values,
+                                                   history_times, enter_at, exit_at)
+                     VALUES (?1, ?2, ?3, NULL, NULL, NULL, NULL)",
+                    rusqlite::params![race_id, node_index, pilot_id],
+                ).ok();
+                conn.last_insert_rowid()
+            });
+            Ok(json!({"id": id}))
+        }
+
+        // ---- calibration (autoadjust + suggestions) ----
+        ("race", "seat_auto_adjust") => {
+            let seat = arg_i64("seat").ok_or("seat required")?;
+            let result = crate::autoadjust::auto_adjust_seat(state, seat);
+            Ok(json!({"result": result.0, "error": result.1.map(|r| format!("{:?}", r))}))
+        }
+        ("race", "seat_auto_adjust_undo") => {
+            let seat = arg_i64("seat").ok_or("seat required")?;
+            let out = crate::autoadjust::undo_auto_adjust_seat(state, seat);
+            Ok(json!({"result": out.0, "error": out.1.map(|r| format!("{:?}", r))}))
+        }
+        ("race", "seat_suggest_calibration") => {
+            let seat = arg_i64("seat").ok_or("seat required")?;
+            let (suggestion, reason) = crate::calibration::suggest_for_seat(state, seat);
+            Ok(match suggestion {
+                Some(s) => json!({
+                    "enter_at": s.enter_at,
+                    "exit_at": s.exit_at,
+                    "lap_count": s.lap_count,
+                }),
+                None => json!({"error": format!("{:?}", reason)}),
+            })
+        }
+        ("db", "pilotrun_auto_adjust") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            let out = crate::autoadjust::auto_adjust_pilotrun(state, run_id);
+            Ok(json!({"result": out.0, "error": out.1.map(|r| format!("{:?}", r))}))
+        }
+        ("db", "pilotrun_auto_adjust_undo") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            let out = crate::autoadjust::undo_auto_adjust_pilotrun(state, run_id);
+            Ok(json!({"result": out.0, "error": out.1.map(|r| format!("{:?}", r))}))
+        }
+        ("db", "pilotrun_suggest_calibration") => {
+            let run_id = arg_i64("pilotrun_id").ok_or("pilotrun_id required")?;
+            let (suggestion, reason) = crate::calibration::suggest_for_pilotrun(state, run_id);
+            Ok(match suggestion {
+                Some(s) => json!({
+                    "enter_at": s.enter_at,
+                    "exit_at": s.exit_at,
+                    "lap_count": s.lap_count,
+                }),
+                None => json!({"error": format!("{:?}", reason)}),
+            })
+        }
+
+        ("db", "race_restore") => {
+            let race_id = arg_i64("race_id").ok_or("race_id required")?;
+            let new_id = db::with_db(state, |conn| {
+                let row: Option<(i64, i64, Option<i64>, Option<i64>, Option<String>)> = conn
+                    .query_row(
+                        "SELECT round_id, heat_id, class_id, format_id, start_time_formatted \
+                         FROM deleted_race WHERE race_id = ?1",
+                        [race_id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    )
+                    .ok();
+                match row {
+                    Some((round_id, heat_id, class_id, format_id, start)) => {
+                        conn.execute(
+                            "INSERT INTO saved_race_meta (round_id, heat_id, class_id, format_id,
+                                                          start_time, start_time_formatted, results, \"cacheStatus\")
+                             VALUES (?1, ?2, ?3, ?4, '', ?5, NULL, '{}')",
+                            rusqlite::params![round_id, heat_id, class_id, format_id, start],
+                        )
+                        .ok();
+                        let id = conn.last_insert_rowid();
+                        conn.execute("DELETE FROM deleted_race WHERE race_id = ?1", [race_id]).ok();
+                        id
+                    }
+                    None => 0,
+                }
+            });
+            Ok(json!({"id": new_id}))
+        }
+
         _ => Err(format!("Unknown RHAPI method: {}.{}", object, method)),
     }
 }

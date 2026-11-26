@@ -223,6 +223,185 @@ class Db(Rpc):
                          enter_at=enter_at, exit_at=exit_at, laps=laps)
 
     @property
+    def heat_attributes(self):
+        return self._host.fields.get('heat', [])
+
+    @property
+    def pilot_attributes(self):
+        return self._host.fields.get('pilot', [])
+
+    @property
+    def race_attributes(self):
+        return self._host.fields.get('race', [])
+
+    @property
+    def raceclass_attributes(self):
+        return self._host.fields.get('raceclass', [])
+
+    @property
+    def raceformat_attributes(self):
+        return self._host.fields.get('raceformat', [])
+
+    @property
+    def slots(self):
+        return self.call('db', 'slots') or []
+
+    def saved_lap_splits_by_pilotrun(self, pilotrun_id):
+        return self.call('db', 'saved_lap_splits_by_pilotrun',
+                         pilotrun_id=pilotrun_id) or []
+
+    def raceclass_ranking(self, class_id):
+        return self.call('db', 'raceclass_ranking', class_id=class_id)
+
+    def raceclass_results(self, class_id):
+        return self.call('db', 'raceclass_results', class_id=class_id)
+
+    def pilotrun_auto_adjust(self, pilotrun_id):
+        return self.call('db', 'pilotrun_auto_adjust', pilotrun_id=pilotrun_id)
+
+    def pilotrun_auto_adjust_undo(self, pilotrun_id):
+        return self.call('db', 'pilotrun_auto_adjust_undo', pilotrun_id=pilotrun_id)
+
+    def pilotrun_suggest_calibration(self, pilotrun_id):
+        return self.call('db', 'pilotrun_suggest_calibration',
+                         pilotrun_id=pilotrun_id)
+
+    def pilotrun_add(self, race_id, node_index=0, pilot_id=0, **kwargs):
+        return self.call('db', 'pilotrun_add', race_id=race_id,
+                         node_index=node_index, pilot_id=pilot_id, **kwargs)
+
+    @property
+    def saved_lap_splits(self):
+        return self.call('db', 'saved_lap_splits') or []
+
+    def frequencyset_add(self, name=None, **kwargs):
+        return self.call('db', 'frequencyset_add', name=name, **kwargs)
+
+    def frequencyset_delete(self, frequencyset_id):
+        return self.call('db', 'frequencyset_delete', frequencyset_id=frequencyset_id)
+
+    def frequencyset_duplicate(self, frequencyset_id):
+        return self.call('db', 'frequencyset_duplicate', frequencyset_id=frequencyset_id)
+
+    def frequencysets_reset(self):
+        return self.call('db', 'frequencysets_reset')
+
+    def raceclass_add(self, name=None, format_id=1, **kwargs):
+        return self.call('db', 'raceclass_add', name=name, format_id=format_id, **kwargs)
+
+    def raceclass_alter(self, class_id, name=None, **kwargs):
+        return self.call('db', 'raceclass_alter', class_id=class_id, name=name, **kwargs)
+
+    def raceclass_delete(self, class_id):
+        return self.call('db', 'raceclass_delete', class_id=class_id)
+
+    def raceclass_duplicate(self, class_id):
+        return self.call('db', 'raceclass_duplicate', class_id=class_id)
+
+    def raceformat_add(self, name=None, source_format_id=1, **kwargs):
+        return self.call('db', 'raceformat_add', name=name,
+                         source_format_id=source_format_id, **kwargs)
+
+    def raceformat_alter(self, format_id, name=None, **kwargs):
+        return self.call('db', 'raceformat_alter', format_id=format_id,
+                         name=name, **kwargs)
+
+    def raceformat_delete(self, format_id):
+        return self.call('db', 'raceformat_delete', format_id=format_id)
+
+    def raceformat_duplicate(self, format_id):
+        return self.call('db', 'raceformat_duplicate', format_id=format_id)
+
+    def race_add(self, heat_id, round_id=1, class_id=None, format_id=None, **kwargs):
+        return self.call('db', 'race_add', heat_id=heat_id, round_id=round_id,
+                         class_id=class_id, format_id=format_id, **kwargs)
+
+    def deleted_race_conflicts(self, race_id=None):
+        return self.call('db', 'deleted_race_conflicts', race_id=race_id) or []
+
+    def race_restore(self, race_id):
+        return self.call('db', 'race_restore', race_id=race_id)
+
+    def open_readonly(self):
+        raise NotImplementedError(
+            'rhapi.db.open_readonly returns a live DB handle; the Rust server '
+            'owns its SQLite connection and cannot hand one to a plugin')
+
+    def deleted_race_data(self, race_id):
+        return self.call('db', 'deleted_race_data', race_id=race_id)
+
+    def race_by_heat_round(self, heat_id, round_id):
+        return self.call('db', 'race_by_heat_round', heat_id=heat_id, round_id=round_id)
+
+    def race_results(self, race_id):
+        return self.call('db', 'race_results', race_id=race_id)
+
+    def heat_results(self, heat_id):
+        return self.call('db', 'heat_results', race_id=heat_id)
+
+    def race_results_rebuild(self, race_id=None):
+        return self.call('db', 'race_results_rebuild', race_id=race_id)
+
+    def event_results(self, *args, **kwargs):
+        return self.call('db', 'event_results')
+
+    def races_clear(self):
+        return self.call('db', 'races_clear')
+
+    def deleted_race_by_id(self, race_id):
+        return self.call('db', 'deleted_race_by_id', race_id=race_id)
+
+    def raceclass_by_id(self, class_id):
+        return self.call('db', 'raceclass_by_id', class_id=class_id)
+
+    def raceformat_by_id(self, format_id):
+        return self.call('db', 'raceformat_by_id', format_id=format_id)
+
+    def frequencyset_by_id(self, frequencyset_id):
+        return self.call('db', 'frequencyset_by_id',
+                         frequencyset_id=frequencyset_id)
+
+    def raceclass_attribute_value(self, class_id, attribute, default=None):
+        value = self.call('db', 'raceclass_attribute_value',
+                          raceclass_id=class_id, attribute=attribute)
+        return default if value is None else value
+
+    def raceformat_attribute_value(self, format_id, attribute, default=None):
+        value = self.call('db', 'raceformat_attribute_value',
+                          raceformat_id=format_id, attribute=attribute)
+        return default if value is None else value
+
+    def heats_by_class(self, class_id):
+        return self.call('db', 'heats_by_class', class_id=class_id) or []
+
+    def heats_reset(self):
+        return self.call('db', 'heats_reset')
+
+    def pilots_reset(self):
+        return self.call('db', 'pilots_reset')
+
+    def raceclasses_reset(self):
+        return self.call('db', 'raceclasses_reset')
+
+    def raceformats_reset(self):
+        return self.call('db', 'raceformats_reset')
+
+    def reset_all(self):
+        return self.call('db', 'reset_all')
+
+    def pilotrun_by_id(self, pilotrun_id):
+        return self.call('db', 'pilotrun_by_id', pilotrun_id=pilotrun_id)
+
+    def pilotrun_history(self, pilotrun_id):
+        return self.call('db', 'pilotrun_history', pilotrun_id=pilotrun_id)
+
+    def lap_splits(self, lap_id):
+        return self.call('db', 'lap_splits', lap_id=lap_id) or []
+
+    def saved_lap_splits_by_race(self, race_id):
+        return self.call('db', 'saved_lap_splits_by_race', race_id=race_id) or []
+
+    @property
     def options(self):
         return self.call('db', 'options') or []
 
@@ -458,6 +637,68 @@ class Race(Rpc):
     @property
     def team_results(self):
         return self._snap().get('team_results')
+
+    @property
+    def last_race(self):
+        return self._snap().get('last_race')
+
+    @property
+    def race_leader_pilot_id(self):
+        return self._snap().get('race_leader_pilot_id')
+
+    @property
+    def race_leader_lap(self):
+        return self._snap().get('race_leader_lap')
+
+    @property
+    def race_winner_pilot_id(self):
+        return self._snap().get('race_winner_pilot_id')
+
+    @property
+    def race_winner_name(self):
+        return self._snap().get('race_winner_name')
+
+    @property
+    def race_winner_phonetic(self):
+        return self._snap().get('race_winner_phonetic')
+
+    @property
+    def race_winner_lap_id(self):
+        return self._snap().get('race_winner_lap_id')
+
+    @property
+    def prev_race_winner_pilot_id(self):
+        return self._snap().get('prev_race_winner_pilot_id')
+
+    @property
+    def prev_race_winner_name(self):
+        return self._snap().get('prev_race_winner_name')
+
+    @property
+    def prev_race_winner_phonetic(self):
+        return self._snap().get('prev_race_winner_phonetic')
+
+    def lap_add(self, seat, timestamp, peak=None):
+        return self.call('race', 'lap_add', seat=seat, timestamp=timestamp, peak=peak)
+
+    def lap_insert(self, seat, lap_time_stamp, source=4, peak=None):
+        return self.call('race', 'lap_insert', seat=seat,
+                         lap_time_stamp=lap_time_stamp, source=source, peak=peak)
+
+    def laps_replace(self, seat, laps):
+        return self.call('race', 'laps_replace', seat=seat, laps=laps)
+
+    def seat_auto_adjust(self, seat):
+        return self.call('race', 'seat_auto_adjust', seat=seat)
+
+    def seat_auto_adjust_undo(self, seat):
+        return self.call('race', 'seat_auto_adjust_undo', seat=seat)
+
+    def seat_suggest_calibration(self, seat):
+        return self.call('race', 'seat_suggest_calibration', seat=seat)
+
+    def schedule(self, time_value=0, **kwargs):
+        return self.call('race', 'schedule', time=time_value)
 
     @property
     def laps(self):
@@ -987,6 +1228,60 @@ class Io:
         raise NotImplementedError('rhapi.io.run_import is not bridged')
 
 
+class Interface:
+    """rhapi.interface: the seat/hardware surface. The Rust server owns node
+    providers, so this is a read-only view plus accepted registrations."""
+
+    def __init__(self, host):
+        self._host = host
+
+    def _call(self, method, **args):
+        return wrap(self._host.call(RPC_OBJECT, {
+            'object': 'interface', 'method': method, 'args': args}))
+
+    @property
+    def seats(self):
+        return self._call('seats')
+
+    @property
+    def mock_signals(self):
+        return self._call('mock_signals') or []
+
+    def is_mock_only(self):
+        return bool(self._call('is_mock_only'))
+
+    def seat_provider_type(self, seat):
+        return self._call('seat_provider_type', seat=seat)
+
+    def add(self, seat, provider):
+        return self._call('add', seat=seat, provider=provider)
+
+    def register_mock_signal(self, name, fn):
+        return self._call('register_mock_signal', name=name)
+
+    def seat_crossing_end(self, seat, crossing):
+        return self._call('seat_crossing_end', seat=seat, crossing=crossing)
+
+    def seat_enter_at_set(self, seat, level):
+        return self._call('seat_enter_at_set', seat=seat, level=level)
+
+    def seat_exit_at_set(self, seat, level):
+        return self._call('seat_exit_at_set', seat=seat, level=level)
+
+
+class EventResults:
+    """rhapi.eventresults: results across the event (server-side results are
+    rebuilt from saved races, so this is a read-only RPC)."""
+
+    def __init__(self, host):
+        self._host = host
+
+    @property
+    def results(self):
+        return wrap(self._host.call(RPC_OBJECT, {
+            'object': 'eventresults', 'method': 'results', 'args': {}}))
+
+
 class Rhapi:
     '''The object surface handed to plugins.'''
 
@@ -1008,6 +1303,8 @@ class Rhapi:
         self.points = Registry(host, 'points')
         self.heatgen = HeatGen(host)
         self.io = Io(host)
+        self.interface = Interface(host)
+        self.eventresults = EventResults(host)
         self.filters = Filters()
         self.sensors = Sensors()
         # rhapi.__ is RHAPI's translation helper; English is the identity.
