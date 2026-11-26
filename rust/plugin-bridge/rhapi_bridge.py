@@ -864,9 +864,37 @@ class Utils:
 
 
 class ServerInfo(dict):
-    def __init__(self):
-        super().__init__(rhapi_version=(1, 7),
-                         version='4.6.0-dev.3-rust', api_version=1)
+    '''server.info: rhapi_version, the server's release version, api_version.
+
+    The version comes from the server so it cannot drift from RELEASE_VERSION;
+    a bump in state.rs is the only place it is written.
+    '''
+
+    def __init__(self, host=None):
+        super().__init__(rhapi_version=(1, 7), version='unknown', api_version=1)
+        self._host = host
+        self.refresh()
+
+    def refresh(self):
+        '''Pull release_version from the server.
+
+        Rhapi is built before socket.io connects, so the first attempt from
+        __init__ fails; Bridge calls refresh() once connected.
+        '''
+        if self._host is None:
+            return
+        try:
+            raw = self._host.call(RPC_OBJECT, {
+                'object': 'server', 'method': 'info', 'args': {}})
+            data = (object.__getattribute__(raw, '_data')
+                    if isinstance(raw, Obj) else (raw or {}))
+            if isinstance(data, dict) and data.get('result'):
+                data = data['result']
+            version = data.get('release_version') if isinstance(data, dict) else None
+            if version:
+                self['version'] = version
+        except Exception:  # noqa: BLE001 - info must never break a plugin
+            pass
 
 
 class UI(Rpc):
@@ -1312,7 +1340,7 @@ class Rhapi:
         self.fields = Fields(host)
         self.config = Config(host)
         self.utils = Utils()
-        self.server_info = ServerInfo()
+        self.server_info = ServerInfo(host)
         self.server = Server(host, self.server_info)
         self.language = Language(host)
         self.led = Led(host)
@@ -1350,6 +1378,8 @@ class Bridge:
         self._plugins = []
 
         self.sio.connect(server_url, wait_timeout=15)
+        # The RPC transport exists only after connect, so the version is read here.
+        self.rhapi.server_info.refresh()
         print('[bridge] connected to', server_url)
 
     # ---- server -> bridge ----

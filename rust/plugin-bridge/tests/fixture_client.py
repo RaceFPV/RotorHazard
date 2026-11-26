@@ -58,6 +58,11 @@ if probe.get('failures'):
         failures.append('RHAPI %s -> %s' % (failure['call'], failure['error']))
 print('RHAPI calls    :', probe.get('ok_count'), 'ok,',
       len(probe.get('failures') or []), 'failed')
+# server.info must report the server's real version, not a hardcoded string
+if not probe.get('version') or probe.get('version') == 'unknown':
+    failures.append('server.info.version is %r (bridge did not read it from the '
+                    'server)' % (probe.get('version'),))
+print('server version :', probe.get('version'))
 
 # 3. checkbox round-trip stores 1/0 like RHData.set_option
 on = emit('ts_fixture_write', {'value': True}) or {}

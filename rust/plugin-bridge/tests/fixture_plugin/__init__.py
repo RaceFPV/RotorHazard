@@ -32,6 +32,7 @@ def _probe(rhapi):
 
     check('server.data_dir', lambda: rhapi.server.data_dir)
     check('server.info', lambda: rhapi.server.info)
+    check('server.info.version', lambda: rhapi.server.info['version'])
     check('server.plugins', lambda: rhapi.server.plugins)
     check('server.seat_color_defaults', lambda: rhapi.server.seat_color_defaults)
     check('language.languages', lambda: rhapi.language.languages)
@@ -98,7 +99,8 @@ class FixturePlugin:
     def probe(self, _arg=None):
         ok, failures = _probe(self._rhapi)
         return {'ok_count': len(ok), 'ok': ok, 'failures': failures,
-                'laps_seen': self.laps_seen}
+                'laps_seen': self.laps_seen,
+                'version': self._rhapi.server.info.get('version')}
 
     def write_option(self, arg=None):
         '''Round-trip a checkbox the way the settings page does.'''
