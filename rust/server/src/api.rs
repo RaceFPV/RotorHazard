@@ -11,12 +11,11 @@ use axum::Json;
 use serde_json::{json, Value};
 
 fn api_response(status: StatusCode, body: Value) -> Response {
+    // CORS is applied centrally by the server's hardening middleware, which
+    // reads GENERAL.CORS_ALLOWED_HOSTS (empty = same-origin only).
     (
         status,
-        [
-            ("content-type", "application/json"),
-            ("access-control-allow-origin", "*"),
-        ],
+        [("content-type", "application/json")],
         Json(body),
     )
         .into_response()

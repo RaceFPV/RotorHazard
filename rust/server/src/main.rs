@@ -73,17 +73,7 @@ async fn main() {
     let config_path = format!("{}/config.json", data_dir);
     if !std::path::Path::new(&config_path).exists() {
         std::fs::create_dir_all(&data_dir).expect("failed to create data directory");
-        let secret_key: String = (0..50)
-            .map(|_| {
-                let idx = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.subsec_nanos())
-                    .unwrap_or(0)
-                    % 62) as usize;
-                const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-                CHARS[idx] as char
-            })
-            .collect();
+        let secret_key = generate_secret_key_str();
         let default_config = json!({
             "SECRETS": {
                 "ADMIN_USERNAME": "admin",
@@ -95,7 +85,7 @@ async fn main() {
                 "SECONDARIES": [],
                 "SECONDARY_TIMEOUT": 300,
                 "DEBUG": false,
-                "CORS_ALLOWED_HOSTS": "*",
+                "CORS_ALLOWED_HOSTS": "", // empty allows same-origin only
                 "ADMIN_SOCKET_AUTH": true,
                 "FORCE_S32_BPILL_FLAG": false,
                 "DEF_NODE_FWUPDATE_URL": "",
@@ -501,6 +491,10 @@ async fn main() {
         .route("/stream/heat/{heat_id}", axum::routing::get(render_page))
         .route("/static/{*path}", axum::routing::get(assets::static_handler))
         .layer(socketio_layer)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            hardening_middleware,
+        ))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", http_port_cfg))
@@ -583,6 +577,67 @@ async fn api_docs() -> impl axum::response::IntoResponse {
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         axum::Json(body),
     )
+}
+
+/// Generates a 50-character secret key of ASCII letters
+/// (RHUtils.generateSecretKeyStr): OS entropy when available, with a
+/// time-derived fallback (mirroring the Python try/except path).
+fn generate_secret_key_str() -> String {
+    const NUM_CHARS: usize = 50;
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut out = String::with_capacity(NUM_CHARS);
+    let entropy: Option<Vec<u8>> = std::fs::File::open("/dev/urandom").ok().and_then(|mut f| {
+        use std::io::Read;
+        let mut buf = vec![0u8; NUM_CHARS];
+        f.read_exact(&mut buf).ok().map(|_| buf)
+    });
+    match entropy {
+        Some(bytes) => {
+            for b in bytes {
+                out.push(LETTERS[(b as usize) % LETTERS.len()] as char);
+            }
+        }
+        None => {
+            for i in 0..NUM_CHARS {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                let idx = (nanos.wrapping_mul(2654435761).wrapping_add(i as u64)) as usize
+                    % LETTERS.len();
+                out.push(LETTERS[idx] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Adds hardening response headers to every response (server.py
+/// add_security_headers) and applies CORS for /api responses from
+/// GENERAL.CORS_ALLOWED_HOSTS (empty = same-origin only).
+async fn hardening_middleware(
+    axum::extract::State(state): axum::extract::State<SharedState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_api = request.uri().path().starts_with("/api");
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers
+        .entry(axum::http::header::HeaderName::from_static("x-content-type-options"))
+        .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+    headers
+        .entry(axum::http::header::HeaderName::from_static("referrer-policy"))
+        .or_insert(axum::http::HeaderValue::from_static("same-origin"));
+    if is_api {
+        let cors = db::get_config_string(&state, "GENERAL", "CORS_ALLOWED_HOSTS");
+        if !cors.is_empty() {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&cors) {
+                headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+            }
+        }
+    }
+    response
 }
 
 fn read_admin_creds(data_dir: &str) -> (String, String) {
