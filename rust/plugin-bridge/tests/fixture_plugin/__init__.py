@@ -117,6 +117,96 @@ class FixturePlugin:
         rhapi.fields.register_race_attribute(UIField('fixture_race', 'Fixture Race', UIFieldType.TEXT))
         rhapi.fields.register_pilot_attribute(UIField('fixture_pilot', 'Fixture Pilot', UIFieldType.TEXT))
 
+        # A blueprint with two routes: one JSON, one plain text with a status,
+        # so the server-side proxy and the response mapping are both exercised.
+        from flask import Blueprint, jsonify, request
+        bp = Blueprint('fixture_routes', __name__)
+
+        @bp.route('/fixture/ping/<int:number>', methods=['GET'])
+        def ping(number):
+            return jsonify({'pong': number, 'q': request.args.get('q')})
+
+        @bp.route('/fixture/text', methods=['GET'])
+        def text():
+            return 'plain text', 201
+
+        rhapi.ui.blueprint_add(bp)
+
+        # A blueprint with two routes: one JSON, one plain text with a status,
+        # so the server-side proxy and the response mapping are both exercised.
+        from flask import Blueprint, jsonify, request
+        bp = Blueprint('fixture_routes', __name__)
+
+        @bp.route('/fixture/ping/<int:number>', methods=['GET'])
+        def ping(number):
+            return jsonify({'pong': number, 'q': request.args.get('q')})
+
+        @bp.route('/fixture/text', methods=['GET'])
+        def text():
+            return 'plain text', 201
+
+        rhapi.ui.blueprint_add(bp)
+
+        # A blueprint with two routes: one JSON, one plain text with a status,
+        # so the server-side proxy and the response mapping are both exercised.
+        from flask import Blueprint, jsonify, request
+        bp = Blueprint('fixture_routes', __name__)
+
+        @bp.route('/fixture/ping/<int:number>', methods=['GET'])
+        def ping(number):
+            return jsonify({'pong': number, 'q': request.args.get('q')})
+
+        @bp.route('/fixture/text', methods=['GET'])
+        def text():
+            return 'plain text', 201
+
+        rhapi.ui.blueprint_add(bp)
+
+        # A blueprint with two routes: one JSON, one plain text with a status,
+        # so the server-side proxy and the response mapping are both exercised.
+        from flask import Blueprint, jsonify, request
+        bp = Blueprint('fixture_routes', __name__)
+
+        @bp.route('/fixture/ping/<int:number>', methods=['GET'])
+        def ping(number):
+            return jsonify({'pong': number, 'q': request.args.get('q')})
+
+        @bp.route('/fixture/text', methods=['GET'])
+        def text():
+            return 'plain text', 201
+
+        rhapi.ui.blueprint_add(bp)
+
+        # A blueprint with two routes: one JSON, one plain text with a status,
+        # so the server-side proxy and the response mapping are both exercised.
+        from flask import Blueprint, jsonify, request
+        bp = Blueprint('fixture_routes', __name__)
+
+        @bp.route('/fixture/ping/<int:number>', methods=['GET'])
+        def ping(number):
+            return jsonify({'pong': number, 'q': request.args.get('q')})
+
+        @bp.route('/fixture/text', methods=['GET'])
+        def text():
+            return 'plain text', 201
+
+        rhapi.ui.blueprint_add(bp)
+
+        # A blueprint with two routes: one JSON, one plain text with a status,
+        # so the server-side proxy and the response mapping are both exercised.
+        from flask import Blueprint, jsonify, request
+        bp = Blueprint('fixture_routes', __name__)
+
+        @bp.route('/fixture/ping/<int:number>', methods=['GET'])
+        def ping(number):
+            return jsonify({'pong': number, 'q': request.args.get('q')})
+
+        @bp.route('/fixture/text', methods=['GET'])
+        def text():
+            return 'plain text', 201
+
+        rhapi.ui.blueprint_add(bp)
+
         rhapi.ui.register_markdown('fixture', 'fixture_note',
                                    'Fixture **markdown**: panel content reaches the UI.')
         rhapi.ui.register_quickbutton('fixture', 'fixture_action', 'Fixture Action',

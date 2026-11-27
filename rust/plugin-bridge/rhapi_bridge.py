@@ -48,6 +48,9 @@ except ImportError:
     sys.modules['flask.blueprints'] = flask_shim
 
 RPC_OBJECT = 'rhapi_call'
+# Internal event used by the server to run a plugin's HTTP route; kept in sync
+# with the Rust side (crash-free if either is missing: it just 404s).
+ROUTE_EVENT = '__rh_route'
 RPC_TIMEOUT = 10.0
 
 
@@ -62,6 +65,117 @@ def wrap(value):
         return [wrap(item) for item in value]
     return value
 
+
+
+def _match_rule(rule, path):
+    """Flask-style rule matching: <int:x>, <float:x>, <string:x>, <path:x>, <x>."""
+    rule_parts = [part for part in rule.strip('/').split('/') if part]
+    path_parts = [part for part in path.strip('/').split('/') if part]
+    params = {}
+    for position, part in enumerate(rule_parts):
+        if part.startswith('<') and part.endswith('>'):
+            spec = part[1:-1]
+            converter, _, name = spec.partition(':')
+            if not name:
+                converter, name = 'string', spec
+            if converter == 'path':
+                rest = '/'.join(path_parts[position:])
+                if not rest:
+                    return None
+                params[name] = rest
+                return params
+            if position >= len(path_parts):
+                return None
+            value = path_parts[position]
+            if converter == 'int':
+                try:
+                    int(value)
+                except ValueError:
+                    return None
+            elif converter == 'float':
+                try:
+                    float(value)
+                except ValueError:
+                    return None
+            params[name] = value
+        elif position >= len(path_parts) or path_parts[position] != part:
+            return None
+    if len(path_parts) != len(rule_parts):
+        return None
+    return params
+
+
+def _set_request(args, params):
+    """Points flask.request at this call; returns what to restore afterwards."""
+    import flask_shim
+    request = flask_shim.request
+    previous = {key: getattr(request, key, None)
+                for key in ('method', 'path', 'args', 'json', 'data', 'headers', 'form')}
+    request.method = str(args.get('method', 'GET')).upper()
+    request.path = str(args.get('path', '/'))
+    request.args = dict(args.get('query') or {})
+    request.data = str(args.get('body') or '').encode('utf-8')
+    request.headers = dict(args.get('headers') or {})
+    request.form = {}
+    request.json = None
+    if 'application/json' in str(request.headers.get('content-type', '')).lower():
+        try:
+            request.json = json.loads(request.data or b'{}')
+        except ValueError:
+            request.json = None
+    return previous
+
+
+def _restore_request(previous):
+    import flask_shim
+    for key, value in previous.items():
+        setattr(flask_shim.request, key, value)
+
+
+def _normalise_response(result):
+    """What a Flask view returns -> {status, content_type, body}."""
+    status = 200
+    headers = {}
+
+    if isinstance(result, tuple):
+        body = result[0]
+        if len(result) >= 2:
+            if isinstance(result[1], (int, float)):
+                status = int(result[1])
+            elif isinstance(result[1], dict):
+                headers = dict(result[1])
+        if len(result) >= 3 and isinstance(result[2], dict):
+            headers = dict(result[2])
+        result = body
+
+    # a real Flask/Werkzeug response carries its own status, headers and bytes
+    if hasattr(result, 'get_data'):
+        status = int(getattr(result, 'status_code', status) or status)
+        for key, value in (getattr(result, 'headers', None) or {}).items():
+            headers[str(key)] = str(value)
+        return {
+            'status': status,
+            'content_type': headers.get('Content-Type',
+                                        headers.get('content-type',
+                                                    'text/html; charset=utf-8')),
+            'body': result.get_data(as_text=True),
+        }
+
+    if isinstance(result, (dict, list)):
+        return {'status': status,
+                'content_type': headers.get('Content-Type', 'application/json'),
+                'body': json.dumps(result)}
+    if isinstance(result, bytes):
+        return {'status': status,
+                'content_type': headers.get('Content-Type', 'application/octet-stream'),
+                'body': result.decode('utf-8', 'replace')}
+    if result is None:
+        result = ''
+    if not isinstance(result, str):
+        result = str(result)
+    return {'status': status,
+            'content_type': headers.get('Content-Type', 'text/html; charset=utf-8'),
+            'body': result}
 
 class Obj:
     def __init__(self, data):
@@ -101,7 +215,6 @@ class Obj:
 
     def __repr__(self):
         return 'Obj(%r)' % (object.__getattribute__(self, '_data'),)
-
 
 def plain(value):
     """Strip Obj wrappers before a payload goes over the wire."""
@@ -1011,6 +1124,57 @@ class UI(Rpc):
         return self.call('ui', 'register_quickbutton', panel=panel,
                          button={'name': name, 'label': label or name})
 
+    def blueprint_add(self, blueprint):
+        '''Registers a plugin's HTTP routes with the server.
+
+        With a real Flask available (the common case) the blueprint is mounted on
+        a small app here, so url_prefix, converters, templates and static folders
+        all behave as they do under the Python server. Without Flask, the shim's
+        recorded routes are used and responses are mapped by hand.
+        '''
+        domain = getattr(self._host, '_loading_plugin', None)
+        name = getattr(blueprint, 'name', '?')
+        app = self._host.flask_app()
+        registered = 0
+
+        if app is not None:
+            try:
+                before = {rule.endpoint for rule in app.url_map.iter_rules()}
+                app.register_blueprint(blueprint)
+                for rule in app.url_map.iter_rules():
+                    if rule.endpoint in before:
+                        continue
+                    if not rule.endpoint.startswith(name + '.'):
+                        continue
+                    methods = sorted(method for method in rule.methods
+                                     if method not in ('HEAD', 'OPTIONS'))
+                    self._host.routes.append({
+                        'domain': domain, 'rule': rule.rule, 'methods': methods,
+                        'endpoint': rule.endpoint, 'view': None})
+                    self.call('plugin', 'register_route', domain=domain,
+                              rule=rule.rule, methods=methods)
+                    registered += 1
+            except Exception as ex:  # noqa: BLE001 - a route is not worth a load failure
+                print('[bridge] could not mount blueprint {}: {}'.format(name, ex),
+                      file=sys.stderr)
+        else:
+            for rule, options, view in getattr(blueprint, 'routes', None) or []:
+                methods = options.get('methods') or ['GET']
+                methods = sorted({str(method).upper() for method in methods})
+                self._host.routes.append({'domain': domain, 'rule': rule,
+                                          'methods': methods, 'endpoint': None,
+                                          'view': view})
+                try:
+                    self.call('plugin', 'register_route', domain=domain, rule=rule,
+                              methods=methods)
+                    registered += 1
+                except Exception as ex:  # noqa: BLE001
+                    print('[bridge] could not register route {}: {}'.format(rule, ex),
+                          file=sys.stderr)
+
+        print('[bridge] blueprint {}: {} route(s)'.format(name, registered))
+        return True
+
     def register_script(self, path):
         return self.call('ui', 'register_script', path=path)
 
@@ -1029,8 +1193,6 @@ class UI(Rpc):
     def socket_send_to(self, sid, event, payload):
         return self.call('ui', 'socket_send_to', sid=sid, event=event, payload=payload)
 
-    def blueprint_add(self, blueprint, **kwargs):
-        return self.call('ui', 'blueprint_add', blueprint=blueprint, kwargs=kwargs)
 
 
 class Events:
@@ -1092,6 +1254,8 @@ class Events:
                 print('[bridge] handler error for {}:'.format(event), file=sys.stderr)
                 import traceback
                 traceback.print_exc()
+            finally:
+                self._loading_plugin = None
 
 class Filters:
     '''RHAPI filters: callables applied to a payload before it is emitted.'''
@@ -1434,13 +1598,95 @@ class Bridge:
 
         self.rhapi = Rhapi(self)
         self._plugins = []
+        self.routes = []
+        self._loading_plugin = None
+        self._flask_app = None
+        # Server -> bridge: run a plugin's HTTP route (see ROUTE_EVENT).
+        self.listeners.setdefault(ROUTE_EVENT, []).append(self._handle_route)
 
         self.sio.connect(server_url, wait_timeout=15)
         # The RPC transport exists only after connect, so the version is read here.
         self.rhapi.server_info.refresh()
         print('[bridge] connected to', server_url)
 
-    # ---- server -> bridge ----
+    def flask_app(self):
+        '''The app plugin blueprints are mounted on, or None without Flask.'''
+        try:
+            import flask
+        except ImportError:
+            return None
+        if not hasattr(flask, 'Flask'):
+            return None  # our stand-in, which has no app to mount onto
+        if self._flask_app is None:
+            self._flask_app = flask.Flask('rhapi_bridge')
+        return self._flask_app
+
+    # ---- plugin HTTP routes ----
+    def _handle_route(self, args):
+        """Runs the plugin view function for a forwarded request."""
+        args = args or {}
+        method = str(args.get('method', 'GET')).upper()
+        path = str(args.get('path', '/'))
+
+        app = self.flask_app()
+        if app is not None:
+            return self._route_with_flask(app, method, path, args)
+
+        # no Flask: use the shim's recorded rules and the shared request object
+        for route in self.routes:
+            allowed = route['methods']
+            if method not in allowed and not (method == 'HEAD' and 'GET' in allowed):
+                continue
+            params = _match_rule(route['rule'], path)
+            if params is None:
+                continue
+            previous = _set_request(args, params)
+            try:
+                result = route['view'](**params)
+            except Exception as ex:  # noqa: BLE001 - the plugin's error is the body
+                import traceback
+                traceback.print_exc()
+                return {'status': 500, 'content_type': 'text/plain; charset=utf-8',
+                        'body': '{}: {}'.format(type(ex).__name__, ex)}
+            finally:
+                _restore_request(previous)
+            return _normalise_response(result)
+        return {'status': 404, 'content_type': 'text/plain; charset=utf-8',
+                'body': 'Not Found'}
+
+    def _route_with_flask(self, app, method, path, args):
+        """Flask does the matching, so converters hand the view real types."""
+        from werkzeug.exceptions import MethodNotAllowed, NotFound
+        try:
+            endpoint, values = app.url_map.bind('localhost').match(path, method=method)
+        except MethodNotAllowed:
+            return {'status': 405, 'content_type': 'text/plain; charset=utf-8',
+                    'body': 'Method Not Allowed'}
+        except NotFound:
+            return {'status': 404, 'content_type': 'text/plain; charset=utf-8',
+                    'body': 'Not Found'}
+        except Exception as ex:  # noqa: BLE001
+            return {'status': 400, 'content_type': 'text/plain; charset=utf-8',
+                    'body': '{}: {}'.format(type(ex).__name__, ex)}
+
+        view = app.view_functions.get(endpoint)
+        if view is None:
+            return {'status': 404, 'content_type': 'text/plain; charset=utf-8',
+                    'body': 'Not Found'}
+        try:
+            with app.test_request_context(
+                    path=path,
+                    method=method,
+                    query_string=dict(args.get('query') or {}),
+                    data=str(args.get('body') or ''),
+                    headers=dict(args.get('headers') or {})):
+                return _normalise_response(view(**values))
+        except Exception as ex:  # noqa: BLE001 - the plugin's error is the body
+            import traceback
+            traceback.print_exc()
+            return {'status': 500, 'content_type': 'text/plain; charset=utf-8',
+                    'body': '{}: {}'.format(type(ex).__name__, ex)}
+
     def _on_response(self, data):
         with self._cond:
             call_id = (data or {}).get('id')
@@ -1606,6 +1852,7 @@ class Bridge:
             module = importlib.util.module_from_spec(spec)
             sys.modules['rhplugin_' + name] = module
             try:
+                self._loading_plugin = name
                 spec.loader.exec_module(module)
                 if hasattr(module, 'initialize'):
                     plugin = module.initialize(self.rhapi)

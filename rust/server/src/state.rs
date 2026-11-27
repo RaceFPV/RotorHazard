@@ -390,6 +390,8 @@ pub struct AppState {
     pub plugin_markdowns: Mutex<Vec<serde_json::Value>>,
     /// Buttons plugins added to those panels (ui.register_quickbutton).
     pub plugin_quickbuttons: Mutex<Vec<serde_json::Value>>,
+    /// HTTP routes plugins registered (ui.blueprint_add): domain, rule, methods.
+    pub plugin_routes: Mutex<Vec<serde_json::Value>>,
 }
 
 impl AppState {

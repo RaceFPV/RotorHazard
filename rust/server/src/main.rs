@@ -27,6 +27,7 @@ mod pluginrpc;
 mod plugin_support;
 mod pluginrepo;
 mod plugininstall;
+mod pluginroutes;
 mod serial;
 mod payloads;
 mod phase3;
@@ -280,6 +281,7 @@ async fn main() {
         plugin_panels: std::sync::Mutex::new(Vec::new()),
         plugin_markdowns: std::sync::Mutex::new(Vec::new()),
         plugin_quickbuttons: std::sync::Mutex::new(Vec::new()),
+        plugin_routes: std::sync::Mutex::new(Vec::new()),
         plugin_fields: std::sync::Mutex::new(Vec::new()),
     });
 
@@ -547,6 +549,7 @@ async fn main() {
         .route("/stream/class/{class_id}", axum::routing::get(render_page))
         .route("/stream/heat/{heat_id}", axum::routing::get(render_page))
         .route("/static/{*path}", axum::routing::get(assets::static_handler))
+        .fallback(plugin_route_fallback)
         .layer(socketio_layer)
         .layer(axum::middleware::from_fn_with_state(
             hardening_state,
@@ -571,6 +574,123 @@ const AUTHED_PAGES: &[&str] = &[
     "/first-run", "/run", "/marshal", "/format", "/settings", "/advanced-settings",
     "/scanner", "/updatenodes", "/plugins", "/hardwarelog", "/database", "/vrxstatus",
 ];
+
+/// Last stop for a request no server route claimed: try the routes plugins
+/// registered, and hand a match to the plugin's own Python so its view function
+/// runs unchanged. Anything else is a 404.
+async fn plugin_route_fallback(
+    State(state): State<SharedState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let path = uri.path().to_string();
+    let routes: Vec<crate::pluginroutes::Route> = state
+        .plugin_routes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(crate::pluginroutes::Route::from_json)
+        .collect();
+
+    let matched = routes
+        .iter()
+        .find(|route| route.allows(method.as_str()) && route.match_path(&path).is_some());
+    let Some(route) = matched else {
+        return (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response();
+    };
+
+    if body.len() > 256 * 1024 {
+        return (axum::http::StatusCode::PAYLOAD_TOO_LARGE, "Request too large").into_response();
+    }
+
+    let mut query = serde_json::Map::new();
+    for (key, value) in uri.query().unwrap_or("").split('&').filter_map(|pair| pair.split_once('=')) {
+        query.insert(percent_decode(key), serde_json::Value::String(percent_decode(value)));
+    }
+    let mut header_map = serde_json::Map::new();
+    for (name, value) in headers.iter() {
+        if let Ok(text) = value.to_str() {
+            header_map.insert(
+                name.as_str().to_string(),
+                serde_json::Value::String(text.to_string()),
+            );
+        }
+    }
+
+    let args = serde_json::json!({
+        "domain": route.domain,
+        "method": method.as_str(),
+        "path": path,
+        "query": query,
+        "headers": header_map,
+        "body": String::from_utf8_lossy(&body).to_string(),
+    });
+
+    let reply = crate::pluginrpc::invoke_plugin(&state, "__rh_route", args).await;
+    let status = reply
+        .get("status")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(200)
+        .min(599) as u16;
+    let text = reply
+        .get("body")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let content_type = reply
+        .get("content_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("text/plain; charset=utf-8")
+        .to_string();
+
+    let status = axum::http::StatusCode::from_u16(status)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = text.into_response();
+    *response.status_mut() = status;
+    if let Ok(value) = axum::http::HeaderValue::from_str(&content_type) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::CONTENT_TYPE, value);
+    }
+    response
+}
+
+/// `%20` and `+` decoding for query strings, without pulling in a crate for it.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        index += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
 
 /// Renders the page for the request path (page map in pages::PAGES).
 async fn render_page(

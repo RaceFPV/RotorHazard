@@ -650,6 +650,30 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
             Ok(json!(true))
         }
 
+        // A plugin registered an HTTP route through its blueprint. Stored here
+        // so the router can recognise the path; the view function itself stays
+        // in the plugin's Python and runs when a request arrives.
+        ("plugin", "register_route") => {
+            let rule = arg_str("rule").ok_or("rule required")?;
+            let domain = arg_str("domain").unwrap_or_default();
+            let methods: Vec<String> = args
+                .get("methods")
+                .and_then(|value| value.as_array())
+                .map(|methods| {
+                    methods
+                        .iter()
+                        .filter_map(|method| method.as_str().map(|m| m.to_uppercase()))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["GET".to_string()]);
+            state.plugin_routes.lock().unwrap().push(json!({
+                "domain": domain,
+                "rule": rule,
+                "methods": methods,
+            }));
+            Ok(json!(true))
+        }
+
         // ---- plugin transport ----
         // The bridge declares which client socket events its plugins listen
         // to; the connect handler registers a forwarder for each name.

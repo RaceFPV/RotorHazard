@@ -1,4 +1,5 @@
 """Drives the fixture plugin: proves the bridge surface end to end, fast."""
+import json
 import sys
 import time
 
@@ -68,6 +69,198 @@ if not click.get('clicked'):
     failures.append('quickbutton click did not reach the plugin (ack %r)' % (click,))
 else:
     print('quickbutton    :', click)
+
+# 1d. the plugin's own HTTP routes must be served through the server
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(url + '/fixture/ping/7?q=hi', timeout=15) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('pong') != 7 or body.get('q') != 'hi':
+        failures.append('plugin JSON route returned %r' % (body,))
+    else:
+        print('plugin route   :', body)
+except Exception as exc:  # noqa: BLE001 - the failure is the report
+    failures.append('plugin JSON route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    with urllib.request.urlopen(url + '/fixture/text', timeout=15) as response:
+        text = response.read().decode('utf-8')
+        status = response.status
+    if status != 201 or text != 'plain text':
+        failures.append('plugin text route returned %s %r' % (status, text))
+    else:
+        print('plugin status  :', status, repr(text))
+except Exception as exc:  # noqa: BLE001
+    failures.append('plugin text route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    urllib.request.urlopen(url + '/fixture/not-registered', timeout=15)
+    failures.append('an unregistered path was served')
+except urllib.error.HTTPError as err:
+    if err.code != 404:
+        failures.append('unregistered path gave %s, expected 404' % err.code)
+
+# 1d. the plugin's own HTTP routes must be served through the server
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(url + '/fixture/ping/7?q=hi', timeout=15) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('pong') != 7 or body.get('q') != 'hi':
+        failures.append('plugin JSON route returned %r' % (body,))
+    else:
+        print('plugin route   :', body)
+except Exception as exc:  # noqa: BLE001 - the failure is the report
+    failures.append('plugin JSON route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    with urllib.request.urlopen(url + '/fixture/text', timeout=15) as response:
+        text = response.read().decode('utf-8')
+        status = response.status
+    if status != 201 or text != 'plain text':
+        failures.append('plugin text route returned %s %r' % (status, text))
+    else:
+        print('plugin status  :', status, repr(text))
+except Exception as exc:  # noqa: BLE001
+    failures.append('plugin text route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    urllib.request.urlopen(url + '/fixture/not-registered', timeout=15)
+    failures.append('an unregistered path was served')
+except urllib.error.HTTPError as err:
+    if err.code != 404:
+        failures.append('unregistered path gave %s, expected 404' % err.code)
+
+# 1d. the plugin's own HTTP routes must be served through the server
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(url + '/fixture/ping/7?q=hi', timeout=15) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('pong') != 7 or body.get('q') != 'hi':
+        failures.append('plugin JSON route returned %r' % (body,))
+    else:
+        print('plugin route   :', body)
+except Exception as exc:  # noqa: BLE001 - the failure is the report
+    failures.append('plugin JSON route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    with urllib.request.urlopen(url + '/fixture/text', timeout=15) as response:
+        text = response.read().decode('utf-8')
+        status = response.status
+    if status != 201 or text != 'plain text':
+        failures.append('plugin text route returned %s %r' % (status, text))
+    else:
+        print('plugin status  :', status, repr(text))
+except Exception as exc:  # noqa: BLE001
+    failures.append('plugin text route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    urllib.request.urlopen(url + '/fixture/not-registered', timeout=15)
+    failures.append('an unregistered path was served')
+except urllib.error.HTTPError as err:
+    if err.code != 404:
+        failures.append('unregistered path gave %s, expected 404' % err.code)
+
+# 1d. the plugin's own HTTP routes must be served through the server
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(url + '/fixture/ping/7?q=hi', timeout=15) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('pong') != 7 or body.get('q') != 'hi':
+        failures.append('plugin JSON route returned %r' % (body,))
+    else:
+        print('plugin route   :', body)
+except Exception as exc:  # noqa: BLE001 - the failure is the report
+    failures.append('plugin JSON route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    with urllib.request.urlopen(url + '/fixture/text', timeout=15) as response:
+        text = response.read().decode('utf-8')
+        status = response.status
+    if status != 201 or text != 'plain text':
+        failures.append('plugin text route returned %s %r' % (status, text))
+    else:
+        print('plugin status  :', status, repr(text))
+except Exception as exc:  # noqa: BLE001
+    failures.append('plugin text route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    urllib.request.urlopen(url + '/fixture/not-registered', timeout=15)
+    failures.append('an unregistered path was served')
+except urllib.error.HTTPError as err:
+    if err.code != 404:
+        failures.append('unregistered path gave %s, expected 404' % err.code)
+
+# 1d. the plugin's own HTTP routes must be served through the server
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(url + '/fixture/ping/7?q=hi', timeout=15) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('pong') != 7 or body.get('q') != 'hi':
+        failures.append('plugin JSON route returned %r' % (body,))
+    else:
+        print('plugin route   :', body)
+except Exception as exc:  # noqa: BLE001 - the failure is the report
+    failures.append('plugin JSON route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    with urllib.request.urlopen(url + '/fixture/text', timeout=15) as response:
+        text = response.read().decode('utf-8')
+        status = response.status
+    if status != 201 or text != 'plain text':
+        failures.append('plugin text route returned %s %r' % (status, text))
+    else:
+        print('plugin status  :', status, repr(text))
+except Exception as exc:  # noqa: BLE001
+    failures.append('plugin text route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    urllib.request.urlopen(url + '/fixture/not-registered', timeout=15)
+    failures.append('an unregistered path was served')
+except urllib.error.HTTPError as err:
+    if err.code != 404:
+        failures.append('unregistered path gave %s, expected 404' % err.code)
+
+# 1d. the plugin's own HTTP routes must be served through the server
+import urllib.error
+import urllib.request
+
+try:
+    with urllib.request.urlopen(url + '/fixture/ping/7?q=hi', timeout=15) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('pong') != 7 or body.get('q') != 'hi':
+        failures.append('plugin JSON route returned %r' % (body,))
+    else:
+        print('plugin route   :', body)
+except Exception as exc:  # noqa: BLE001 - the failure is the report
+    failures.append('plugin JSON route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    with urllib.request.urlopen(url + '/fixture/text', timeout=15) as response:
+        text = response.read().decode('utf-8')
+        status = response.status
+    if status != 201 or text != 'plain text':
+        failures.append('plugin text route returned %s %r' % (status, text))
+    else:
+        print('plugin status  :', status, repr(text))
+except Exception as exc:  # noqa: BLE001
+    failures.append('plugin text route failed: %s: %s' % (type(exc).__name__, exc))
+
+try:
+    urllib.request.urlopen(url + '/fixture/not-registered', timeout=15)
+    failures.append('an unregistered path was served')
+except urllib.error.HTTPError as err:
+    if err.code != 404:
+        failures.append('unregistered path gave %s, expected 404' % err.code)
 
 # 2. every RHAPI call the fixture makes must succeed
 probe = emit('ts_probe', None) or {}
