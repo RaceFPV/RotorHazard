@@ -296,10 +296,15 @@ impl SerialNode {
         if *current == self.multi_node_index {
             return true;
         }
-        // write the slot index, then read it back to confirm
+        // Write the slot index, then read it back to confirm. The node does not
+        // acknowledge writes - RotorHazard's write_block never reads a reply, so
+        // a node that answers one leaves bytes in the host's buffer and shifts
+        // every later read. Confirmation is READ_CURNODE_INDEX, same as Python's
+        // check_set_multi_node_index.
         for _ in 0..=MAX_RETRY_COUNT * 5 {
             {
                 let mut ser = self.serial.lock().unwrap();
+                let _ = ser.clear(serialport::ClearBuffer::Input);
                 let payload = vec![WRITE_CURNODE_INDEX, self.multi_node_index as u8,
                     calculate_checksum(&[self.multi_node_index as u8])];
                 if ser.write_all(&payload).is_err() {
@@ -308,8 +313,12 @@ impl SerialNode {
             }
             let reply = {
                 let mut ser = self.serial.lock().unwrap();
-                let mut buf = vec![0u8; 2];
-                ser.read_exact(&mut buf).ok().map(|_| buf)
+                if ser.write_all(&[READ_CURNODE_INDEX]).is_err() {
+                    None
+                } else {
+                    let mut buf = vec![0u8; 2];
+                    ser.read_exact(&mut buf).ok().map(|_| buf)
+                }
             };
             if let Some(buf) = reply {
                 if validate_checksum(&buf) && buf[0] == self.multi_node_index as u8 {
