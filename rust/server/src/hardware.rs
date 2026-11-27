@@ -98,10 +98,23 @@ impl HardwareInterface {
         self.nodes.iter().map(|n| n.frequency).collect()
     }
 
-    pub fn set_frequency(&self, node_index: usize, freq: u16) {
-        if let Some(node) = self.nodes.get(node_index) {
-            node.write_frequency(freq);
+    /// Sets a seat's frequency and returns whether the node confirmed it.
+    /// API 36+ nodes also run the RX register test (RHInterface.set_frequency),
+    /// which is how a receiver with broken SPI - or a frequency it cannot tune
+    /// - is caught instead of silently racing on nothing.
+    pub fn set_frequency(&self, node_index: usize, freq: u16) -> bool {
+        let Some(node) = self.nodes.get(node_index) else {
+            return false;
+        };
+        let confirmed = node.set_frequency(freq);
+        if !confirmed {
+            tracing::warn!(
+                "Node {} failed register test; check RX SPI communications (frequency {})",
+                node_index + 1,
+                freq
+            );
         }
+        confirmed
     }
 
     pub fn set_enter_at_level(&mut self, node_index: usize, level: i64) {
@@ -250,7 +263,12 @@ impl HardwareInterface {
                     .unwrap_or(0)
             });
             if dbf != 0 && dbf != arc.frequency as i64 {
-                arc.write_frequency(dbf as u16);
+                if !arc.set_frequency(dbf as u16) {
+                    tracing::warn!(
+                        "Node {} failed register test applying its profile frequency; check RX SPI communications",
+                        idx + 1
+                    );
+                }
             }
             self.nodes.push(arc);
         }
@@ -296,7 +314,7 @@ impl HardwareInterface {
             if node.reopen() {
                 self.lap_check_pending[idx] = true;
                 // restore settings the node lost across its reset
-                if node.write_frequency(node.frequency) {
+                if node.set_frequency(node.frequency) {
                     node.write_enter_at_level(node.enter_at_level as u16);
                     node.write_exit_at_level(node.exit_at_level as u16);
                     info!("Node {} port reopened; frequency and levels restored", idx + 1);

@@ -8,6 +8,7 @@ grep for `open` rows, work them in batches, flip the status here in the same PR.
 
 | date | upstream | change | why not ported | kind | status |
 |---|---|---|---|---|---|
+| 2026-11-27 | `12ea5f4a` | Run register test after frequency setting | Ported: `serial.rs::set_frequency_verified` writes, reads back with retries, and on API 36+ sleeps 30ms and reads `TEST_RX_REGISTER`, exactly as RHInterface.set_frequency; a failing seat logs a warning and emits "Failed to set frequency on node N". Disabled seats power the receiver down with 1111 (5800 below API 24). Covered by unit tests and an eight-seat API 36 board on a pty (`tests/fixtures/test_c5mk_node.sh`). | divergence | fixed |
 | 2026-11-26 | `078c177` | Default CORS Allowed Hosts to same-origin instead of any site | Ported: `src/cors.rs` reads the setting once at startup (empty = same-origin, `*` = any, otherwise an allow list) and the hardening middleware refuses a foreign Origin on /socket.io with 400 "Not an accepted origin.", as engineio does; other paths answer without the header. Covered by `tests/cors_policy.rs`. | divergence | fixed |
 | 2026-11-26 | `0309dec` | Require admin auth for the hardware_log_init load-data request | The load-data handler is not ported, so there is no request to guard | absent | open |
 | 2026-11-26 | `b1caaea` | Reject database-backup file names that are not plain file names | Rust has no download/restore/delete database handlers, so no filename reaches a path | absent | open |

@@ -35,6 +35,14 @@ pub const READ_FW_BUILDTIME: u8 = 0x3F;
 pub const READ_FW_PROCTYPE: u8 = 0x40;
 
 #[allow(dead_code)]
+/// Node API 36+: does the RX module hold the frequency we just wrote?
+pub const TEST_RX_REGISTER: u8 = 0x04;
+/// RHInterface.MAX_FREQUENCY_RETRY_COUNT: full write+test attempts.
+pub const MAX_FREQUENCY_RETRY_COUNT: u32 = 4;
+/// Time for the RX5808 VCOs to settle after a frequency write before the
+/// register is read (RHInterface.set_frequency: "20ms is optimal, 30ms is
+/// safer, can be longer but not shorter").
+pub const RX_REGISTER_SETTLE: std::time::Duration = std::time::Duration::from_millis(30);
 pub const WRITE_FREQUENCY: u8 = 0x51;
 pub const WRITE_ENTER_AT_LEVEL: u8 = 0x71;
 pub const WRITE_EXIT_AT_LEVEL: u8 = 0x72;
@@ -357,8 +365,10 @@ impl SerialNode {
         self.read_block(READ_FREQUENCY, 2).map(|d| unpack_16(&d))
     }
 
-    pub fn write_frequency(&self, freq: u16) -> bool {
-        self.write_block(WRITE_FREQUENCY, &pack_16(freq))
+    /// Write a frequency and make the node prove it (see
+    /// `set_frequency_verified`).
+    pub fn set_frequency(&self, frequency: u16) -> bool {
+        set_frequency_verified(self, frequency)
     }
 
     pub fn read_enter_at_level(&self) -> Option<u16> {
@@ -653,6 +663,94 @@ pub fn discover_nodes(
     nodes
 }
 
+/// The part of a node's link that frequency handling needs, so the retry and
+/// register-test rules can be exercised without a serial port.
+pub trait NodeLink {
+    fn read_block(&self, command: u8, size: usize) -> Option<Vec<u8>>;
+    fn write_block(&self, command: u8, data: &[u8]) -> bool;
+    fn api_level(&self) -> u16;
+}
+
+impl NodeLink for SerialNode {
+    fn read_block(&self, command: u8, size: usize) -> Option<Vec<u8>> {
+        SerialNode::read_block(self, command, size)
+    }
+
+    fn write_block(&self, command: u8, data: &[u8]) -> bool {
+        SerialNode::write_block(self, command, data)
+    }
+
+    fn api_level(&self) -> u16 {
+        self.api_level
+    }
+}
+
+/// Write a 16-bit value and read it back until the node agrees, at most
+/// `MAX_RETRY_COUNT` times (RHInterface.set_and_validate_value_16). Returns
+/// what the node reports, or the value we wrote when it never answered.
+pub fn set_and_validate_value_16(
+    link: &dyn NodeLink,
+    command: u8,
+    read_command: u8,
+    value: u16,
+) -> u16 {
+    let mut out_value = None;
+    for _ in 0..=MAX_RETRY_COUNT {
+        link.write_block(command, &pack_16(value));
+        out_value = link
+            .read_block(read_command, 2)
+            .map(|d| unpack_16(&d));
+        if out_value == Some(value) {
+            return value;
+        }
+    }
+    out_value.unwrap_or(value)
+}
+
+/// RHInterface.set_frequency: write the frequency, confirm the node stored it,
+/// and on API 36+ prove the receiver's register actually took it - the test
+/// that reports an RX5808 with broken SPI or an unsupported frequency.
+///
+/// `false` means the node never confirmed; the caller decides how loudly to
+/// say so. A frequency of 0 disables the seat: the receiver is powered down
+/// with 1111 (5800 on nodes older than API 24) but the seat keeps 0.
+pub fn set_frequency_verified(link: &dyn NodeLink, frequency: u16) -> bool {
+    let mut success = false;
+    let mut attempts = 0;
+    while !success && attempts <= MAX_FREQUENCY_RETRY_COUNT {
+        if frequency != 0 {
+            set_and_validate_value_16(link, WRITE_FREQUENCY, READ_FREQUENCY, frequency);
+        } else {
+            let off = if link.api_level() >= 24 { 1111 } else { 5800 };
+            set_and_validate_value_16(link, WRITE_FREQUENCY, READ_FREQUENCY, off);
+        }
+
+        // The register test only exists on API 36+ nodes, and there is nothing
+        // to verify when the seat is being disabled.
+        if frequency != 0 && link.api_level() >= 36 {
+            std::thread::sleep(RX_REGISTER_SETTLE);
+            let stored = link
+                .read_block(TEST_RX_REGISTER, 1)
+                .map(|d| d[0])
+                .unwrap_or(0);
+            if stored != 0 {
+                success = true;
+            } else {
+                attempts += 1;
+                tracing::debug!(
+                    "Frequency not validated (try={}): frequency={}, node={}",
+                    attempts,
+                    frequency,
+                    link.api_level()
+                );
+            }
+        } else {
+            success = true;
+        }
+    }
+    success
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,5 +858,145 @@ mod tests {
     fn port_cache_key_normalizes() {
         assert_eq!(port_cache_key("/dev/ttyAMA0"), "ttyAMA0");
         assert_eq!(port_cache_key("ttyAMA0"), "ttyAMA0");
+    }
+
+    // -- frequency setting (RHInterface.set_frequency) ---------------------
+
+    #[derive(Default)]
+    struct FakeSeat {
+        api: u16,
+        frequency: std::cell::Cell<u16>,
+        /// read-backs that disagree before the node agrees
+        bad_readbacks: std::cell::Cell<u32>,
+        /// TEST_RX_REGISTER replies; empty means "always passes"
+        register_results: std::cell::RefCell<std::collections::VecDeque<u8>>,
+        writes: std::cell::RefCell<Vec<(u8, Vec<u8>)>>,
+        register_reads: std::cell::Cell<u32>,
+    }
+
+    impl FakeSeat {
+        fn with_api(api: u16) -> Self {
+            FakeSeat {
+                api,
+                ..Default::default()
+            }
+        }
+    }
+
+    impl NodeLink for FakeSeat {
+        fn read_block(&self, command: u8, size: usize) -> Option<Vec<u8>> {
+            match command {
+                READ_FREQUENCY if size == 2 => {
+                    if self.bad_readbacks.get() > 0 {
+                        self.bad_readbacks.set(self.bad_readbacks.get() - 1);
+                        Some(pack_16(self.frequency.get().wrapping_sub(1)))
+                    } else {
+                        Some(pack_16(self.frequency.get()))
+                    }
+                }
+                TEST_RX_REGISTER if size == 1 => {
+                    self.register_reads.set(self.register_reads.get() + 1);
+                    Some(vec![self.register_results.borrow_mut().pop_front().unwrap_or(1)])
+                }
+                _ => None,
+            }
+        }
+
+        fn write_block(&self, command: u8, data: &[u8]) -> bool {
+            if command == WRITE_FREQUENCY && data.len() == 2 {
+                self.frequency.set(unpack_16(data));
+            }
+            self.writes.borrow_mut().push((command, data.to_vec()));
+            true
+        }
+
+        fn api_level(&self) -> u16 {
+            self.api
+        }
+    }
+
+    fn frequency_writes(seat: &FakeSeat) -> Vec<Vec<u8>> {
+        seat.writes
+            .borrow()
+            .iter()
+            .filter(|(cmd, _)| *cmd == WRITE_FREQUENCY)
+            .map(|(_, data)| data.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_confirmed_frequency_is_written_once() {
+        // API 35: no register test exists, the read-back is the confirmation.
+        let seat = FakeSeat::with_api(35);
+        assert!(set_frequency_verified(&seat, 5800));
+        assert_eq!(frequency_writes(&seat), vec![pack_16(5800)]);
+        assert_eq!(seat.register_reads.get(), 0);
+    }
+
+    #[test]
+    fn a_wrong_readback_is_retried() {
+        let seat = FakeSeat::with_api(35);
+        seat.bad_readbacks.set(1);
+        assert!(set_frequency_verified(&seat, 5740));
+        assert_eq!(
+            frequency_writes(&seat).len(),
+            2,
+            "the write is repeated until the node reports the value back"
+        );
+        assert_eq!(seat.frequency.get(), 5740);
+    }
+
+    #[test]
+    fn api36_must_pass_the_rx_register_test() {
+        let seat = FakeSeat::with_api(36);
+        seat.register_results
+            .borrow_mut()
+            .extend([0u8, 0, 0, 0, 0]);
+        assert!(
+            !set_frequency_verified(&seat, 5800),
+            "a seat that never stores the frequency must report failure"
+        );
+        assert_eq!(seat.register_reads.get(), MAX_FREQUENCY_RETRY_COUNT + 1);
+        assert_eq!(
+            frequency_writes(&seat).len(),
+            (MAX_FREQUENCY_RETRY_COUNT + 1) as usize,
+            "each register-test failure retries the whole write"
+        );
+    }
+
+    #[test]
+    fn api36_passes_when_the_register_holds_the_frequency() {
+        let seat = FakeSeat::with_api(36);
+        assert!(set_frequency_verified(&seat, 5658));
+        assert_eq!(seat.register_reads.get(), 1);
+        assert_eq!(frequency_writes(&seat), vec![pack_16(5658)]);
+    }
+
+    #[test]
+    fn the_register_test_runs_after_a_settle_delay() {
+        let seat = FakeSeat::with_api(36);
+        let started = std::time::Instant::now();
+        assert!(set_frequency_verified(&seat, 5800));
+        assert!(
+            started.elapsed() >= RX_REGISTER_SETTLE,
+            "reading the register before the VCOs settle gives false failures"
+        );
+    }
+
+    #[test]
+    fn disabling_a_seat_powers_the_receiver_down() {
+        // API 36 node: 1111 tells the board to stop the RX module, and there is
+        // nothing to verify - the seat keeps frequency 0.
+        let seat = FakeSeat::with_api(36);
+        assert!(set_frequency_verified(&seat, 0));
+        assert_eq!(frequency_writes(&seat), vec![pack_16(1111)]);
+        assert_eq!(seat.register_reads.get(), 0);
+    }
+
+    #[test]
+    fn older_nodes_power_down_at_5800() {
+        let seat = FakeSeat::with_api(20);
+        assert!(set_frequency_verified(&seat, 0));
+        assert_eq!(frequency_writes(&seat), vec![pack_16(5800)]);
     }
 }

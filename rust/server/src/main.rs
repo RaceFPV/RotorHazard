@@ -295,6 +295,10 @@ async fn main() {
         {
             for (i, node) in hw.nodes.iter().enumerate() {
                 let dbf = db_freqs.get(i).map(|(_, _, f)| *f).unwrap_or(0);
+                tracing::debug!(
+                    "seat sync {}: profile={} node={} (port {})",
+                    i + 1, dbf, node.frequency, node.port
+                );
                 if dbf != 0 && dbf != node.frequency as i64 {
                     hw.set_frequency(i, dbf as u16);
                 } else if dbf == 0 && node.frequency != 0 {

@@ -1898,8 +1898,18 @@ fn register_settings_handlers(socket: SocketRef, _state: SharedState) {
             }
         }
         // write to real hardware if present
+        let mut refused = false;
         if let Some(hw) = state.hardware.lock().unwrap().as_ref() {
-            hw.set_frequency(node as usize, freq as u16);
+            refused = !hw.set_frequency(node as usize, freq as u16);
+        }
+        if refused {
+            // interface_mapper.set_frequency: warn the operator instead of
+            // pretending the seat is tuned.
+            emit_priority_message(
+                &state,
+                &format!("Failed to set frequency on node {}", node + 1),
+                false,
+            );
         }
         tracing::info!("Frequency set: Node {} band={:?} ch={:?} freq={}", node + 1, band, chan, freq);
         let payload = db::with_db(&state, payloads::build_frequency_data);
@@ -3199,8 +3209,12 @@ fn handle_set_profile(state: &SharedState, profile_val: i64) -> bool {
             let f_arr = freqs.get("f").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             for (i, v) in f_arr.iter().enumerate() {
                 let f = v.as_i64().unwrap_or(0);
-                if f > 0 && i < hw.num_nodes() {
-                    hw.set_frequency(i, f as u16);
+                if f > 0 && i < hw.num_nodes() && !hw.set_frequency(i, f as u16) {
+                    tracing::warn!(
+                        "Frequency {} not confirmed by node {}",
+                        f,
+                        i + 1
+                    );
                 }
             }
         }

@@ -248,6 +248,20 @@ run_gates() {
     fi
     log "plugin bridge fixture passed"
 
+    # Node hardware gate: an eight-seat API 36 board on a pty - the shape a
+    # C5MK presents. The protocol suite only drives mock nodes, so discovery,
+    # per-seat frequency programming and the RX register test have no other
+    # coverage in this pipeline.
+    log "running node hardware (fake C5MK)..."
+    if ! PYTHON_BIN="$py" bash rust/server/tests/fixtures/test_c5mk_node.sh \
+         > /tmp/sync-c5mk.log 2>&1; then
+        log "NODE HARDWARE GATE FAILED"
+        dump_port
+        tail -25 /tmp/sync-c5mk.log | sed 's/^/    /' || true
+        return 1
+    fi
+    log "node hardware gate passed"
+
     if [ "${SKIP_PLUGIN_E2E:-0}" != "1" ]; then
         local plug_dir=/tmp/rh-sync-plugin
         rm -rf "$plug_dir"

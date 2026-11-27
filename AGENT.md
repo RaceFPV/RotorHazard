@@ -328,6 +328,17 @@ whole `$(document).ready` block - every handler on the page, including the plugi
 list, silently never registered. `read_config_item` now carries Config.py's
 UI/LED/PLUGINS defaults, and that one call renders through `|tojson`.
 
+**Node hardware: a seat change is verified, not assumed.** Setting a
+frequency writes it, reads it back with retries and - on API 36+ - sleeps 30 ms
+and runs the RX register test (`TEST_RX_REGISTER`), so a receiver with broken
+SPI or a frequency it cannot tune is reported ("Failed to set frequency on node
+N") instead of silently racing on nothing. A disabled seat powers the receiver
+down with 1111 (5800 below API 24). Multi-node boards (S32_BPill, and the
+ESP32-C5 running C5MK firmware) present several seats on one port: discovery
+reads `READ_MULTINODE_COUNT`, and every block read/write selects the slot with
+`WRITE_CURNODE_INDEX` first. `tests/fixtures/test_c5mk_node.sh` proves the whole
+path against an eight-seat API 36 board on a pty.
+
 **CORS is enforced, not advertised.** `GENERAL.CORS_ALLOWED_HOSTS` is read
 once at startup (`src/cors.rs`, mirroring server.py's SocketIO construction):
 empty means same-origin only, `*` means any, anything else is an allow list.
