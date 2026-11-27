@@ -87,14 +87,18 @@ def _match_rule(rule, path):
             if position >= len(path_parts):
                 return None
             value = path_parts[position]
+            # Convert like Flask does: a view declared <int:x> must receive an
+            # int, not the matched text. The real-Flask path gets this from
+            # Flask's router; without Flask (the shim) it has to happen here or
+            # jsonify returns "7" where Python returns 7.
             if converter == 'int':
                 try:
-                    int(value)
+                    value = int(value)
                 except ValueError:
                     return None
             elif converter == 'float':
                 try:
-                    float(value)
+                    value = float(value)
                 except ValueError:
                     return None
             params[name] = value
