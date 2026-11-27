@@ -8,7 +8,7 @@ grep for `open` rows, work them in batches, flip the status here in the same PR.
 
 | date | upstream | change | why not ported | kind | status |
 |---|---|---|---|---|---|
-| 2026-11-26 | `078c177` | Default CORS Allowed Hosts to same-origin instead of any site | Rust enforces no CORS at all: no layer, no origin check, so the server still accepts any origin | divergence | open |
+| 2026-11-26 | `078c177` | Default CORS Allowed Hosts to same-origin instead of any site | Ported: `src/cors.rs` reads the setting once at startup (empty = same-origin, `*` = any, otherwise an allow list) and the hardening middleware refuses a foreign Origin on /socket.io with 400 "Not an accepted origin.", as engineio does; other paths answer without the header. Covered by `tests/cors_policy.rs`. | divergence | fixed |
 | 2026-11-26 | `0309dec` | Require admin auth for the hardware_log_init load-data request | The load-data handler is not ported, so there is no request to guard | absent | open |
 | 2026-11-26 | `b1caaea` | Reject database-backup file names that are not plain file names | Rust has no download/restore/delete database handlers, so no filename reaches a path | absent | open |
 | 2026-11-26 | `b73bf292` | Redact secrets from the download-logs zip file | No log-zip download endpoint in Rust | absent | open |

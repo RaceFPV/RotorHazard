@@ -14,6 +14,7 @@ mod assets;
 mod calibration;
 mod class_rank;
 mod cluster;
+mod cors;
 mod hardware;
 mod db;
 mod export_import;
@@ -476,6 +477,26 @@ async fn main() {
         });
     }
 
+    // CORS is decided once, like the reference server: server.py builds its
+    // SocketIO service with this value at import time, so a change needs a
+    // restart. Empty means same-origin only.
+    let cors_policy = cors::CorsPolicy::parse(&db::get_config_string(
+        &state,
+        "GENERAL",
+        "CORS_ALLOWED_HOSTS",
+    ));
+    println!(
+        "CORS allowed hosts: {}",
+        match &cors_policy {
+            cors::CorsPolicy::SameOrigin => "same-origin only".to_string(),
+            cors::CorsPolicy::Any => "* (any site can read responses)".to_string(),
+            cors::CorsPolicy::Origins(list) => list.join(", "),
+        }
+    );
+    let hardening_state = HardeningState {
+        cors: std::sync::Arc::new(cors_policy),
+    };
+
     let app = axum::Router::new()
         .route("/api/status", axum::routing::get(api::status))
         .route("/api/pilot/all", axum::routing::get(api::pilot_all))
@@ -520,7 +541,7 @@ async fn main() {
         .route("/static/{*path}", axum::routing::get(assets::static_handler))
         .layer(socketio_layer)
         .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            hardening_state,
             hardening_middleware,
         ))
         .with_state(state);
@@ -645,28 +666,118 @@ fn generate_secret_key_str() -> String {
 }
 
 /// Adds hardening response headers to every response (server.py
-/// add_security_headers) and applies CORS for /api responses from
-/// GENERAL.CORS_ALLOWED_HOSTS (empty = same-origin only).
+/// add_security_headers) and applies `GENERAL.CORS_ALLOWED_HOSTS`.
+///
+/// The Socket.IO endpoint is guarded the way engineio guards it: a request
+/// carrying a foreign `Origin` is refused with `400 Not an accepted origin.`,
+/// not merely served without a CORS header - browsers never apply CORS to a
+/// WebSocket upgrade, so an unchecked upgrade would let any web page drive a
+/// race. Other paths answer with CORS headers when the origin is allowed and
+/// omit them otherwise, which is what the reference server does for its plain
+/// HTTP routes.
+#[derive(Clone)]
+struct HardeningState {
+    cors: std::sync::Arc<cors::CorsPolicy>,
+}
+
 async fn hardening_middleware(
-    axum::extract::State(state): axum::extract::State<SharedState>,
+    axum::extract::State(st): axum::extract::State<HardeningState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let is_api = request.uri().path().starts_with("/api");
-    let mut response = next.run(request).await;
+    use axum::http::header;
+
+    let path = request.uri().path().to_string();
+    let is_socket_io = path.starts_with("/socket.io");
+    let is_api = path.starts_with("/api");
+    // Read everything up front into owned strings: a closure borrowing the
+    // request would still be alive when the request is handed to `next`, and
+    // the resulting future would not satisfy the layer's `Service` bound.
+    let (origin, host, forwarded_proto, forwarded_host, requested_headers) = {
+        let headers = request.headers();
+        let get = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        (
+            get("origin"),
+            get("host"),
+            get("x-forwarded-proto"),
+            get("x-forwarded-host"),
+            get("access-control-request-headers"),
+        )
+    };
+    let scheme = request
+        .uri()
+        .scheme_str()
+        .unwrap_or("http")
+        .to_string();
+
+    let verdict = st.cors.check(
+        origin.as_deref(),
+        &scheme,
+        host.as_deref(),
+        forwarded_proto.as_deref(),
+        forwarded_host.as_deref(),
+    );
+    let preflight =
+        request.method() == axum::http::Method::OPTIONS && (is_socket_io || is_api);
+
+    let mut response = if verdict.is_denied() && is_socket_io {
+        let mut resp =
+            axum::response::Response::new(axum::body::Body::from("Not an accepted origin."));
+        *resp.status_mut() = axum::http::StatusCode::BAD_REQUEST;
+        resp
+    } else if preflight {
+        // A preflight has no route of its own; answering it here keeps the
+        // browser from seeing the 405 the router would otherwise produce.
+        let mut resp = axum::response::Response::new(axum::body::Body::empty());
+        *resp.status_mut() = axum::http::StatusCode::NO_CONTENT;
+        resp
+    } else {
+        next.run(request).await
+    };
+
     let headers = response.headers_mut();
     headers
-        .entry(axum::http::header::HeaderName::from_static("x-content-type-options"))
-        .or_insert(axum::http::HeaderValue::from_static("nosniff"));
+        .entry(header::HeaderName::from_static("x-content-type-options"))
+        .or_insert(header::HeaderValue::from_static("nosniff"));
     headers
-        .entry(axum::http::header::HeaderName::from_static("referrer-policy"))
-        .or_insert(axum::http::HeaderValue::from_static("same-origin"));
-    if is_api {
-        let cors = db::get_config_string(&state, "GENERAL", "CORS_ALLOWED_HOSTS");
-        if !cors.is_empty() {
-            if let Ok(value) = axum::http::HeaderValue::from_str(&cors) {
-                headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+        .entry(header::HeaderName::from_static("referrer-policy"))
+        .or_insert(header::HeaderValue::from_static("same-origin"));
+
+    if matches!(verdict, cors::Verdict::NoOrigin) {
+        return response;
+    }
+    // Anything that varies with Origin must say so, or a cache can hand a
+    // foreign page a header meant for the timer.
+    headers.append(header::VARY, header::HeaderValue::from_static("Origin"));
+
+    if let cors::Verdict::Allowed(value) = &verdict {
+        if let Ok(value) = header::HeaderValue::from_str(value) {
+            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+            if is_socket_io {
+                // engineio's cors_credentials default. Browsers reject a
+                // literal "*" together with credentials, which is why the
+                // policy echoes the caller's origin instead.
+                headers.insert(
+                    header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                    header::HeaderValue::from_static("true"),
+                );
             }
+        }
+        if preflight {
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                header::HeaderValue::from_static("OPTIONS, GET, POST"),
+            );
+            let allow_headers = requested_headers
+                .as_deref()
+                .and_then(|h| header::HeaderValue::from_str(h).ok())
+                .unwrap_or_else(|| header::HeaderValue::from_static("content-type"));
+            headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allow_headers);
         }
     }
     response

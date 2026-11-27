@@ -53,7 +53,7 @@ jobs:
         run: cargo test --release --manifest-path rust/server/Cargo.toml --bins
 
       - name: Protocol integration tests
-        run: cargo test --release --manifest-path rust/server/Cargo.toml --test protocol_core --test protocol_more --test protocol_autoadjust --test protocol_heartbeat
+        run: cargo test --release --manifest-path rust/server/Cargo.toml --test protocol_core --test protocol_more --test protocol_autoadjust --test protocol_heartbeat --test protocol_upstream --test cors_policy
 
   plugins:
     name: Plugin compatibility (Connector-FPVTrackSide)

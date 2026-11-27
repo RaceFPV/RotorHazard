@@ -328,6 +328,17 @@ whole `$(document).ready` block - every handler on the page, including the plugi
 list, silently never registered. `read_config_item` now carries Config.py's
 UI/LED/PLUGINS defaults, and that one call renders through `|tojson`.
 
+**CORS is enforced, not advertised.** `GENERAL.CORS_ALLOWED_HOSTS` is read
+once at startup (`src/cors.rs`, mirroring server.py's SocketIO construction):
+empty means same-origin only, `*` means any, anything else is an allow list.
+The hardening middleware refuses a foreign `Origin` on `/socket.io` with
+`400 Not an accepted origin.` - engineio's behaviour, and the only thing that
+guards a WebSocket upgrade, since browsers never apply CORS to one. Plain HTTP
+routes simply omit the header instead, exactly as the reference server does.
+Because the browser's own page is same-origin, this never affects normal use;
+it stops a foreign page from opening a socket and driving a race. Tests:
+`tests/cors_policy.rs`.
+
 **Tests that protect this**: `rust/plugin-bridge/test_plugin_fixture.sh` runs an
 in-repo fixture plugin (`tests/fixture_plugin`) that calls 42 representative
 RHAPI members, registers a panel/option/attributes, stages a race and listens for
