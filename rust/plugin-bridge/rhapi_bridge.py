@@ -153,13 +153,23 @@ def _normalise_response(result):
         status = int(getattr(result, 'status_code', status) or status)
         for key, value in (getattr(result, 'headers', None) or {}).items():
             headers[str(key)] = str(value)
-        return {
-            'status': status,
-            'content_type': headers.get('Content-Type',
-                                        headers.get('content-type',
-                                                    'text/html; charset=utf-8')),
-            'body': result.get_data(as_text=True),
-        }
+        content_type = headers.get('Content-Type',
+                                   headers.get('content-type',
+                                               'text/html; charset=utf-8'))
+        if getattr(result, 'direct_passthrough', False):
+            # send_file/send_from_directory: get_data() refuses, the body is the
+            # iterable itself (static JS, images, fonts).
+            data = b''.join(result.response)
+        else:
+            data = result.get_data()
+        try:
+            return {'status': status, 'content_type': content_type,
+                    'body': data.decode('utf-8')}
+        except UnicodeDecodeError:
+            import base64
+            return {'status': status, 'content_type': content_type,
+                    'body': base64.b64encode(data).decode('ascii'),
+                    'body_base64': True}
 
     if isinstance(result, (dict, list)):
         return {'status': status,

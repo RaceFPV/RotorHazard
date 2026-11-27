@@ -666,6 +666,12 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                         .collect()
                 })
                 .unwrap_or_else(|| vec!["GET".to_string()]);
+            tracing::info!(
+                "plugin route registered: {} {} {:?}",
+                domain,
+                rule,
+                methods
+            );
             state.plugin_routes.lock().unwrap().push(json!({
                 "domain": domain,
                 "rule": rule,

@@ -649,7 +649,21 @@ async fn plugin_route_fallback(
 
     let status = axum::http::StatusCode::from_u16(status)
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    let mut response = text.into_response();
+
+    // Static assets arrive base64-encoded: JSON cannot carry bytes.
+    let mut response = if reply
+        .get("body_base64")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(text.as_bytes())
+            .unwrap_or_default();
+        axum::body::Bytes::from(bytes).into_response()
+    } else {
+        text.into_response()
+    };
     *response.status_mut() = status;
     if let Ok(value) = axum::http::HeaderValue::from_str(&content_type) {
         response
