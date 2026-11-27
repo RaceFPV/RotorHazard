@@ -19,6 +19,8 @@ import argparse
 import importlib.util
 import json
 import os
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -1479,6 +1481,74 @@ class Bridge:
                 self._cond.notify_all()
         return cb
 
+    # ---- plugin dependencies ----
+    @staticmethod
+    def _dependency_name(spec):
+        """'esptool>=4.8.1' -> 'esptool' (the importable module)."""
+        return re.split(r'[\[<>=!~; ]', str(spec), 1)[0].strip()
+
+    def _missing_specs(self, specs):
+        out = []
+        for spec in specs:
+            name = self._dependency_name(spec)
+            if not name:
+                continue
+            try:
+                if importlib.util.find_spec(name) is not None:
+                    continue
+            except (ImportError, ValueError):
+                pass
+            out.append(spec)
+        return out
+
+    def _pip_install(self, specs):
+        """Install into the interpreter running this bridge.
+
+        Same command the Python server's plugin installer uses, so a plugin that
+        declares dependencies behaves the same on either server.
+        """
+        return subprocess.run([sys.executable, '-m', 'pip', 'install', *specs],
+                              capture_output=True, text=True, timeout=300)
+
+    def _ensure_dependencies(self, manifest):
+        """None when satisfied, else a message for the plugin list.
+
+        A plugin that cannot import its dependency is more useful reported than
+        half-loaded: the message names the exact command to run by hand.
+        """
+        specs = [str(spec) for spec in (manifest.get('dependencies') or [])
+                 if str(spec).strip()]
+        if not specs:
+            return None
+
+        missing = self._missing_specs(specs)
+        if not missing:
+            return None
+
+        command = '{} -m pip install {}'.format(sys.executable, ' '.join(missing))
+        if os.environ.get('RH_PLUGIN_NO_DEPS'):
+            return 'missing dependencies: %s (auto-install disabled)' % command
+
+        print('[bridge] installing dependencies: {}'.format(', '.join(missing)))
+        try:
+            result = self._pip_install(missing)
+        except (OSError, subprocess.SubprocessError) as ex:
+            return 'dependencies not installed ({}). Run: {}'.format(ex, command)
+
+        importlib.invalidate_caches()
+        if result.returncode != 0:
+            detail = [line for line in (result.stderr or result.stdout or '').splitlines()
+                      if line.strip()]
+            return 'dependencies failed to install: {}. Run: {} (if pip is missing: ' \
+                   '{} -m ensurepip)'.format(detail[-1] if detail else 'pip error',
+                                             command, sys.executable)
+
+        still = self._missing_specs(specs)
+        if still:
+            return 'dependencies installed but not importable: {}. Run: {}'.format(
+                ', '.join(still), command)
+        return None
+
     # ---- plugin loading ----
     def load_plugins(self, plugins_dir, only=None):
         if not os.path.isdir(plugins_dir):
@@ -1497,6 +1567,12 @@ class Bridge:
             if os.path.isfile(manifest_path):
                 with open(manifest_path) as fh:
                     manifest = json.load(fh)
+            dependency_problem = self._ensure_dependencies(manifest)
+            if dependency_problem:
+                report.append({'domain': name, 'error': dependency_problem})
+                print('[bridge] plugin {} not loaded: {}'.format(name, dependency_problem),
+                      file=sys.stderr)
+                continue
             spec = importlib.util.spec_from_file_location(
                 'rhplugin_' + name, init_py)
             module = importlib.util.module_from_spec(spec)

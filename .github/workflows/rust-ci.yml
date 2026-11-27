@@ -79,6 +79,9 @@ jobs:
       - name: Install python client deps
         run: python3 -m pip install --quiet 'python-socketio[client]' requests
 
+      - name: Plugin dependency handling (offline, stubbed pip)
+        run: python3 rust/plugin-bridge/tests/test_dependencies.py
+
       - name: Plugin bridge fixture (in-repo, offline)
         env:
           PYTHON_BIN: python3
