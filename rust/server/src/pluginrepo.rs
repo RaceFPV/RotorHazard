@@ -11,6 +11,8 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use std::io::Read;
+
 use serde_json::{json, Map, Value};
 
 pub const DATA_URL: &str = "https://rhcp.hazardcreative.com/v1/plugin/data.json";
@@ -68,6 +70,22 @@ pub fn payload(data: &Value, categories: &Value, rhapi: (u64, u64)) -> Value {
         "remote_categories": categories.clone(),
         "remote_data": remote,
     })
+}
+
+pub fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let response = ureq::get(url)
+        .config()
+        .timeout_global(Some(TIMEOUT))
+        .build()
+        .call()
+        .map_err(|err| err.to_string())?;
+    let mut body = Vec::new();
+    response
+        .into_body()
+        .into_reader()
+        .read_to_end(&mut body)
+        .map_err(|err| err.to_string())?;
+    Ok(body)
 }
 
 pub fn fetch_json(url: &str) -> Result<Value, String> {

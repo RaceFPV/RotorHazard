@@ -35,6 +35,18 @@ import socketio
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'rh_compat'))
 
+# Plugins import flask at module level to register a blueprint. The Python server
+# serves those routes; this one does not yet, so a plugin that needs flask gets a
+# stand-in that records the blueprint and routes nothing - it still loads, and
+# its panels and buttons work. A real flask, if installed, wins.
+try:
+    import flask  # noqa: F401
+except ImportError:
+    import flask_shim
+
+    sys.modules['flask'] = flask_shim
+    sys.modules['flask.blueprints'] = flask_shim
+
 RPC_OBJECT = 'rhapi_call'
 RPC_TIMEOUT = 10.0
 
@@ -1029,17 +1041,28 @@ class Events:
         self._host = host
         self._handlers = {}
 
-    def on(self, event, handler):
-        self._handlers.setdefault(event, []).append(handler)
-        return handler
+    def on(self, event, handler_fn, default_args=None, priority=None,
+           unique=False, name=None):
+        '''Matches RHAPI.EventsAPI.on, including default_args.
 
-    def off(self, event, handler=None):
-        if handler is None:
+        Python merges a handler's default_args into the args dict at emit time;
+        the entry keeps them so dispatch can do the same.
+        '''
+        entry = {'handler': handler_fn, 'default_args': default_args or {}}
+        handlers = self._handlers.setdefault(event, [])
+        if unique:
+            handlers[:] = [existing for existing in handlers
+                           if existing['handler'] is not handler_fn]
+        handlers.append(entry)
+        return handler_fn
+
+    def off(self, event, handler_fn=None):
+        if handler_fn is None:
             self._handlers.pop(event, None)
             return True
         handlers = self._handlers.get(event, [])
-        if handler in handlers:
-            handlers.remove(handler)
+        handlers[:] = [entry for entry in handlers
+                       if entry['handler'] is not handler_fn]
         return True
 
     def trigger(self, event, args=None):
@@ -1057,9 +1080,14 @@ class Events:
             args = {key: (wrap(value) if isinstance(value, dict) else value)
                     for key, value in args.items()}
         handlers = self._handlers.get(event, [])
-        for handler in handlers:
+        for entry in handlers:
             try:
-                handler(args)
+                handler_args = args
+                defaults = entry.get('default_args') or {}
+                if defaults and isinstance(args, dict):
+                    handler_args = dict(defaults)
+                    handler_args.update(args)
+                entry['handler'](handler_args)
             except Exception:
                 print('[bridge] handler error for {}:'.format(event), file=sys.stderr)
                 import traceback

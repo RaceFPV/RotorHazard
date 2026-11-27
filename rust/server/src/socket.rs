@@ -162,6 +162,93 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
             );
         }
 
+        // Install a community plugin: download, verify, extract, and then ask
+        // for a restart - the same sequence and end state as the Python server,
+        // which installs into the plugins directory and sets restart_required
+        // rather than hot-reloading code into a running timer.
+        socket.on(
+            "plugin_install",
+            move |sock: SocketRef, data: Data<Value>, s: State<SharedState>| {
+                let state = s.0.clone();
+                async move {
+                    if !socket_authed(&sock, &state) {
+                        return;
+                    }
+                    let request = data.0.clone();
+                    let directory = crate::pluginrepo::directory(
+                        crate::pluginrepo::RHAPI_VERSION, false);
+                    let plugins_dir = std::path::PathBuf::from(&state.data_dir).join("plugins");
+                    let rhapi = crate::pluginrepo::RHAPI_VERSION;
+
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        let domain = request
+                            .get("domain")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if domain.is_empty() {
+                            return Err("no plugin domain in request".to_string());
+                        }
+                        let entry = directory
+                            .get("remote_data")
+                            .and_then(|value| value.as_object())
+                            .and_then(|entries| {
+                                entries.values().find(|entry| {
+                                    entry
+                                        .get("manifest")
+                                        .and_then(|manifest| manifest.get("domain"))
+                                        .and_then(|value| value.as_str())
+                                        == Some(domain.as_str())
+                                })
+                            })
+                            .cloned()
+                            .ok_or_else(|| "Plugin data was not found".to_string())?;
+                        let tag = request
+                            .get("tag")
+                            .and_then(|value| value.as_str())
+                            .filter(|tag| !tag.is_empty());
+                        crate::plugininstall::install(
+                            &entry,
+                            tag,
+                            &plugins_dir,
+                            rhapi,
+                            &crate::pluginrepo::fetch_bytes,
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|err| Err(format!("install task failed: {}", err)));
+
+                    match &outcome {
+                        Ok(message) => {
+                            tracing::info!("{}", message);
+                            state
+                                .restart_required
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            crate::socket::emit_priority_message(
+                                &state,
+                                "Plugin installation succeeded. Please restart.",
+                                false,
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!("plugin install failed: {}", error);
+                            crate::socket::emit_priority_message(
+                                &state,
+                                &format!("Plugin install failed: {}", error),
+                                false,
+                            );
+                        }
+                    }
+
+                    // Refresh both lists, as the Python handler does, so the
+                    // page shows the new install state without a reload.
+                    let repo = crate::pluginrepo::directory(rhapi, false);
+                    let _ = sock.emit("plugin_repo", &repo);
+                    let _ = sock.emit("plugin_list", &plugin_list_payload(&state));
+                }
+            },
+        );
+
         // A quickbutton click (rh-ui.js) carries the button's name as `id`
         // with namespace 'quickbutton'; Python resolves it against the button
         // registry, so here it becomes a plugin invocation by that name.
@@ -561,21 +648,6 @@ fn register_crud_handlers(socket: SocketRef, _state: SharedState) {
                     );
                 }
             }
-        },
-    );
-
-    socket.on(
-        "plugin_install",
-        move |sock: SocketRef, _data: Data<Value>, _s: State<SharedState>| async move {
-            // Installing from a zip needs the Python installer's packaging rules;
-            // say so instead of failing silently.
-            let _ = sock.emit(
-                "priority_message",
-                &json!({
-                    "action": "message",
-                    "message": "Installing plugins from a file is not supported by this server yet: copy the plugin folder into plugins/ and restart."
-                }),
-            );
         },
     );
 

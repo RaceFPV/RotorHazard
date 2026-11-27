@@ -38,6 +38,64 @@ def slice_symbol(path, name):
     raise SystemExit("symbol %s not found in %s" % (name, path))
 
 
+DATABASE_STANDINS = """
+
+
+# ---------------------------------------------------------------------------
+# Hand-written stand-ins for plugins that import model classes from Database.
+# The originals are SQLAlchemy models; slicing them would drag in Base/DB, so a
+# plugin gets value classes it can annotate with or construct from kwargs.
+# ---------------------------------------------------------------------------
+class _ModelStandIn:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class Pilot(_ModelStandIn):
+    pass
+
+
+class SavedRaceLap(_ModelStandIn):
+    pass
+
+
+class Heat(_ModelStandIn):
+    pass
+
+
+class RaceClass(_ModelStandIn):
+    pass
+
+
+class RaceFormat(_ModelStandIn):
+    pass
+
+
+class Race(_ModelStandIn):
+    pass
+
+
+class Profile(_ModelStandIn):
+    pass
+
+
+class GlobalSettings(_ModelStandIn):
+    pass
+
+
+class Option(_ModelStandIn):
+    pass
+
+
+class PilotRun(_ModelStandIn):
+    pass
+
+
+class Lap(_ModelStandIn):
+    pass
+"""
+
 os.makedirs(OUT, exist_ok=True)
 HEADER = """# Generated from src/server/{src} by rust/tools/gen_rh_compat.py.
 # Ships with the plugin bridge so plugins can import server internals on a
@@ -64,6 +122,8 @@ for out_name, (src_name, symbols, prelude) in MODULES.items():
         body.append(prelude.rstrip("\n"))
     for symbol in symbols:
         body.append(slice_symbol(os.path.join(SRC, src_name), symbol))
+        if dest == 'Database.py':
+            body.append(DATABASE_STANDINS)
     target = os.path.join(OUT, out_name)
     with open(target, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n\n".join(body) + "\n")
