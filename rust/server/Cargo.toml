@@ -23,6 +23,6 @@ rust_socketio = "0.6"
 openssl = { version = "0.10", features = ["vendored"] }
 base64 = "0.22"
 minijinja = { version = "2", features = ["urlencode", "json"] }
+ureq = "3.5.2"
 
 [dev-dependencies]
-ureq = "3.5.2"

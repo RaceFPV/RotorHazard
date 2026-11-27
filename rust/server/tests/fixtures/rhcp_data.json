@@ -1,0 +1,45 @@
+{
+  "101": {
+    "manifest": {
+      "domain": "fixture_ok",
+      "name": "Fixture OK",
+      "author": "RaceFPV",
+      "description": "A plugin this server can run",
+      "required_rhapi_version": "1.1",
+      "version": "1.0.0",
+      "category": [
+        "Utilities"
+      ]
+    },
+    "repository": "RaceFPV/fixture-ok",
+    "releases": [
+      {
+        "tag_name": "1.0.0",
+        "published_at": "2026-01-01T00:00:00Z",
+        "prerelease": false
+      }
+    ],
+    "last_version": "1.0.0"
+  },
+  "102": {
+    "manifest": {
+      "domain": "fixture_future",
+      "name": "Fixture Future",
+      "description": "Needs a newer RHAPI than this server reports",
+      "required_rhapi_version": "9.0",
+      "version": "2.0.0",
+      "category": [
+        "Utilities"
+      ]
+    },
+    "repository": "RaceFPV/fixture-future",
+    "releases": [
+      {
+        "tag_name": "2.0.0",
+        "published_at": "2026-02-01T00:00:00Z",
+        "prerelease": false
+      }
+    ],
+    "last_version": "2.0.0"
+  }
+}

@@ -25,6 +25,7 @@ mod vrx;
 mod pages;
 mod pluginrpc;
 mod plugin_support;
+mod pluginrepo;
 mod serial;
 mod payloads;
 mod phase3;

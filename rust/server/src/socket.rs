@@ -374,13 +374,11 @@ fn handle_load_data(socket: &SocketRef, state: &SharedState, data: Data<Value>) 
                 let _ = socket.emit("upd_cfg_files_list", &json!({"cfg_files": [], "select_file": Value::Null}));
             }
             "plugin_repo" => {
-                // The community directory is a remote index the Python server
-                // fetches at startup. Until that exists here, answer with an
-                // empty directory instead of leaving the page on "Loading...".
-                let _ = socket.emit("plugin_repo", &json!({
-                    "remote_data": {},
-                    "remote_categories": {},
-                }));
+                // Community directory. The fetch blocks like the Python server's
+                // does, but only on a cache miss: one fetch per hour, and a
+                // failed refresh keeps the last good copy.
+                let payload = crate::pluginrepo::directory(crate::pluginrepo::RHAPI_VERSION, false);
+                let _ = socket.emit("plugin_repo", &payload);
             }
             "plugin_list" => {
                 let payload = plugin_list_payload(&state);
