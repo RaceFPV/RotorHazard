@@ -386,6 +386,10 @@ pub struct AppState {
     pub plugin_panels: Mutex<Vec<serde_json::Value>>,
     /// Fields plugins added to those panels (fields.register_option).
     pub plugin_fields: Mutex<Vec<serde_json::Value>>,
+    /// Markdown blocks plugins added to those panels (ui.register_markdown).
+    pub plugin_markdowns: Mutex<Vec<serde_json::Value>>,
+    /// Buttons plugins added to those panels (ui.register_quickbutton).
+    pub plugin_quickbuttons: Mutex<Vec<serde_json::Value>>,
 }
 
 impl AppState {

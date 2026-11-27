@@ -1039,9 +1039,46 @@ fn dispatch(state: &SharedState, object: &str, method: &str, args: &Value) -> Rp
                 .collect::<Vec<String>>()))
         }
 
-        // ---- ui: dynamic updates and one-off emits ----
-        ("ui", "register_markdown") | ("ui", "register_quickbutton")
-        | ("ui", "register_script") | ("ui", "register_stylesheet")
+        // ---- ui: panel content and one-off emits ----
+        // Markdown and quickbuttons are stored and delivered with the panel:
+        // for a long time these were accepted and dropped, so a plugin could
+        // register a button that never appeared and would not have fired.
+        ("ui", "register_markdown") => {
+            let body = args.get("markdown").cloned().unwrap_or(Value::Null);
+            let panel = arg_str("panel")
+                .or_else(|| body.get("panel").and_then(|v| v.as_str()).map(str::to_string));
+            let name = arg_str("name")
+                .or_else(|| body.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                .ok_or("markdown name required")?;
+            let desc = arg_str("desc")
+                .or_else(|| body.get("desc").and_then(|v| v.as_str()).map(str::to_string))
+                .or_else(|| body.get("markdown").and_then(|v| v.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            state.plugin_markdowns.lock().unwrap().push(json!({
+                "panel": panel,
+                "name": name,
+                "desc": desc,
+            }));
+            Ok(json!(true))
+        }
+        ("ui", "register_quickbutton") => {
+            let body = args.get("button").cloned().unwrap_or(Value::Null);
+            let panel = arg_str("panel")
+                .or_else(|| body.get("panel").and_then(|v| v.as_str()).map(str::to_string));
+            let name = arg_str("name")
+                .or_else(|| body.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                .ok_or("quickbutton name required")?;
+            let label = arg_str("label")
+                .or_else(|| body.get("label").and_then(|v| v.as_str()).map(str::to_string))
+                .unwrap_or_else(|| name.clone());
+            state.plugin_quickbuttons.lock().unwrap().push(json!({
+                "panel": panel,
+                "name": name,
+                "label": label,
+            }));
+            Ok(json!(true))
+        }
+        ("ui", "register_script") | ("ui", "register_stylesheet")
         | ("ui", "blueprint_add") => Ok(json!(true)),
         ("ui", "update_field") => {
             crate::socket::broadcast_payload(state, "ui_field_update",
@@ -1991,6 +2028,8 @@ fn option_value(state: &SharedState, name: &str) -> Option<String> {
 pub fn build_ui_payload(state: &SharedState, page: &str) -> Value {
     let panels = state.plugin_panels.lock().unwrap().clone();
     let fields = state.plugin_fields.lock().unwrap().clone();
+    let markdowns = state.plugin_markdowns.lock().unwrap().clone();
+    let quickbuttons = state.plugin_quickbuttons.lock().unwrap().clone();
 
     let mut out = Vec::new();
     for panel in panels.iter().filter(|p| p.get("page").and_then(|v| v.as_str()) == Some(page)) {
@@ -2042,8 +2081,22 @@ pub fn build_ui_payload(state: &SharedState, page: &str) -> Value {
             },
             "settings": settings,
             "fn_binds": [],
-            "quickbuttons": [],
-            "markdowns": [],
+            "quickbuttons": quickbuttons
+                .iter()
+                .filter(|b| b.get("panel").and_then(|v| v.as_str()) == Some(panel_name))
+                .map(|b| json!({
+                    "name": b.get("name").cloned().unwrap_or(Value::Null),
+                    "label": b.get("label").cloned().unwrap_or(Value::Null),
+                }))
+                .collect::<Vec<Value>>(),
+            "markdowns": markdowns
+                .iter()
+                .filter(|m| m.get("panel").and_then(|v| v.as_str()) == Some(panel_name))
+                .map(|m| json!({
+                    "name": m.get("name").cloned().unwrap_or(Value::Null),
+                    "desc": m.get("desc").cloned().unwrap_or(Value::Null),
+                }))
+                .collect::<Vec<Value>>(),
         }));
     }
 

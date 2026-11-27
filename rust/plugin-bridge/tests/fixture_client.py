@@ -51,6 +51,24 @@ if 'fixture' not in panels:
 else:
     print('panel          :', 'fixture')
 
+# 1b. the panel must carry the plugin's markdown and its quickbutton
+panel = next((p for page in seen['ui'] for p in page.get('panels', [])
+              if p['panel']['name'] == 'fixture'), {})
+markdowns = [m.get('name') for m in panel.get('markdowns') or []]
+buttons = [b.get('name') for b in panel.get('quickbuttons') or []]
+if 'fixture_note' not in markdowns:
+    failures.append('panel markdown missing (got %r)' % (markdowns,))
+if 'fixture_action' not in buttons:
+    failures.append('panel quickbutton missing (got %r)' % (buttons,))
+print('panel content  :', markdowns, buttons)
+
+# 1c. clicking the button must reach the plugin and return its value
+click = emit('dispatch_event', {'id': 'fixture_action', 'namespace': 'quickbutton'}) or {}
+if not click.get('clicked'):
+    failures.append('quickbutton click did not reach the plugin (ack %r)' % (click,))
+else:
+    print('quickbutton    :', click)
+
 # 2. every RHAPI call the fixture makes must succeed
 probe = emit('ts_probe', None) or {}
 if probe.get('failures'):

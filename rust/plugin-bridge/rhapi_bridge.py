@@ -963,11 +963,39 @@ class UI(Rpc):
     def broadcast_raceformats(self):
         return self.call('ui', 'broadcast', what='raceformats')
 
-    def register_markdown(self, markdown, panel=None):
-        return self.call('ui', 'register_markdown', markdown=markdown, panel=panel)
+    def register_markdown(self, panel=None, name=None, desc=None, markdown=None):
+        '''Matches RHAPI: register_markdown(panel, name, desc).
 
-    def register_quickbutton(self, button, panel=None):
-        return self.call('ui', 'register_quickbutton', button=button, panel=panel)
+        A dict as the first argument is also accepted (older bridge form).
+        '''
+        if isinstance(panel, dict) and markdown is None:
+            markdown, panel = panel, None
+        if markdown is not None:
+            name = name or markdown.get('name')
+            desc = desc if desc is not None else markdown.get('desc')
+            panel = panel or markdown.get('panel')
+        return self.call('ui', 'register_markdown', panel=panel, name=name, desc=desc)
+
+    def register_quickbutton(self, panel=None, name=None, label=None, function=None,
+                             args=None, requires_auth=False, client_context=False,
+                             button=None):
+        '''Matches RHAPI: register_quickbutton(panel, name, label, function).
+
+        The callable stays here: the server only stores the button, and a click
+        arrives as the button's name, which is bound as a local listener so the
+        plugin's function runs and its return value becomes the socket ack.
+        '''
+        if isinstance(panel, dict) and button is None:
+            button, panel = panel, None
+        if button is not None:
+            name = name or button.get('name')
+            label = label or button.get('label')
+            function = function or button.get('function')
+            panel = panel or button.get('panel')
+        if callable(function) and name:
+            self._host.listeners.setdefault(name, []).append(function)
+        return self.call('ui', 'register_quickbutton', panel=panel,
+                         button={'name': name, 'label': label or name})
 
     def register_script(self, path):
         return self.call('ui', 'register_script', path=path)

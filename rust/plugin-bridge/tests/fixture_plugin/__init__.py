@@ -103,6 +103,7 @@ class FixturePlugin:
     def __init__(self, rhapi):
         self._rhapi = rhapi
         self.laps_seen = 0
+        self.clicks = 0
         self._rhapi.events.on('raceLapRecorded', self.on_lap)
 
     def initialize(self, _args):
@@ -116,9 +117,19 @@ class FixturePlugin:
         rhapi.fields.register_race_attribute(UIField('fixture_race', 'Fixture Race', UIFieldType.TEXT))
         rhapi.fields.register_pilot_attribute(UIField('fixture_pilot', 'Fixture Pilot', UIFieldType.TEXT))
 
+        rhapi.ui.register_markdown('fixture', 'fixture_note',
+                                   'Fixture **markdown**: panel content reaches the UI.')
+        rhapi.ui.register_quickbutton('fixture', 'fixture_action', 'Fixture Action',
+                                      self.quick_action)
+
         rhapi.ui.socket_listen('ts_probe', self.probe)
         rhapi.ui.socket_listen('ts_fixture_stage', self.stage)
         rhapi.ui.socket_listen('ts_fixture_write', self.write_option)
+
+    def quick_action(self, _arg=None):
+        '''Runs when the panel button is clicked (dispatch_event).'''
+        self.clicks += 1
+        return {'clicked': True, 'clicks': self.clicks}
 
     def probe(self, _arg=None):
         ok, failures = _probe(self._rhapi)

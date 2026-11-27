@@ -162,6 +162,32 @@ pub fn register_handlers(io: SocketIo, state: SharedState) {
             );
         }
 
+        // A quickbutton click (rh-ui.js) carries the button's name as `id`
+        // with namespace 'quickbutton'; Python resolves it against the button
+        // registry, so here it becomes a plugin invocation by that name.
+        socket.on(
+            "dispatch_event",
+            move |ack: socketioxide::extract::AckSender,
+                  data: Data<Value>,
+                  s: State<SharedState>| {
+                let state = s.0.clone();
+                async move {
+                    let namespace = data
+                        .0
+                        .get("namespace")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let id = data.0.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if namespace != "quickbutton" || id.is_empty() {
+                        let _ = ack.send(&Value::Null);
+                        return;
+                    }
+                    let result = crate::pluginrpc::invoke_plugin(&state, id, data.0.clone()).await;
+                    let _ = ack.send(&result);
+                }
+            },
+        );
+
         register_crud_handlers(socket.clone(), state.clone());
         register_race_handlers(socket.clone(), state.clone());
         register_settings_handlers(socket.clone(), state.clone());
