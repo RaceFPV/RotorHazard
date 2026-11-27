@@ -85,7 +85,7 @@ jobs:
             echo "$IDX" | awk -v pkg="$1" '$0=="Package: " pkg {f=1} f && /^Filename: /{print $2; exit}'
           }
           mkdir -p arm64-sysroot
-          for pkg in libudev1 libudev-dev; do
+          for pkg in libudev1 libudev-dev liblzma5 liblzma-dev; do
             fpath=$(get_file "$pkg")
             test -n "$fpath" || { echo "could not locate $pkg"; exit 1; }
             curl -fsSL "$MIRROR/$fpath" -o /tmp/$pkg.deb
@@ -95,6 +95,9 @@ jobs:
           # default, so -ludev resolves regardless of pkg-config -L output
           # (pkgconf 2.x sysroot handling can emit a bogus -L)
           sudo cp -a arm64-sysroot/usr/lib/aarch64-linux-gnu/libudev.so* /usr/aarch64-linux-gnu/lib/
+          # plugin install pulls the zip crate in with lzma support, so the
+          # cross link needs the arm64 liblzma as well as libudev
+          sudo cp -a arm64-sysroot/usr/lib/aarch64-linux-gnu/liblzma.so* /usr/aarch64-linux-gnu/lib/
           ls arm64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig/
 
       - name: Cache cargo
